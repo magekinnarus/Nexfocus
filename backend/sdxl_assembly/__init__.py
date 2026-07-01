@@ -1,0 +1,17 @@
+from backend.sdxl_assembly.contracts import (
+    SDXLAssemblyRequest,
+    SDXLAssemblyResult,
+    SDXLRuntimeIdentity,
+    ResolvedFileIdentity,
+    SDXLLoraSpec,
+    UNetPostureKind,
+    TextEncoderPostureKind,
+    VAEPostureKind,
+    LoraPatchPostureKind,
+    SDXLAssemblyEligibilityError,
+    SDXLAssemblyValidationError,
+)
+from backend.sdxl_assembly.director import SDXLAssemblyDirector
+from backend.sdxl_assembly.assembly import SDXLAssembly
+from backend.sdxl_assembly.gateway import is_eligible_for_sdxl_assembly, run_sdxl_assembly_task
+from backend.sdxl_assembly.runtime_state import clear_all_caches

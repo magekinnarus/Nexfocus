@@ -1,0 +1,63 @@
+from __future__ import annotations
+
+import logging
+from backend.sdxl_assembly.contracts import (
+    SDXLAssemblyRequest,
+    UNetPostureKind,
+    TextEncoderPostureKind,
+    VAEPostureKind,
+    LoraPatchPostureKind,
+)
+from backend.sdxl_assembly.assembler import SDXLAssemblyAssembler
+from backend.sdxl_assembly.assembly import SDXLAssembly
+
+logger = logging.getLogger(__name__)
+
+class SDXLAssemblyDirector:
+    """Authoritative director for SDXL Assembly selection and validation."""
+
+    @staticmethod
+    def select_assembly(request: SDXLAssemblyRequest) -> SDXLAssembly:
+        # Enforce validation of the only supported posture combination in W02
+        if request.unet_posture != UNetPostureKind.STREAMING:
+            raise NotImplementedError(
+                f"UNet posture '{request.unet_posture}' is not supported in W02. "
+                f"Only '{UNetPostureKind.STREAMING}' is supported."
+            )
+        if request.clip_posture != TextEncoderPostureKind.CPU_PINNED:
+            raise NotImplementedError(
+                f"CLIP posture '{request.clip_posture}' is not supported in W02. "
+                f"Only '{TextEncoderPostureKind.CPU_PINNED}' is supported."
+            )
+        if request.vae_posture != VAEPostureKind.TRANSIENT:
+            raise NotImplementedError(
+                f"VAE posture '{request.vae_posture}' is not supported in W02. "
+                f"Only '{VAEPostureKind.TRANSIENT}' is supported."
+            )
+        if request.lora_posture != LoraPatchPostureKind.STREAMING:
+            raise NotImplementedError(
+                f"LoRA posture '{request.lora_posture}' is not supported in W02. "
+                f"Only '{LoraPatchPostureKind.STREAMING}' is supported."
+            )
+
+        # Retrieve/instantiate posture-specific workers via Assembler
+        unet_spine = SDXLAssemblyAssembler.acquire_unet_spine(request)
+        text_worker = SDXLAssemblyAssembler.acquire_text_worker(request)
+        vae_worker = SDXLAssemblyAssembler.acquire_vae_worker(request)
+        lora_worker = SDXLAssemblyAssembler.acquire_lora_worker(request)
+
+        # Log selection
+        logger.debug(
+            "[SDXL Telemetry] assembly_select | unet_posture=%s clip_posture=%s vae_posture=%s lora_posture=%s",
+            request.unet_posture,
+            request.clip_posture,
+            request.vae_posture,
+            request.lora_posture,
+        )
+
+        return SDXLAssembly(
+            unet_spine=unet_spine,
+            text_worker=text_worker,
+            vae_worker=vae_worker,
+            lora_worker=lora_worker,
+        )

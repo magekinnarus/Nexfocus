@@ -520,6 +520,21 @@ def process_task(task_state, task_dict, current_task_id, total_count, all_steps,
         resources.interrupt_current_processing()
 
     controlnet_paths = controlnet_paths or {}
+    
+    from backend.sdxl_assembly.gateway import is_eligible_for_sdxl_assembly
+    assembly_eligible, assembly_reason = is_eligible_for_sdxl_assembly(
+        task_state=task_state,
+        loras=loras,
+        controlnet_paths=controlnet_paths,
+        contextual_assets=contextual_assets,
+        image_input_result=image_input_result,
+    )
+    logging.getLogger(__name__).debug(
+        "SDXL assembly W02 seam eligibility=%s reason=%s; keeping unified runtime route until W04 cutover.",
+        assembly_eligible,
+        assembly_reason,
+    )
+
     _ensure_supported_unified_runtime_request(task_state)
     imgs = _run_unified_sdxl_task(
         task_state,
