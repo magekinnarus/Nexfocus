@@ -40,11 +40,13 @@ class SDXLAssemblyDirector:
                 f"Only '{LoraPatchPostureKind.STREAMING}' is supported."
             )
 
-        # Retrieve/instantiate posture-specific workers via Assembler
-        unet_spine = SDXLAssemblyAssembler.acquire_unet_spine(request)
-        text_worker = SDXLAssemblyAssembler.acquire_text_worker(request)
-        vae_worker = SDXLAssemblyAssembler.acquire_vae_worker(request)
+        # Retrieve/instantiate posture-specific workers via Assembler.
+        # LoRA is an assembly-owned worker that text and UNet workers consume;
+        # they must not create hidden duplicate LoRA lifecycle owners.
         lora_worker = SDXLAssemblyAssembler.acquire_lora_worker(request)
+        unet_spine = SDXLAssemblyAssembler.acquire_unet_spine(request, lora_worker=lora_worker)
+        text_worker = SDXLAssemblyAssembler.acquire_text_worker(request, lora_worker=lora_worker)
+        vae_worker = SDXLAssemblyAssembler.acquire_vae_worker(request)
 
         # Log selection
         logger.debug(

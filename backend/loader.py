@@ -60,6 +60,15 @@ def resolve_source(source, device=None):
     return source
 
 
+def _log_sdxl_assembly_telemetry(event: str, extra_msg: str = "") -> None:
+    try:
+        from backend.sdxl_assembly.progress import log_telemetry
+
+        log_telemetry(event, extra_msg)
+    except Exception:
+        pass
+
+
 def _safe_open_device_arg(device):
     if device is None:
         return "cpu"
@@ -98,6 +107,7 @@ def _load_prefixed_safetensors_into_module(
     device=None,
     dtype=None,
     chunk_bytes=None,
+    realize_cpu_targets=False,
     realize_pinned_targets=False,
     load_metrics=None,
     raw_byte_stream=False,
@@ -109,6 +119,8 @@ def _load_prefixed_safetensors_into_module(
     unexpected_keys = []
     realized_pinned_bytes = 0
     realized_pinned_tensor_count = 0
+    realized_cpu_bytes = 0
+    realized_cpu_tensor_count = 0
     fallback_raw_keys = []
 
     if raw_byte_stream:
@@ -126,6 +138,8 @@ def _load_prefixed_safetensors_into_module(
                     state_entries,
                     state_owners,
                     target_key,
+                    target_dtype=dtype,
+                    realize_cpu_targets=realize_cpu_targets,
                     realize_pinned_targets=realize_pinned_targets,
                 )
                 if target_tensor is None:
@@ -133,8 +147,12 @@ def _load_prefixed_safetensors_into_module(
                     continue
 
                 if realized_bytes > 0:
-                    realized_pinned_bytes += int(realized_bytes)
-                    realized_pinned_tensor_count += 1
+                    if bool(realize_pinned_targets and torch.cuda.is_available()):
+                        realized_pinned_bytes += int(realized_bytes)
+                        realized_pinned_tensor_count += 1
+                    else:
+                        realized_cpu_bytes += int(realized_bytes)
+                        realized_cpu_tensor_count += 1
 
                 if _stream_raw_safetensors_entry_into_target(
                     reader,
@@ -160,6 +178,8 @@ def _load_prefixed_safetensors_into_module(
                     state_entries,
                     state_owners,
                     target_key,
+                    target_dtype=dtype,
+                    realize_cpu_targets=realize_cpu_targets,
                     realize_pinned_targets=realize_pinned_targets,
                 )
                 if target_tensor is None:
@@ -167,8 +187,12 @@ def _load_prefixed_safetensors_into_module(
                     continue
 
                 if realized_bytes > 0:
-                    realized_pinned_bytes += int(realized_bytes)
-                    realized_pinned_tensor_count += 1
+                    if bool(realize_pinned_targets and torch.cuda.is_available()):
+                        realized_pinned_bytes += int(realized_bytes)
+                        realized_pinned_tensor_count += 1
+                    else:
+                        realized_cpu_bytes += int(realized_bytes)
+                        realized_cpu_tensor_count += 1
 
                 _stream_safetensors_key_into_target(
                     handle,
@@ -195,6 +219,9 @@ def _load_prefixed_safetensors_into_module(
     if isinstance(load_metrics, dict):
         load_metrics["realized_pinned_bytes"] = int(realized_pinned_bytes)
         load_metrics["realized_pinned_tensor_count"] = int(realized_pinned_tensor_count)
+        if realized_cpu_bytes > 0 or realized_cpu_tensor_count > 0:
+            load_metrics["realized_cpu_bytes"] = int(realized_cpu_bytes)
+            load_metrics["realized_cpu_tensor_count"] = int(realized_cpu_tensor_count)
     return missing_keys, unexpected_keys
 
 
@@ -344,6 +371,8 @@ def _resolve_streaming_target_tensor(
     state_owners,
     target_key,
     *,
+    target_dtype=None,
+    realize_cpu_targets=False,
     realize_pinned_targets=False,
 ):
     fallback_tensor = state_entries.get(target_key)
@@ -360,7 +389,7 @@ def _resolve_streaming_target_tensor(
         return fallback_tensor, 0
 
     live_tensor = current_tensor.data if tensor_kind == "param" else current_tensor
-    if not realize_pinned_targets or not torch.cuda.is_available():
+    if not realize_pinned_targets and not realize_cpu_targets:
         return live_tensor, 0
 
     device_type = getattr(getattr(live_tensor, "device", None), "type", None)
@@ -369,16 +398,25 @@ def _resolve_streaming_target_tensor(
     if device_type == "cpu" and live_tensor.is_pinned():
         return live_tensor, 0
 
-    pinned_target = torch.empty_like(live_tensor, device="cpu", pin_memory=True)
-    realized_bytes = int(pinned_target.numel() * pinned_target.element_size())
+    should_pin = bool(realize_pinned_targets and torch.cuda.is_available())
+    if device_type == "cpu" and not should_pin:
+        return live_tensor, 0
+
+    empty_kwargs = {"device": "cpu"}
+    if target_dtype is not None and torch.is_floating_point(live_tensor):
+        empty_kwargs["dtype"] = target_dtype
+    if should_pin:
+        empty_kwargs["pin_memory"] = True
+    realized_target = torch.empty_like(live_tensor, **empty_kwargs)
+    realized_bytes = int(realized_target.numel() * realized_target.element_size())
     if tensor_kind == "param":
         submodule._parameters[tensor_name] = torch.nn.Parameter(
-            pinned_target,
+            realized_target,
             requires_grad=bool(getattr(current_tensor, "requires_grad", False)),
         )
         return submodule._parameters[tensor_name].data, realized_bytes
 
-    submodule._buffers[tensor_name] = pinned_target
+    submodule._buffers[tensor_name] = realized_target
     return submodule._buffers[tensor_name], realized_bytes
 
 
@@ -690,14 +728,9 @@ def _module_is_meta(module):
 
 def _reload_unet_weights(target_model, source, *, device, dtype=None, prefixes=None):
     diffusion_model = target_model.diffusion_model
-    if _module_is_meta(diffusion_model) and hasattr(diffusion_model, "to_empty"):
-        diffusion_model.to_empty(device=device)
-    if dtype is not None:
-        diffusion_model.to(device=device, dtype=dtype)
-    else:
-        diffusion_model.to(device=device)
-
-    if isinstance(source, str) and source.lower().endswith(".safetensors"):
+    source_is_safetensors = isinstance(source, str) and source.lower().endswith(".safetensors")
+    module_is_meta = _module_is_meta(diffusion_model)
+    if module_is_meta and source_is_safetensors:
         load_prefixes = prefixes if prefixes is not None else [""]
         missing, unexpected = _load_prefixed_safetensors_into_module(
             source,
@@ -705,6 +738,32 @@ def _reload_unet_weights(target_model, source, *, device, dtype=None, prefixes=N
             diffusion_model,
             device=device,
             dtype=dtype,
+            realize_cpu_targets=True,
+            raw_byte_stream=True,
+        )
+        if missing:
+            logging.debug("UNet reload: Missing keys while streaming load: %s", missing)
+        if unexpected:
+            logging.debug("UNet reload: Unexpected keys while streaming load: %s", unexpected)
+        gc.collect()
+        return
+
+    if module_is_meta and hasattr(diffusion_model, "to_empty"):
+        diffusion_model.to_empty(device=device)
+    if dtype is not None:
+        diffusion_model.to(device=device, dtype=dtype)
+    else:
+        diffusion_model.to(device=device)
+
+    if source_is_safetensors:
+        load_prefixes = prefixes if prefixes is not None else [""]
+        missing, unexpected = _load_prefixed_safetensors_into_module(
+            source,
+            load_prefixes,
+            diffusion_model,
+            device=device,
+            dtype=dtype,
+            raw_byte_stream=True,
         )
         if missing:
             logging.debug("UNet reload: Missing keys while streaming load: %s", missing)
@@ -832,10 +891,14 @@ def _stream_load_sdxl_unet_from_checkpoint(
     dtype=None,
     reload_source=None,
     reload_prefixes=None,
+    stream_chunk_bytes=None,
+    raw_byte_stream=True,
 ):
-    load_device = load_device or resources.get_torch_device()
-    offload_device = offload_device or resources.unet_offload_device()
+    load_device = torch.device(load_device or resources.get_torch_device())
+    offload_device = torch.device(offload_device or resources.unet_offload_device())
     effective_dtype = dtype or torch.float16
+    use_raw_stream = bool(raw_byte_stream and str(ckpt_path).lower().endswith(".safetensors"))
+    use_meta_construction = bool(use_raw_stream and load_device.type == "cpu")
 
     runtime_reload = _build_unet_runtime_reload(
         reload_source if reload_source is not None else ckpt_path,
@@ -843,30 +906,71 @@ def _stream_load_sdxl_unet_from_checkpoint(
         prefixes=reload_prefixes,
     )
 
+    _log_sdxl_assembly_telemetry(
+        "sdxl_unet_shell_construct_begin",
+        f"meta_construct={use_meta_construction} dtype={effective_dtype}",
+    )
     model = model_base.SDXL(
         model_config=ModelConfig(sdxl_def.UNET_CONFIG, latent_formats.SDXL()),
+        device=torch.device("meta") if use_meta_construction else None,
     )
-    model.diffusion_model.to(device=load_device, dtype=effective_dtype)
+    _log_sdxl_assembly_telemetry(
+        "sdxl_unet_shell_construct_complete",
+        f"meta_construct={use_meta_construction}",
+    )
+    if not use_meta_construction:
+        model.diffusion_model.to(device=load_device, dtype=effective_dtype)
+        _log_sdxl_assembly_telemetry(
+            "sdxl_unet_shell_to_device_complete",
+            f"device={load_device} dtype={effective_dtype}",
+        )
 
+    load_metrics: dict[str, Any] = {}
+    _log_sdxl_assembly_telemetry(
+        "sdxl_unet_weight_stream_begin",
+        f"raw_stream={use_raw_stream} meta_construct={use_meta_construction}",
+    )
     missing, unexpected = _load_prefixed_safetensors_into_module(
         ckpt_path,
         reload_prefixes or sdxl_def.PREFIXES["unet"],
         model.diffusion_model,
         device=load_device,
         dtype=effective_dtype,
+        chunk_bytes=stream_chunk_bytes,
+        realize_cpu_targets=use_meta_construction,
+        load_metrics=load_metrics,
+        raw_byte_stream=use_raw_stream,
+    )
+    _log_sdxl_assembly_telemetry(
+        "sdxl_unet_weight_stream_complete",
+        (
+            f"raw_stream={use_raw_stream} meta_construct={use_meta_construction} "
+            f"realized_cpu_mb={int(load_metrics.get('realized_cpu_bytes', 0)) / (1024 * 1024):.1f}"
+        ),
     )
     if missing:
         logging.debug("SDXL UNet: Missing keys while streaming load: %s", missing)
     if unexpected:
         logging.debug("SDXL UNet: Unexpected keys while streaming load: %s", unexpected)
 
-    return patching.NexModelPatcher(
+    patcher = patching.NexModelPatcher(
         model,
         load_device=load_device,
         offload_device=offload_device,
         runtime_reload=runtime_reload,
         runtime_release_to_meta=runtime_reload is not None,
     )
+    patcher.model_options["sdxl_assembly_loader"] = {
+        "direct_safetensors_load": bool(str(ckpt_path).lower().endswith(".safetensors")),
+        "raw_sequential_stream": use_raw_stream,
+        "meta_construction": use_meta_construction,
+        "stream_chunk_bytes": int(stream_chunk_bytes) if stream_chunk_bytes is not None else None,
+        "realized_cpu_bytes": int(load_metrics.get("realized_cpu_bytes", 0)),
+        "realized_cpu_tensor_count": int(load_metrics.get("realized_cpu_tensor_count", 0)),
+        "realized_pinned_bytes": int(load_metrics.get("realized_pinned_bytes", 0)),
+        "realized_pinned_tensor_count": int(load_metrics.get("realized_pinned_tensor_count", 0)),
+    }
+    return patcher
 
 class ModelConfig(supported_models_base.BASE):
     """Mock config object for model instantiation, inheriting from BASE for compatibility."""

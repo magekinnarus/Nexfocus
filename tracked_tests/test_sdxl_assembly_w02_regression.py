@@ -138,7 +138,7 @@ def test_process_task_keeps_unified_runtime_until_w04_even_when_w02_seam_is_elig
     unified_calls = []
 
     def fail_if_assembly_runs(*_args, **_kwargs):
-        raise AssertionError('W02 must not execute the assembly route from process_task')
+        raise AssertionError('W02/W03 must not execute the assembly route from process_task')
 
     monkeypatch.setattr(
         gateway,

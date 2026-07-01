@@ -11,6 +11,7 @@ from backend.sdxl_assembly.contracts import (
     SDXLAssemblyResult,
     SDXLRuntimeIdentity,
 )
+from backend.sdxl_assembly.progress import log_telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -31,20 +32,28 @@ class SDXLAssembly:
 
     def execute(self, request: SDXLAssemblyRequest, callback: Optional[Any] = None) -> SDXLAssemblyResult:
         """Executes the pipeline steps in strict chronological order."""
+        # 1. Static and posture validation
+        request.validate()
+        
         timings: Dict[str, float] = {}
         device = torch.device(request.device)
 
-        # 1. Resolve text conditioning first (avoid holding extra latent memory)
-        text_start = time.perf_counter()
-        conditioning = self.text_worker.get_conditioning()
-        timings["text_encode"] = time.perf_counter() - text_start
-
-        # 2. Materialize LoRA patches
+        # 2. Materialize LoRA patches first
         lora_start = time.perf_counter()
         patches = self.lora_worker.materialize_patches()
         timings["lora_patch"] = time.perf_counter() - lora_start
 
-        # 3. Coordinate VAE latent preparation
+        # 3. Resolve text conditioning (avoid holding extra latent memory)
+        text_start = time.perf_counter()
+        conditioning = self.text_worker.get_conditioning()
+        timings["text_encode"] = time.perf_counter() - text_start
+        if bool(request.metadata.get("release_text_encoder_after_task", False)):
+            text_release_start = time.perf_counter()
+            if hasattr(self.text_worker, "teardown_assembly_order"):
+                self.text_worker.teardown_assembly_order()
+            timings["text_release"] = time.perf_counter() - text_release_start
+
+        # 4. Coordinate VAE latent preparation
         vae_start = time.perf_counter()
         latent_bundle = self.vae_worker.prepare_latents(device)
         timings["vae_prep"] = time.perf_counter() - vae_start
@@ -52,14 +61,13 @@ class SDXLAssembly:
         # Extension Point: Pre-diffusion ControlNet preprocessing artifacts & application
         self._prepare_controlnet_artifacts(request)
 
-        # 4. Coordinate UNet spine denoise
+        # 5. Coordinate UNet spine denoise
         unet_start = time.perf_counter()
         self.unet_spine.start()
         timings["unet_start"] = time.perf_counter() - unet_start
 
         try:
             denoise_start = time.perf_counter()
-            # In W02, this is a shim that returns the mock latent
             samples = self.unet_spine.denoise(
                 latent_bundle.samples, conditioning, callback=callback
             )
@@ -67,7 +75,7 @@ class SDXLAssembly:
         finally:
             self.unet_spine.end()
 
-        # 5. Decode results using VAE worker
+        # 6. Decode results using VAE worker
         decode_start = time.perf_counter()
         output_image, load_time, decode_time = self.vae_worker.decode(samples, device)
         timings["vae_decode"] = time.perf_counter() - decode_start
@@ -100,7 +108,7 @@ class SDXLAssembly:
 
     def close(self) -> None:
         """Deterministically tears down the assembly and its components in strict order."""
-        logger.debug("[SDXL Telemetry] cleanup_begin | reason=assembly_close")
+        log_telemetry("cleanup_begin", "reason=assembly_close")
         
         # 1. TransientVaeWorker unloads VAE tensors first
         if hasattr(self.vae_worker, "teardown_assembly_order"):
@@ -118,4 +126,4 @@ class SDXLAssembly:
         if hasattr(self.unet_spine, "teardown_assembly_order"):
             self.unet_spine.teardown_assembly_order()
             
-        logger.debug("[SDXL Telemetry] cleanup_complete | reason=assembly_close")
+        log_telemetry("cleanup_complete", "reason=assembly_close")

@@ -11,13 +11,19 @@ class SDXLAssemblyAssembler:
     """Factory class to acquire posture-specific workers and spines."""
 
     @staticmethod
-    def acquire_unet_spine(request: SDXLAssemblyRequest) -> StreamingUnetSpine:
-        spine, _reused = acquire_active_sdxl_streaming_spine(request)
+    def acquire_unet_spine(
+        request: SDXLAssemblyRequest,
+        lora_worker: StreamingLoraPatchWorker | None = None,
+    ) -> StreamingUnetSpine:
+        spine, _reused = acquire_active_sdxl_streaming_spine(request, lora_worker=lora_worker)
         return spine
 
     @staticmethod
-    def acquire_text_worker(request: SDXLAssemblyRequest) -> CpuPinnedTextEncoderWorker:
-        return CpuPinnedTextEncoderWorker(request)
+    def acquire_text_worker(
+        request: SDXLAssemblyRequest,
+        lora_worker: StreamingLoraPatchWorker | None = None,
+    ) -> CpuPinnedTextEncoderWorker:
+        return CpuPinnedTextEncoderWorker(request, lora_worker=lora_worker)
 
     @staticmethod
     def acquire_vae_worker(request: SDXLAssemblyRequest) -> TransientVaeWorker:

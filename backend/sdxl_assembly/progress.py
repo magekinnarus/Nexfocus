@@ -2,10 +2,48 @@ import logging
 import time
 import psutil
 import torch
+from contextlib import contextmanager
+from threading import RLock
 from typing import Any, Callable, Optional
 from backend.sdxl_assembly.contracts import SDXLAssemblyRequest
 
 logger = logging.getLogger(__name__)
+_TELEMETRY_SINKS: list[Callable[[dict[str, Any]], None]] = []
+_TELEMETRY_SINKS_LOCK = RLock()
+
+
+def add_telemetry_sink(sink: Callable[[dict[str, Any]], None]) -> Callable[[], None]:
+    """Register a diagnostic sink for structured telemetry snapshots."""
+    with _TELEMETRY_SINKS_LOCK:
+        _TELEMETRY_SINKS.append(sink)
+
+    def unregister() -> None:
+        with _TELEMETRY_SINKS_LOCK:
+            try:
+                _TELEMETRY_SINKS.remove(sink)
+            except ValueError:
+                pass
+
+    return unregister
+
+
+@contextmanager
+def telemetry_sink(sink: Callable[[dict[str, Any]], None]):
+    unregister = add_telemetry_sink(sink)
+    try:
+        yield
+    finally:
+        unregister()
+
+
+def _emit_telemetry_snapshot(snapshot: dict[str, Any]) -> None:
+    with _TELEMETRY_SINKS_LOCK:
+        sinks = list(_TELEMETRY_SINKS)
+    for sink in sinks:
+        try:
+            sink(dict(snapshot))
+        except Exception as exc:
+            logger.debug("[SDXL Telemetry] Telemetry sink failed: %s", exc)
 
 def log_telemetry(event: str, extra_msg: str = "") -> None:
     """Logs a standardized SDXL telemetry memory snapshot at DEBUG level."""
@@ -45,6 +83,19 @@ def log_telemetry(event: str, extra_msg: str = "") -> None:
             log_line += f" | {extra_msg}"
             
         logger.debug(log_line)
+        _emit_telemetry_snapshot(
+            {
+                "event": event,
+                "extra": extra_msg,
+                "timestamp_s": time.time(),
+                "ram_total_mb": ram_total,
+                "ram_free_mb": ram_free,
+                "ram_used_mb": ram_used,
+                "vram_total_mb": vram_total,
+                "vram_free_mb": vram_free,
+                "proc_rss_mb": proc_rss,
+            }
+        )
     except Exception as e:
         logger.debug(f"[SDXL Telemetry] Failed to gather memory telemetry: {e}")
 

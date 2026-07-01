@@ -209,6 +209,11 @@ def build_assembly_request(
     lora_posture = LoraPatchPostureKind.STREAMING
     prefetch_depth = 1
     prefetch_chunk_mb = 64
+    execution_metadata: Dict[str, Any] = {
+        "pin_unet_host": False,
+        "release_warm_unet_after_task": False,
+        "release_text_encoder_after_task": False,
+    }
 
     if policy is not None:
         exec_mode = getattr(policy, 'execution_mode', None)
@@ -221,6 +226,9 @@ def build_assembly_request(
         
         prefetch_depth = int(getattr(policy, 'prefetch_depth', 1))
         prefetch_chunk_mb = int(getattr(policy, 'prefetch_chunk_mb', 64))
+        execution_metadata["pin_unet_host"] = bool(getattr(policy, 'pin_unet_host', False))
+        execution_metadata["release_warm_unet_after_task"] = bool(getattr(policy, 'release_warm_unet_after_task', False))
+        execution_metadata["release_text_encoder_after_task"] = bool(getattr(policy, 'release_text_encoder_after_task', False))
 
     # Retrieve quality configs
     sharpness = float(getattr(task_state, 'sharpness', 2.0))
@@ -267,6 +275,7 @@ def build_assembly_request(
         adm_scaler_positive=adm_pos,
         adm_scaler_negative=adm_neg,
         adm_scaler_end=adm_end,
+        metadata=execution_metadata,
     )
     
     # Static validate
