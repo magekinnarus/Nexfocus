@@ -10,6 +10,19 @@ from backend.sdxl_assembly.contracts import SDXLAssemblyRequest
 logger = logging.getLogger(__name__)
 _TELEMETRY_SINKS: list[Callable[[dict[str, Any]], None]] = []
 _TELEMETRY_SINKS_LOCK = RLock()
+_STEP_MEMORY_TELEMETRY_INTERVAL = 5
+
+
+def _should_forward_text_only_progress(raw_callback: Callable | None, completed_steps: int, total_steps: int) -> bool:
+    if raw_callback is None or not bool(getattr(raw_callback, "_sdxl_forward_text_only", False)):
+        return True
+    resolved_total_steps = max(int(total_steps), 1)
+    cadence = max(5, resolved_total_steps // 10 or 1)
+    return (
+        completed_steps <= 1
+        or completed_steps >= resolved_total_steps
+        or (completed_steps % cadence) == 0
+    )
 
 
 def add_telemetry_sink(sink: Callable[[dict[str, Any]], None]) -> Callable[[], None]:
@@ -113,9 +126,23 @@ class SDXLAssemblyProgressCallback:
         self.last_step_time = now
         
         extra_msg = f"step={step} total_steps={total_steps} step_time={step_duration:.3f}s"
-        log_telemetry("spine_stream_step", extra_msg)
+        completed_steps = int(step) + 1
+        resolved_total_steps = max(int(total_steps), 1)
+        should_emit_memory_snapshot = (
+            completed_steps <= 1
+            or completed_steps >= resolved_total_steps
+            or (completed_steps % _STEP_MEMORY_TELEMETRY_INTERVAL) == 0
+        )
+        if should_emit_memory_snapshot:
+            log_telemetry("spine_stream_step", extra_msg)
+        else:
+            logger.debug("[SDXL Telemetry] spine_stream_step | %s", extra_msg)
         
-        if self.raw_callback is not None:
+        if self.raw_callback is not None and _should_forward_text_only_progress(
+            self.raw_callback,
+            completed_steps,
+            resolved_total_steps,
+        ):
             try:
                 self.raw_callback(step, x0, x, total_steps, y)
             except Exception as e:

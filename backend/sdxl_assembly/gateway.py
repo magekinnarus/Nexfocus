@@ -4,6 +4,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
+from backend import resources
 from backend.sdxl_assembly.contracts import SDXLAssemblyEligibilityError, SDXLAssemblyResult
 from backend.sdxl_assembly.request_builder import determine_eligibility, build_assembly_request
 from backend.sdxl_assembly.director import SDXLAssemblyDirector
@@ -43,27 +44,43 @@ def run_sdxl_assembly_task(
     base_model_additional_loras: Optional[List[Tuple[str, float]]] = None,
     image_input_result: Optional[Dict[str, Any]] = None,
     progressbar_callback: Optional[Any] = None,
+    preview_runtime_holder: Optional[Dict[str, Any]] = None,
 ) -> np.ndarray:
     """Gateway entry point that executes an eligible task via the SDXL Assembly lane."""
     # 1. Build frozen request
-    request = build_assembly_request(
-        task_state=task_state,
-        task_dict=task_dict,
-        current_task_id=current_task_id,
-        total_count=total_count,
-        all_steps=all_steps,
-        preparation_steps=preparation_steps,
-        denoising_strength=denoising_strength,
-        final_scheduler_name=final_scheduler_name,
-        loras=loras,
-        controlnet_paths=controlnet_paths,
-        contextual_assets=contextual_assets,
-        base_model_additional_loras=base_model_additional_loras,
-        image_input_result=image_input_result,
-    )
+    try:
+        request = build_assembly_request(
+            task_state=task_state,
+            task_dict=task_dict,
+            current_task_id=current_task_id,
+            total_count=total_count,
+            all_steps=all_steps,
+            preparation_steps=preparation_steps,
+            denoising_strength=denoising_strength,
+            final_scheduler_name=final_scheduler_name,
+            loras=loras,
+            controlnet_paths=controlnet_paths,
+            contextual_assets=contextual_assets,
+            base_model_additional_loras=base_model_additional_loras,
+            image_input_result=image_input_result,
+        )
+    except resources.InterruptProcessingException:
+        raise
+    except Exception as e:
+        logger.error(f"[SDXL Assembly] Request building/freeze failed: {e}")
+        raise RuntimeError(f"Request building/freeze failed: {e}") from e
 
     # 2. Select assembly
-    assembly = SDXLAssemblyDirector.select_assembly(request)
+    try:
+        assembly = SDXLAssemblyDirector.select_assembly(request)
+    except resources.InterruptProcessingException:
+        raise
+    except Exception as e:
+        logger.error(f"[SDXL Assembly] Assembly selection failed: {e}")
+        raise RuntimeError(f"Assembly selection failed: {e}") from e
+
+    if preview_runtime_holder is not None:
+        preview_runtime_holder["assembly"] = assembly
 
     # 3. Create progress callback
     progress_cb = SDXLAssemblyProgressCallback(request, progressbar_callback)
@@ -73,5 +90,7 @@ def run_sdxl_assembly_task(
         result: SDXLAssemblyResult = assembly.execute(request, callback=progress_cb)
     finally:
         assembly.close()
+        if preview_runtime_holder is not None:
+            preview_runtime_holder["assembly"] = None
 
     return result.output_image

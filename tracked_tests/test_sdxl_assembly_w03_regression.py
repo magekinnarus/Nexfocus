@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from backend.sdxl_assembly.contracts import (
     ResolvedFileIdentity,
     SDXLAssemblyRequest,
+    SDXLLoraSpec,
 )
 from backend.sdxl_assembly.director import SDXLAssemblyDirector
 from backend.sdxl_assembly.runtime_state import (
@@ -234,10 +235,58 @@ def test_streaming_unet_host_pinning_is_explicit_request_metadata(monkeypatch):
     assert compile_calls == [False, True]
 
 
+def test_lora_worker_caches_zero_patch_clip_results(monkeypatch):
+    import backend.sdxl_assembly.streaming_lora as streaming_lora
+
+    clear_all_caches()
+    streaming_lora._PARSED_LORA_CACHE.clear()
+
+    load_calls = []
+
+    class DummyClipModel:
+        pass
+
+    clip = SimpleNamespace(
+        patcher=SimpleNamespace(
+            model=DummyClipModel(),
+            add_patches=lambda _patch_dict, _weight: None,
+        )
+    )
+
+    monkeypatch.setattr(streaming_lora, "SafeOpenHeaderOnly", lambda _path: object())
+    monkeypatch.setattr(streaming_lora.backend_lora, "model_lora_keys_clip", lambda _model: {})
+    monkeypatch.setattr(
+        streaming_lora.backend_lora,
+        "load_lora",
+        lambda _header, _key_map, log_missing=False: load_calls.append(log_missing) or {},
+    )
+
+    worker = streaming_lora.StreamingLoraPatchWorker(
+        _request(
+            lora_stack_hash="stack_with_zero_clip_patch",
+            lora_specs=(
+                SDXLLoraSpec(
+                    file_identity=_identity("twbabe.safetensors", "lora_sha"),
+                    unet_weight=1.0,
+                    clip_weight=1.0,
+                    enabled=True,
+                ),
+            ),
+        )
+    )
+
+    assert worker.apply_clip_patches(clip) == 0
+    assert worker.apply_clip_patches(clip) == 0
+    assert len(load_calls) == 1
+
+    streaming_lora._PARSED_LORA_CACHE.clear()
+    clear_all_caches()
+
+
 def test_process_task_keeps_unified_runtime_until_w04(monkeypatch):
     from backend.sdxl_assembly import gateway
 
-    unified_calls = []
+    assembly_calls = []
 
     task_state = SimpleNamespace(
         last_stop=False,
@@ -253,16 +302,9 @@ def test_process_task_keeps_unified_runtime_until_w04(monkeypatch):
     monkeypatch.setattr(
         gateway,
         'run_sdxl_assembly_task',
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError('process_task must not enter assembly before W04')
-        ),
+        lambda *args, **kwargs: assembly_calls.append((args, kwargs)) or np.zeros((64, 64, 3), dtype=np.uint8),
     )
     monkeypatch.setattr(inference, '_ensure_supported_unified_runtime_request', lambda _state: None)
-    monkeypatch.setattr(
-        inference,
-        '_run_unified_sdxl_task',
-        lambda *args, **kwargs: unified_calls.append((args, kwargs)) or [np.zeros((64, 64, 3), dtype=np.uint8)],
-    )
     monkeypatch.setattr(inference, 'save_and_log', lambda *args, **kwargs: ['saved-path'])
 
     imgs, img_paths, current_progress = inference.process_task(
@@ -280,7 +322,7 @@ def test_process_task_keeps_unified_runtime_until_w04(monkeypatch):
         image_input_result={},
     )
 
-    assert len(unified_calls) == 1
+    assert len(assembly_calls) == 1
     assert len(imgs) == 1
     assert img_paths == ['saved-path']
     assert current_progress == 100

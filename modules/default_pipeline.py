@@ -264,6 +264,12 @@ def refresh_base_model(name, vae_name=None, clip_name=None, sdxl_policy=None):
                 if unet is not None:
                     if hasattr(unet, 'unpatch_model'):
                         unet.unpatch_model(unpatch_weights=True)
+
+            try:
+                from backend.sdxl_assembly import clear_all_caches as clear_sdxl_assembly_caches
+                clear_sdxl_assembly_caches(reason="checkpoint_switch")
+            except Exception:
+                pass
             
             model_base = core.StableDiffusionModel()
             del previous_model
@@ -509,6 +515,12 @@ def release_sdxl_runtime_state(
             teardown = (next_process_key is None or next_process_key.family != process_transition.PROCESS_FAMILY_SDXL)
             sdxl_unified_runtime.clear_unified_sdxl_runtime_component_cache(teardown=teardown)
             conditioning.clear_prompt_conditioning_cache()
+        except Exception:
+            pass
+
+        try:
+            from backend.sdxl_assembly import clear_all_caches as clear_sdxl_assembly_caches
+            clear_sdxl_assembly_caches(reason=reason or "sdxl_process_transition")
         except Exception:
             pass
 

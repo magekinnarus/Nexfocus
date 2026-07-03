@@ -740,13 +740,15 @@ class FluxFillInpaintStage(PipelineStage):
             seed = base_seed if getattr(task_state, 'disable_seed_increment', False) else base_seed + image_index
 
             preview_context = None
+            preview_transform = None
 
-            def preview_transform(latent):
-                nonlocal preview_context
-                if preview_context is None:
-                    from ldm_patched.modules import latent_formats
-                    preview_context = FluxFillPreviewContext(latent_formats.Flux(), latent.device)
-                return preview_context.decode(latent)
+            if not getattr(task_state, 'disable_preview', False):
+                def preview_transform(latent):
+                    nonlocal preview_context
+                    if preview_context is None:
+                        from ldm_patched.modules import latent_formats
+                        preview_context = FluxFillPreviewContext(latent_formats.Flux(), latent.device)
+                    return preview_context.decode(latent)
 
             callback = get_sampling_callback(
                 task_state,

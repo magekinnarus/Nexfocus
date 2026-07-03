@@ -31,6 +31,20 @@ logger = logging.getLogger(__name__)
 # File identity cache to avoid expensive SHA-256 recalculation on model files
 _FILE_IDENTITY_CACHE: Dict[Tuple[str, int, int], ResolvedFileIdentity] = {}
 
+
+def _first_non_none(*values: Any, default: Any = None) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return default
+
+
+def _task_attr_or_none(task_state: Any, name: str) -> Any:
+    state_dict = getattr(task_state, "__dict__", None)
+    if isinstance(state_dict, dict):
+        return state_dict.get(name)
+    return None
+
 def get_file_identity(path_str: str) -> ResolvedFileIdentity:
     """Calculates or retrieves cached file identity metadata."""
     if not path_str or not os.path.exists(path_str):
@@ -163,8 +177,18 @@ def build_assembly_request(
         vae_identity = get_file_identity(vae_path)
 
     # Resolve LoRA Specs
-    resolved_additional = base_model_additional_loras or []
-    all_lora_tuples = loras + resolved_additional
+    resolved_input_loras = list(
+        _task_attr_or_none(task_state, 'loras_processed')
+        or loras
+        or _task_attr_or_none(task_state, 'loras')
+        or []
+    )
+    resolved_additional = list(
+        base_model_additional_loras
+        or _task_attr_or_none(task_state, 'base_model_additional_loras')
+        or []
+    )
+    all_lora_tuples = resolved_input_loras + resolved_additional
     lora_specs_list = []
     
     # We resolve lookup path for each LoRA
@@ -207,28 +231,49 @@ def build_assembly_request(
     clip_posture = TextEncoderPostureKind.CPU_PINNED
     vae_posture = VAEPostureKind.TRANSIENT
     lora_posture = LoraPatchPostureKind.STREAMING
-    prefetch_depth = 1
-    prefetch_chunk_mb = 64
+    prefetch_depth = int(
+        _first_non_none(
+            _task_attr_or_none(task_state, 'prefetch_depth'),
+            getattr(policy, 'prefetch_depth', None),
+            default=1,
+        )
+    )
+    prefetch_chunk_mb = int(
+        _first_non_none(
+            _task_attr_or_none(task_state, 'prefetch_chunk_mb'),
+            getattr(policy, 'prefetch_chunk_mb', None),
+            default=64,
+        )
+    )
     execution_metadata: Dict[str, Any] = {
-        "pin_unet_host": False,
-        "release_warm_unet_after_task": False,
-        "release_text_encoder_after_task": False,
+        "pin_unet_host": bool(
+            _first_non_none(
+                _task_attr_or_none(task_state, 'pin_unet_host'),
+                getattr(policy, 'pin_unet_host', None),
+                default=False,
+            )
+        ),
+        "release_warm_unet_after_task": bool(
+            _first_non_none(
+                _task_attr_or_none(task_state, 'release_warm_unet_after_task'),
+                getattr(policy, 'release_warm_unet_after_task', None),
+                default=False,
+            )
+        ),
+        "release_text_encoder_after_task": bool(
+            _first_non_none(
+                _task_attr_or_none(task_state, 'release_text_encoder_after_task'),
+                getattr(policy, 'release_text_encoder_after_task', None),
+                default=False,
+            )
+        ),
     }
 
-    if policy is not None:
-        exec_mode = getattr(policy, 'execution_mode', None)
-        if exec_mode == 'resident':
-            # But resident is unsupported/deferred in W02!
-            # The director will fail if we select it, but we capture the requested values.
-            unet_posture = UNetPostureKind.RESIDENT
-            clip_posture = TextEncoderPostureKind.GPU_PINNED
-            lora_posture = LoraPatchPostureKind.RESIDENT
-        
-        prefetch_depth = int(getattr(policy, 'prefetch_depth', 1))
-        prefetch_chunk_mb = int(getattr(policy, 'prefetch_chunk_mb', 64))
-        execution_metadata["pin_unet_host"] = bool(getattr(policy, 'pin_unet_host', False))
-        execution_metadata["release_warm_unet_after_task"] = bool(getattr(policy, 'release_warm_unet_after_task', False))
-        execution_metadata["release_text_encoder_after_task"] = bool(getattr(policy, 'release_text_encoder_after_task', False))
+    if policy is not None and getattr(policy, 'execution_mode', None) == 'resident':
+        logger.debug(
+            "[SDXL Assembly] Ignoring legacy resident SDXL policy for W04 route cutover; "
+            "the new route currently admits only the accepted streaming assembly."
+        )
 
     # Retrieve quality configs
     sharpness = float(getattr(task_state, 'sharpness', 2.0))

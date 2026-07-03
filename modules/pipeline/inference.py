@@ -25,6 +25,32 @@ def _resolve_preview_update_interval(task_state) -> int:
         return 1
 
 
+def _resolve_text_only_progress_update_interval(total_steps) -> int:
+    try:
+        resolved_total_steps = max(1, int(total_steps or 1))
+    except Exception:
+        resolved_total_steps = 1
+    return max(5, resolved_total_steps // 10 or 1)
+
+
+def _resolve_completed_global_steps(current_task_id, completed_steps, total_steps, all_steps) -> int:
+    try:
+        resolved_total_steps = max(1, int(total_steps or 1))
+    except Exception:
+        resolved_total_steps = 1
+    try:
+        resolved_all_steps = max(1, int(all_steps or resolved_total_steps))
+    except Exception:
+        resolved_all_steps = resolved_total_steps
+    try:
+        resolved_task_id = max(0, int(current_task_id or 0))
+    except Exception:
+        resolved_task_id = 0
+
+    completed_global_steps = resolved_task_id * resolved_total_steps + max(1, int(completed_steps))
+    return max(1, min(resolved_all_steps, completed_global_steps))
+
+
 def get_sampling_callback(
     task_state,
     progressbar_callback,
@@ -59,8 +85,14 @@ def get_sampling_callback(
                     current_task_id + 1,
                     total_count,
                 )
-        task_state.callback_steps += (100 - preparation_steps) / float(all_steps)
-
+        completed_steps = max(step + 1, 1)
+        completed_global_steps = _resolve_completed_global_steps(
+            current_task_id,
+            completed_steps,
+            total_steps,
+            all_steps,
+        )
+        task_state.callback_steps = completed_global_steps * (100 - preparation_steps) / float(all_steps)
         progress_val = int(preparation_steps + task_state.callback_steps)
         task_state.current_progress = progress_val
         status_text = f'Sampling step {step + 1}/{total_steps}, image {current_task_id + 1}/{total_count} ...'
@@ -68,7 +100,6 @@ def get_sampling_callback(
         now = time.perf_counter()
         step_wall = now - last_step_at
         elapsed_wall = now - sampling_started_at
-        completed_steps = max(step + 1, 1)
         average_step_wall = elapsed_wall / float(completed_steps)
         remaining_steps = max(int(total_steps) - completed_steps, 0)
         eta_wall = average_step_wall * float(remaining_steps)
@@ -116,7 +147,14 @@ def get_sampling_callback(
             elif not isinstance(preview_image, np.ndarray):
                 preview_image = None
 
-        task_state.yields.append(['preview', (progress_val, status_text, preview_image)])
+        should_emit_progress_event = (
+            preview_image is not None
+            or completed_steps == 1
+            or completed_steps == int(total_steps)
+            or (completed_steps % _resolve_text_only_progress_update_interval(total_steps)) == 0
+        )
+        if should_emit_progress_event:
+            task_state.yields.append(['preview', (progress_val, status_text, preview_image)])
 
     return callback
 
@@ -178,6 +216,25 @@ def _build_sdxl_preview_transform(task_state, runtime):
             return None
 
     return decode_preview
+
+
+class _DeferredAssemblyPreviewRuntime:
+    def __init__(self, holder):
+        self._holder = holder
+
+    @property
+    def unet(self):
+        assembly = self._holder.get("assembly")
+        if assembly is None:
+            return None
+        return getattr(getattr(assembly, "unet_spine", None), "unet", None)
+
+    @property
+    def vae(self):
+        assembly = self._holder.get("assembly")
+        if assembly is None:
+            return None
+        return getattr(getattr(assembly, "vae_worker", None), "vae", None)
 
 
 def _resolve_unified_checkpoint_path(task_state):
@@ -519,9 +576,11 @@ def process_task(task_state, task_dict, current_task_id, total_count, all_steps,
     if task_state.last_stop is not False:
         resources.interrupt_current_processing()
 
+    from backend.sdxl_assembly.gateway import is_eligible_for_sdxl_assembly, run_sdxl_assembly_task
+    from backend.sdxl_assembly.progress import log_telemetry
+
     controlnet_paths = controlnet_paths or {}
     
-    from backend.sdxl_assembly.gateway import is_eligible_for_sdxl_assembly
     assembly_eligible, assembly_reason = is_eligible_for_sdxl_assembly(
         task_state=task_state,
         loras=loras,
@@ -529,39 +588,107 @@ def process_task(task_state, task_dict, current_task_id, total_count, all_steps,
         contextual_assets=contextual_assets,
         image_input_result=image_input_result,
     )
-    logging.getLogger(__name__).debug(
-        "SDXL assembly W02 seam eligibility=%s reason=%s; keeping unified runtime route until W04 cutover.",
-        assembly_eligible,
-        assembly_reason,
-    )
 
-    _ensure_supported_unified_runtime_request(task_state)
-    imgs = _run_unified_sdxl_task(
-        task_state,
-        task_dict,
-        current_task_id,
-        total_count,
-        all_steps,
-        preparation_steps,
-        denoising_strength,
-        final_scheduler_name,
-        loras=loras,
-        base_model_additional_loras=base_model_additional_loras,
-        controlnet_paths=controlnet_paths,
-        contextual_assets=contextual_assets,
-        image_input_result=image_input_result,
-        progressbar_callback=progressbar_callback,
-    )
+    if assembly_eligible:
+        logging.getLogger(__name__).info(
+            "[SDXL Route] Routing request %d/%d to SDXL Assembly lane.",
+            current_task_id + 1, total_count
+        )
+        log_telemetry("assembly_route_begin", f"task_id={current_task_id}")
+
+        preview_transform = None
+        preview_runtime_holder = None
+        if not getattr(task_state, 'disable_preview', False):
+            preview_runtime_holder = {}
+            preview_transform = _build_sdxl_preview_transform(
+                task_state,
+                _DeferredAssemblyPreviewRuntime(preview_runtime_holder),
+            )
+
+        callback = get_sampling_callback(
+            task_state,
+            progressbar_callback,
+            current_task_id,
+            total_count,
+            preparation_steps,
+            all_steps,
+            preview_transform=preview_transform,
+            disable_pbar=False,
+            preview_stitch_context=getattr(task_state, 'inpaint_context', None),
+        )
+        if getattr(task_state, 'disable_preview', False):
+            setattr(callback, "_sdxl_forward_text_only", True)
+
+        try:
+            if task_state.last_stop is not False:
+                resources.interrupt_current_processing()
+
+            img = run_sdxl_assembly_task(
+                task_state,
+                task_dict,
+                current_task_id,
+                total_count,
+                all_steps,
+                preparation_steps,
+                denoising_strength,
+                final_scheduler_name,
+                loras=loras,
+                controlnet_paths=controlnet_paths,
+                contextual_assets=contextual_assets,
+                base_model_additional_loras=base_model_additional_loras,
+                image_input_result=image_input_result,
+                progressbar_callback=callback,
+                preview_runtime_holder=preview_runtime_holder,
+            )
+            imgs = [img]
+        except resources.InterruptProcessingException:
+            raise
+        except Exception as e:
+            log_telemetry("assembly_route_failure", f"task_id={current_task_id} error={e}")
+            raise
+    else:
+        logging.getLogger(__name__).info(
+            "[SDXL Route] Routing request %d/%d to Legacy Unified SDXL Runtime path. Reason: %s",
+            current_task_id + 1, total_count, assembly_reason or "N/A"
+        )
+        log_telemetry("assembly_route_legacy_bypass", f"reason={assembly_reason}")
+
+        _ensure_supported_unified_runtime_request(task_state)
+        imgs = _run_unified_sdxl_task(
+            task_state,
+            task_dict,
+            current_task_id,
+            total_count,
+            all_steps,
+            preparation_steps,
+            denoising_strength,
+            final_scheduler_name,
+            loras=loras,
+            base_model_additional_loras=base_model_additional_loras,
+            controlnet_paths=controlnet_paths,
+            contextual_assets=contextual_assets,
+            image_input_result=image_input_result,
+            progressbar_callback=progressbar_callback,
+        )
 
     current_progress = int(preparation_steps + (100 - preparation_steps) / float(all_steps) * task_state.steps)
 
     if progressbar_callback:
         progressbar_callback(task_state, current_progress, f'Saving image {current_task_id + 1}/{total_count} to system ...')
 
-    img_paths = save_and_log(
-        task_state, task_state.height, task_state.width, imgs,
-        task_dict, task_state.use_expansion, loras
-    )
+    try:
+        img_paths = save_and_log(
+            task_state, task_state.height, task_state.width, imgs,
+            task_dict, task_state.use_expansion, loras
+        )
+        if assembly_eligible:
+            log_telemetry("assembly_route_complete", f"task_id={current_task_id}")
+    except resources.InterruptProcessingException:
+        raise
+    except Exception as e:
+        if assembly_eligible:
+            log_telemetry("assembly_route_failure", f"task_id={current_task_id} phase=save_log error={e}")
+        raise
 
     if yield_result_callback:
         show_results = not task_state.disable_intermediate_results

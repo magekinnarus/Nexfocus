@@ -514,6 +514,11 @@ def release_process_boundary(current_key: ProcessKey | None, requested_key: Proc
                 conditioning.clear_prompt_conditioning_cache()
             except Exception:
                 pass
+            try:
+                from backend.sdxl_assembly import clear_all_caches as clear_sdxl_assembly_caches
+                clear_sdxl_assembly_caches(reason='route_transition')
+            except Exception:
+                pass
 
         resources.prepare_for_checkpoint_switch(
             current_model=current_model_name,

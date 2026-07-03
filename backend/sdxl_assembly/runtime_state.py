@@ -343,11 +343,14 @@ def debug_component_cache_report() -> Dict[str, Any]:
     return report
 
 
-def clear_all_caches() -> None:
+def clear_all_caches(*, reason: str | None = None) -> None:
     """Teardown and unload all cached workers, spines, conditioning, and base components."""
-    release_active_sdxl_streaming_spine(reason="global_cleanup")
-    
-    release_text_encoder_component_cache(reason="global_cleanup")
+    clear_reason = reason or "global_cleanup"
+    logger.debug("[SDXL Telemetry] Clearing all SDXL assembly caches reason=%s", clear_reason)
+    log_telemetry("assembly_cache_clear", f"reason={clear_reason}")
+    release_active_sdxl_streaming_spine(reason=clear_reason)
+
+    release_text_encoder_component_cache(reason=clear_reason)
         
     with _PROMPT_CONDITIONING_CACHE_LOCK:
         _PROMPT_CONDITIONING_CACHE.clear()

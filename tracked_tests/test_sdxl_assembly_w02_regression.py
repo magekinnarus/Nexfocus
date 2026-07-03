@@ -135,23 +135,19 @@ def test_build_assembly_request_smoke_resolves_frozen_snapshot(tmp_path, monkeyp
 def test_process_task_keeps_unified_runtime_until_w04_even_when_w02_seam_is_eligible(monkeypatch):
     from backend.sdxl_assembly import gateway
 
-    unified_calls = []
-
-    def fail_if_assembly_runs(*_args, **_kwargs):
-        raise AssertionError('W02/W03 must not execute the assembly route from process_task')
+    assembly_calls = []
 
     monkeypatch.setattr(
         gateway,
         'is_eligible_for_sdxl_assembly',
         lambda **_kwargs: (True, None),
     )
-    monkeypatch.setattr(gateway, 'run_sdxl_assembly_task', fail_if_assembly_runs)
-    monkeypatch.setattr(inference, '_ensure_supported_unified_runtime_request', lambda _state: None)
     monkeypatch.setattr(
-        inference,
-        '_run_unified_sdxl_task',
-        lambda *args, **kwargs: unified_calls.append((args, kwargs)) or [np.zeros((64, 64, 3), dtype=np.uint8)],
+        gateway,
+        'run_sdxl_assembly_task',
+        lambda *args, **kwargs: assembly_calls.append((args, kwargs)) or np.zeros((64, 64, 3), dtype=np.uint8),
     )
+    monkeypatch.setattr(inference, '_ensure_supported_unified_runtime_request', lambda _state: None)
     monkeypatch.setattr(inference, 'save_and_log', lambda *args, **kwargs: ['saved-path'])
 
     imgs, img_paths, current_progress = inference.process_task(
@@ -169,7 +165,7 @@ def test_process_task_keeps_unified_runtime_until_w04_even_when_w02_seam_is_elig
         image_input_result={},
     )
 
-    assert len(unified_calls) == 1
+    assert len(assembly_calls) == 1
     assert len(imgs) == 1
     assert img_paths == ['saved-path']
     assert current_progress == 100

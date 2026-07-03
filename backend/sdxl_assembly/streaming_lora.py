@@ -77,11 +77,12 @@ class StreamingLoraPatchWorker:
                 log_telemetry("lora_cache_miss", f"path={spec.file_identity.path.name}")
                 header = SafeOpenHeaderOnly(lora_path)
                 patch_dict = backend_lora.load_lora(header, key_map, log_missing=False)
-                if patch_dict:
-                    _PARSED_LORA_CACHE[cache_key] = (current_hash, patch_dict)
-                    # Evict if over limit
-                    while len(_PARSED_LORA_CACHE) > _PARSED_LORA_CACHE_LIMIT:
-                        _PARSED_LORA_CACHE.pop(next(iter(_PARSED_LORA_CACHE)))
+                if patch_dict is None:
+                    patch_dict = {}
+                _PARSED_LORA_CACHE[cache_key] = (current_hash, patch_dict)
+                # Evict if over limit
+                while len(_PARSED_LORA_CACHE) > _PARSED_LORA_CACHE_LIMIT:
+                    _PARSED_LORA_CACHE.pop(next(iter(_PARSED_LORA_CACHE)))
                         
             if patch_dict:
                 unet.add_patches(patch_dict, spec.unet_weight)
@@ -125,10 +126,11 @@ class StreamingLoraPatchWorker:
                 log_telemetry("lora_cache_miss", f"path={spec.file_identity.path.name} target=clip")
                 header = SafeOpenHeaderOnly(lora_path)
                 patch_dict = backend_lora.load_lora(header, key_map, log_missing=False)
-                if patch_dict:
-                    _PARSED_LORA_CACHE[cache_key] = (current_hash, patch_dict)
-                    while len(_PARSED_LORA_CACHE) > _PARSED_LORA_CACHE_LIMIT:
-                        _PARSED_LORA_CACHE.pop(next(iter(_PARSED_LORA_CACHE)))
+                if patch_dict is None:
+                    patch_dict = {}
+                _PARSED_LORA_CACHE[cache_key] = (current_hash, patch_dict)
+                while len(_PARSED_LORA_CACHE) > _PARSED_LORA_CACHE_LIMIT:
+                    _PARSED_LORA_CACHE.pop(next(iter(_PARSED_LORA_CACHE)))
                         
             if patch_dict:
                 patcher.add_patches(patch_dict, spec.clip_weight)

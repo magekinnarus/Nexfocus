@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 import torch
 
+from backend import resources
 from backend.sdxl_assembly.contracts import (
     SDXLAssemblyRequest,
     SDXLAssemblyResult,
@@ -38,47 +39,59 @@ class SDXLAssembly:
         timings: Dict[str, float] = {}
         device = torch.device(request.device)
 
-        # 2. Materialize LoRA patches first
-        lora_start = time.perf_counter()
-        patches = self.lora_worker.materialize_patches()
-        timings["lora_patch"] = time.perf_counter() - lora_start
-
-        # 3. Resolve text conditioning (avoid holding extra latent memory)
-        text_start = time.perf_counter()
-        conditioning = self.text_worker.get_conditioning()
-        timings["text_encode"] = time.perf_counter() - text_start
-        if bool(request.metadata.get("release_text_encoder_after_task", False)):
-            text_release_start = time.perf_counter()
-            if hasattr(self.text_worker, "teardown_assembly_order"):
-                self.text_worker.teardown_assembly_order()
-            timings["text_release"] = time.perf_counter() - text_release_start
-
-        # 4. Coordinate VAE latent preparation
-        vae_start = time.perf_counter()
-        latent_bundle = self.vae_worker.prepare_latents(device)
-        timings["vae_prep"] = time.perf_counter() - vae_start
-
-        # Extension Point: Pre-diffusion ControlNet preprocessing artifacts & application
-        self._prepare_controlnet_artifacts(request)
-
-        # 5. Coordinate UNet spine denoise
-        unet_start = time.perf_counter()
-        self.unet_spine.start()
-        timings["unet_start"] = time.perf_counter() - unet_start
-
         try:
-            denoise_start = time.perf_counter()
-            samples = self.unet_spine.denoise(
-                latent_bundle.samples, conditioning, callback=callback
-            )
-            timings["unet_denoise"] = time.perf_counter() - denoise_start
-        finally:
-            self.unet_spine.end()
+            # 2. Materialize LoRA patches first
+            lora_start = time.perf_counter()
+            patches = self.lora_worker.materialize_patches()
+            timings["lora_patch"] = time.perf_counter() - lora_start
+
+            # 3. Resolve text conditioning (avoid holding extra latent memory)
+            text_start = time.perf_counter()
+            conditioning = self.text_worker.get_conditioning()
+            timings["text_encode"] = time.perf_counter() - text_start
+            if bool(request.metadata.get("release_text_encoder_after_task", False)):
+                text_release_start = time.perf_counter()
+                if hasattr(self.text_worker, "teardown_assembly_order"):
+                    self.text_worker.teardown_assembly_order()
+                timings["text_release"] = time.perf_counter() - text_release_start
+
+            # 4. Coordinate VAE latent preparation
+            vae_start = time.perf_counter()
+            latent_bundle = self.vae_worker.prepare_latents(device)
+            timings["vae_prep"] = time.perf_counter() - vae_start
+
+            # Extension Point: Pre-diffusion ControlNet preprocessing artifacts & application
+            self._prepare_controlnet_artifacts(request)
+
+            # 5. Coordinate UNet spine denoise
+            unet_start = time.perf_counter()
+            self.unet_spine.start()
+            timings["unet_start"] = time.perf_counter() - unet_start
+
+            try:
+                denoise_start = time.perf_counter()
+                samples = self.unet_spine.denoise(
+                    latent_bundle.samples, conditioning, callback=callback
+                )
+                timings["unet_denoise"] = time.perf_counter() - denoise_start
+            finally:
+                self.unet_spine.end()
+        except resources.InterruptProcessingException:
+            raise
+        except Exception as e:
+            logger.error(f"[SDXL Assembly] Worker execution failed: {e}")
+            raise RuntimeError(f"Worker execution failed: {e}") from e
 
         # 6. Decode results using VAE worker
-        decode_start = time.perf_counter()
-        output_image, load_time, decode_time = self.vae_worker.decode(samples, device)
-        timings["vae_decode"] = time.perf_counter() - decode_start
+        try:
+            decode_start = time.perf_counter()
+            output_image, load_time, decode_time = self.vae_worker.decode(samples, device)
+            timings["vae_decode"] = time.perf_counter() - decode_start
+        except resources.InterruptProcessingException:
+            raise
+        except Exception as e:
+            logger.error(f"[SDXL Assembly] VAE decode failed: {e}")
+            raise RuntimeError(f"VAE decode failed: {e}") from e
 
         runtime_identity = SDXLRuntimeIdentity(
             checkpoint=request.checkpoint,
