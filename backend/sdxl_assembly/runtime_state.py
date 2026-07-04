@@ -356,7 +356,11 @@ def clear_all_caches(*, reason: str | None = None) -> None:
         _PROMPT_CONDITIONING_CACHE.clear()
 
     from backend.sdxl_assembly.vae_encode_worker import VaeEncodeWorker
+    from backend.sdxl_assembly.stream_st_preprocess_worker import StreamingStructuralPreprocessWorker
+    from backend.sdxl_assembly.stream_st_cn_worker import StreamingStructuralControlWorker
     VaeEncodeWorker._ENCODE_CACHE.clear()
+    StreamingStructuralPreprocessWorker.clear_preprocess_cache()
+    StreamingStructuralControlWorker.clear_support_cache()
 
     import gc
     gc.collect()

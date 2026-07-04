@@ -52,6 +52,10 @@ class SDXLAssemblyDirector:
             spatial_context_worker = SDXLAssemblyAssembler.acquire_spatial_context_worker(request)
             vae_encode_worker = SDXLAssemblyAssembler.acquire_vae_encode_worker(request)
 
+        # Acquire structural preprocessor and control workers
+        st_preprocess_worker = SDXLAssemblyAssembler.acquire_st_preprocess_worker(request)
+        st_control_worker = SDXLAssemblyAssembler.acquire_st_control_worker(request)
+
         # Log selection
         logger.debug(
             "[SDXL Telemetry] assembly_select | unet_posture=%s clip_posture=%s vae_posture=%s lora_posture=%s",
@@ -68,5 +72,7 @@ class SDXLAssemblyDirector:
             lora_worker=cpu_lora_worker,
             spatial_context_worker=spatial_context_worker,
             vae_encode_worker=vae_encode_worker,
+            st_preprocess_worker=st_preprocess_worker,
+            st_control_worker=st_control_worker,
         )
 

@@ -27,6 +27,8 @@ class SDXLAssembly:
         lora_worker: Any,
         spatial_context_worker: Optional[Any] = None,
         vae_encode_worker: Optional[Any] = None,
+        st_preprocess_worker: Optional[Any] = None,
+        st_control_worker: Optional[Any] = None,
     ) -> None:
         self.unet_spine = unet_spine
         self.text_encode_worker = text_encode_worker
@@ -34,6 +36,8 @@ class SDXLAssembly:
         self.lora_worker = lora_worker
         self.spatial_context_worker = spatial_context_worker
         self.vae_encode_worker = vae_encode_worker
+        self.st_preprocess_worker = st_preprocess_worker
+        self.st_control_worker = st_control_worker
 
     def execute(self, request: SDXLAssemblyRequest, callback: Optional[Any] = None) -> SDXLAssemblyResult:
         """Executes the pipeline steps in strict chronological order."""
@@ -43,6 +47,8 @@ class SDXLAssembly:
         timings: Dict[str, float] = {}
         result_metadata: Dict[str, Any] = {}
         device = torch.device(request.device)
+        unet_started = False
+        structural_control_session_active = False
 
         try:
             # 2. Materialize LoRA patches first
@@ -81,40 +87,54 @@ class SDXLAssembly:
                 
                 latent_samples_cpu = latent_bundle.samples
 
-            # Extension Point: Pre-diffusion ControlNet preprocessing artifacts & application
-            self._prepare_controlnet_artifacts(request)
+            # 4.5. Streaming structural preprocess
+            prepared_hints = {}
+            if self.st_preprocess_worker is not None and len(request.structural_controls) > 0:
+                preprocess_start = time.perf_counter()
+                prepared_hints = self.st_preprocess_worker.preprocess()
+                timings["structural_preprocess"] = time.perf_counter() - preprocess_start
+
+            # 4.6. Streaming structural control attach
+            if self.st_control_worker is not None and len(request.structural_controls) > 0:
+                structural_control_session_active = True
+                control_start = time.perf_counter()
+                conditioning = self.st_control_worker.attach_conditioning(conditioning, prepared_hints)
+                timings["structural_control_attach"] = time.perf_counter() - control_start
 
             # 5. Coordinate UNet spine denoise
             unet_start = time.perf_counter()
             self.unet_spine.start()
+            unet_started = True
             timings["unet_start"] = time.perf_counter() - unet_start
 
-            try:
-                # Materialize latents on target GPU device immediately before UNet denoise
-                materialize_start = time.perf_counter()
-                latent_samples_gpu = latent_samples_cpu.to(device, dtype=torch.float16)
-                denoise_mask_gpu = (
-                    denoise_mask_cpu.to(device=device, dtype=torch.float32)
-                    if denoise_mask_cpu is not None
-                    else None
-                )
-                timings["latent_materialize"] = time.perf_counter() - materialize_start
-                
-                denoise_start = time.perf_counter()
-                samples = self.unet_spine.denoise(
-                    latent_samples_gpu,
-                    conditioning,
-                    callback=callback,
-                    denoise_mask=denoise_mask_gpu,
-                )
-                timings["unet_denoise"] = time.perf_counter() - denoise_start
-            finally:
-                self.unet_spine.end()
+            # Materialize latents on target GPU device immediately before UNet denoise
+            materialize_start = time.perf_counter()
+            latent_samples_gpu = latent_samples_cpu.to(device, dtype=torch.float16)
+            denoise_mask_gpu = (
+                denoise_mask_cpu.to(device=device, dtype=torch.float32)
+                if denoise_mask_cpu is not None
+                else None
+            )
+            timings["latent_materialize"] = time.perf_counter() - materialize_start
+            
+            denoise_start = time.perf_counter()
+            samples = self.unet_spine.denoise(
+                latent_samples_gpu,
+                conditioning,
+                callback=callback,
+                denoise_mask=denoise_mask_gpu,
+            )
+            timings["unet_denoise"] = time.perf_counter() - denoise_start
         except resources.InterruptProcessingException:
             raise
         except Exception as e:
             logger.error(f"[SDXL Assembly] Worker execution failed: {e}")
             raise RuntimeError(f"Worker execution failed: {e}") from e
+        finally:
+            if unet_started:
+                self.unet_spine.end()
+            if structural_control_session_active and self.st_control_worker is not None:
+                self.st_control_worker.end()
 
         # 6. Decode results using VAE worker
         try:
@@ -199,6 +219,10 @@ class SDXLAssembly:
         """Deterministically tears down the assembly and its components in strict order."""
         log_telemetry("cleanup_begin", "reason=assembly_close")
         
+        # 0. st_control_worker releases cached support weights
+        if self.st_control_worker is not None and hasattr(self.st_control_worker, "release_owned_resources"):
+            self.st_control_worker.release_owned_resources()
+            
         # 1. vae_decode_worker unloads VAE tensors first
         if hasattr(self.vae_decode_worker, "teardown_assembly_order"):
             self.vae_decode_worker.teardown_assembly_order()

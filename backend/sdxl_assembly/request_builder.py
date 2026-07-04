@@ -25,6 +25,7 @@ from backend.sdxl_assembly.contracts import (
     SDXLAssemblyEligibilityError,
     SDXLAssemblyValidationError,
     SpatialContextDescriptor,
+    SDXLStructuralControlDescriptor,
 )
 
 logger = logging.getLogger(__name__)
@@ -291,6 +292,83 @@ def build_assembly_request(
     adm_neg = float(getattr(task_state, 'adm_scaler_negative', 0.8))
     adm_end = float(getattr(task_state, 'adm_scaler_end', 0.3))
 
+    # Resolve structural ControlNets
+    structural_controls_list = []
+    if hasattr(task_state, 'get_cn_tasks_for_channel'):
+        struct_tasks_dict = task_state.get_cn_tasks_for_channel(flags.cn_structural)
+    else:
+        struct_tasks_dict = {}
+
+    structural_preprocessor_paths = {}
+    if image_input_result:
+        structural_preprocessor_paths = image_input_result.get('structural_preprocessor_paths') or {}
+
+    cn_paths = controlnet_paths or {}
+    if image_input_result and not cn_paths:
+        cn_paths = image_input_result.get('controlnet_paths') or {}
+
+    for cn_type in getattr(flags, 'cn_structural_types', []):
+        tasks = struct_tasks_dict.get(cn_type, [])
+        for task in tasks:
+            raw_img, cn_stop, cn_weight = task
+            ckpt_path_str = cn_paths.get(cn_type)
+            if not ckpt_path_str:
+                continue
+
+            checkpoint_identity = get_file_identity(ckpt_path_str)
+            checkpoint_type = determine_controlnet_type(ckpt_path_str)
+
+            # Resolve image descriptor
+            from backend.sdxl_assembly.contracts import make_spatial_image_descriptor
+            image_desc = make_spatial_image_descriptor(raw_img)
+
+            # Resolve preprocessor
+            preprocessor_id = cn_type
+            if getattr(task_state, 'skipping_cn_preprocessor', False):
+                preprocessor_id = "None"
+
+            preprocessor_path = None
+            preprocessor_path_str = structural_preprocessor_paths.get(cn_type)
+            if preprocessor_path_str:
+                preprocessor_path = Path(preprocessor_path_str)
+
+            # Params
+            preprocessor_params = {}
+            if cn_type == flags.cn_canny:
+                preprocessor_params = {
+                    "low_threshold": int(getattr(task_state, 'canny_low_threshold', 64)),
+                    "high_threshold": int(getattr(task_state, 'canny_high_threshold', 128))
+                }
+
+            # Target resolution
+            target_width = int(getattr(task_state, 'width', 1024))
+            target_height = int(getattr(task_state, 'height', 1024))
+
+            unsupported_mode_errors = []
+            if not checkpoint_identity.path.exists():
+                unsupported_mode_errors.append(f"Checkpoint path does not exist: {checkpoint_identity.path}")
+
+            slot_index = len(structural_controls_list) + 1
+            desc = SDXLStructuralControlDescriptor(
+                slot_index=slot_index,
+                control_type=cn_type,
+                image_pixels=image_desc.pixels,
+                image_fingerprint=image_desc.fingerprint,
+                preprocessor_id=preprocessor_id,
+                preprocessor_path=preprocessor_path,
+                preprocessor_params=preprocessor_params,
+                target_width=target_width,
+                target_height=target_height,
+                checkpoint_path=Path(ckpt_path_str),
+                checkpoint_sha256=checkpoint_identity.sha256,
+                checkpoint_type=checkpoint_type,
+                weight=float(cn_weight),
+                start_percent=0.0,
+                end_percent=float(cn_stop),
+                unsupported_mode_errors=tuple(unsupported_mode_errors)
+            )
+            structural_controls_list.append(desc)
+
     request = SDXLAssemblyRequest(
         request_id=f"req_{current_task_id}_{int(time.time())}",
         route_id="txt2img_assembly",
@@ -331,11 +409,35 @@ def build_assembly_request(
         adm_scaler_end=adm_end,
         metadata=execution_metadata,
         spatial_context=build_spatial_context_descriptor(task_state, image_input_result),
+        structural_controls=tuple(structural_controls_list),
     )
     
     # Static validate
     request.validate()
     return request
+
+
+_CONTROLNET_TYPE_CACHE: Dict[str, str] = {}
+
+def determine_controlnet_type(ckpt_path: str) -> str:
+    path_str = str(ckpt_path)
+    if path_str in _CONTROLNET_TYPE_CACHE:
+        return _CONTROLNET_TYPE_CACHE[path_str]
+
+    from backend import utils as backend_utils
+    try:
+        controlnet_data = backend_utils.load_torch_file(path_str)
+        if any("lllite" in key.lower() for key in controlnet_data.keys()):
+            t = "lllite"
+        elif "lora_controlnet" in controlnet_data:
+            t = "control_lora"
+        else:
+            t = "controlnet"
+    except Exception as e:
+        t = f"error: {str(e)}"
+
+    _CONTROLNET_TYPE_CACHE[path_str] = t
+    return t
 
 
 def build_spatial_context_descriptor(
@@ -462,4 +564,3 @@ def build_spatial_context_descriptor(
         outpaint_expansion_size=outpaint_expansion_size,
         outpaint_pixelate=outpaint_pixelate,
     )
-

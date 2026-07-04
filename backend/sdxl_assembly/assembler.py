@@ -8,6 +8,8 @@ from backend.sdxl_assembly.vae_decode_worker import TransientVaeDecodeWorker
 from backend.sdxl_assembly.cpu_lora_worker import CpuLoraWorker
 from backend.sdxl_assembly.vae_encode_worker import VaeEncodeWorker
 from backend.sdxl_assembly.spatial_context_worker import SpatialContextWorker
+from backend.sdxl_assembly.stream_st_preprocess_worker import StreamingStructuralPreprocessWorker
+from backend.sdxl_assembly.stream_st_cn_worker import StreamingStructuralControlWorker
 
 class SDXLAssemblyAssembler:
     """Factory class to acquire posture-specific workers and spines."""
@@ -42,4 +44,13 @@ class SDXLAssemblyAssembler:
     @staticmethod
     def acquire_spatial_context_worker(request: SDXLAssemblyRequest) -> SpatialContextWorker:
         return SpatialContextWorker(request)
+
+    @staticmethod
+    def acquire_st_preprocess_worker(request: SDXLAssemblyRequest) -> StreamingStructuralPreprocessWorker:
+        return StreamingStructuralPreprocessWorker(request)
+
+    @staticmethod
+    def acquire_st_control_worker(request: SDXLAssemblyRequest) -> StreamingStructuralControlWorker:
+        return StreamingStructuralControlWorker(request)
+
 

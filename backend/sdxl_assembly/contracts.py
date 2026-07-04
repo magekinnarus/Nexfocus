@@ -216,6 +216,42 @@ def make_spatial_mask_descriptor(mask: Any, image_descriptor: SpatialImageDescri
 
 
 @dataclass(frozen=True)
+class SDXLStructuralControlDescriptor:
+    slot_index: int
+    control_type: str
+    image_pixels: torch.Tensor  # shape [B, H, W, C] or [H, W, C]
+    image_fingerprint: str
+    
+    preprocessor_id: Optional[str]
+    preprocessor_path: Optional[Path]
+    preprocessor_params: Dict[str, Any]
+    
+    target_width: int
+    target_height: int
+    
+    checkpoint_path: Path
+    checkpoint_sha256: str
+    checkpoint_type: str  # "controlnet" or "control_lora" or "lllite"
+    
+    weight: float = 1.0
+    start_percent: float = 0.0
+    end_percent: float = 1.0
+    
+    unsupported_mode_errors: Tuple[str, ...] = field(default_factory=tuple)
+    extra_params: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class StructuralHintArtifact:
+    slot_index: int
+    control_type: str
+    hint_tensor: torch.Tensor  # CPU tensor [1, C, H, W], float32 [0.0, 1.0]
+    hint_fingerprint: str
+    cache_hit: bool = False
+    preprocess_wall: float = 0.0
+
+
+@dataclass(frozen=True)
 class SDXLAssemblyRequest:
     # Queue and route identity: one request per concrete prompt/image task
     request_id: str
@@ -281,6 +317,9 @@ class SDXLAssemblyRequest:
     disable_initial_latent: bool = False
     spatial_context: Optional[SpatialContextDescriptor] = None
     
+    # Structural Control descriptors added in W07
+    structural_controls: Tuple[SDXLStructuralControlDescriptor, ...] = field(default_factory=tuple)
+    
     def validate(self) -> None:
         """Enforces minimum parameter checks on an already-resolved snapshot."""
         if not self.checkpoint.path.exists():
@@ -295,6 +334,17 @@ class SDXLAssemblyRequest:
             raise SDXLAssemblyValidationError(f"Prefetch chunk MB must be >= 1, got {self.prefetch_chunk_mb}")
         if self.width <= 0 or self.height <= 0:
             raise SDXLAssemblyValidationError(f"Width and Height must be positive, got {self.width}x{self.height}")
+
+        import modules.flags as flags
+        for desc in self.structural_controls:
+            if desc.slot_index <= 0:
+                raise SDXLAssemblyValidationError(f"Structural control slot index must be positive, got {desc.slot_index}")
+            if desc.control_type not in getattr(flags, "cn_structural_types", []):
+                raise SDXLAssemblyValidationError(f"Unsupported structural control type: {desc.control_type}")
+            if not desc.checkpoint_path.exists():
+                raise SDXLAssemblyValidationError(f"Structural control checkpoint does not exist: {desc.checkpoint_path}")
+            if len(desc.unsupported_mode_errors) > 0:
+                raise SDXLAssemblyValidationError(f"Unsupported structural mode: {desc.unsupported_mode_errors}")
 
 @dataclass(frozen=True)
 class SDXLAssemblyResult:
