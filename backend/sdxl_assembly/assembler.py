@@ -3,9 +3,11 @@ from __future__ import annotations
 from backend.sdxl_assembly.contracts import SDXLAssemblyRequest
 from backend.sdxl_assembly.runtime_state import acquire_active_sdxl_streaming_spine
 from backend.sdxl_assembly.streaming_unet import StreamingUnetSpine
-from backend.sdxl_assembly.cpu_pinned_text import CpuPinnedTextEncoderWorker
-from backend.sdxl_assembly.transient_vae import TransientVaeWorker
-from backend.sdxl_assembly.streaming_lora import StreamingLoraPatchWorker
+from backend.sdxl_assembly.cpu_text_encode_worker import CpuTextEncodeWorker
+from backend.sdxl_assembly.vae_decode_worker import TransientVaeDecodeWorker
+from backend.sdxl_assembly.cpu_lora_worker import CpuLoraWorker
+from backend.sdxl_assembly.vae_encode_worker import VaeEncodeWorker
+from backend.sdxl_assembly.spatial_context_worker import SpatialContextWorker
 
 class SDXLAssemblyAssembler:
     """Factory class to acquire posture-specific workers and spines."""
@@ -13,22 +15,31 @@ class SDXLAssemblyAssembler:
     @staticmethod
     def acquire_unet_spine(
         request: SDXLAssemblyRequest,
-        lora_worker: StreamingLoraPatchWorker | None = None,
+        lora_worker: CpuLoraWorker | None = None,
     ) -> StreamingUnetSpine:
         spine, _reused = acquire_active_sdxl_streaming_spine(request, lora_worker=lora_worker)
         return spine
 
     @staticmethod
-    def acquire_text_worker(
+    def acquire_text_encode_worker(
         request: SDXLAssemblyRequest,
-        lora_worker: StreamingLoraPatchWorker | None = None,
-    ) -> CpuPinnedTextEncoderWorker:
-        return CpuPinnedTextEncoderWorker(request, lora_worker=lora_worker)
+        lora_worker: CpuLoraWorker | None = None,
+    ) -> CpuTextEncodeWorker:
+        return CpuTextEncodeWorker(request, lora_worker=lora_worker)
 
     @staticmethod
-    def acquire_vae_worker(request: SDXLAssemblyRequest) -> TransientVaeWorker:
-        return TransientVaeWorker(request)
+    def acquire_vae_decode_worker(request: SDXLAssemblyRequest) -> TransientVaeDecodeWorker:
+        return TransientVaeDecodeWorker(request)
 
     @staticmethod
-    def acquire_lora_worker(request: SDXLAssemblyRequest) -> StreamingLoraPatchWorker:
-        return StreamingLoraPatchWorker(request)
+    def acquire_cpu_lora_worker(request: SDXLAssemblyRequest) -> CpuLoraWorker:
+        return CpuLoraWorker(request)
+
+    @staticmethod
+    def acquire_vae_encode_worker(request: SDXLAssemblyRequest) -> VaeEncodeWorker:
+        return VaeEncodeWorker(request)
+
+    @staticmethod
+    def acquire_spatial_context_worker(request: SDXLAssemblyRequest) -> SpatialContextWorker:
+        return SpatialContextWorker(request)
+

@@ -22,14 +22,18 @@ class SDXLAssembly:
     def __init__(
         self,
         unet_spine: Any,
-        text_worker: Any,
-        vae_worker: Any,
+        text_encode_worker: Any,
+        vae_decode_worker: Any,
         lora_worker: Any,
+        spatial_context_worker: Optional[Any] = None,
+        vae_encode_worker: Optional[Any] = None,
     ) -> None:
         self.unet_spine = unet_spine
-        self.text_worker = text_worker
-        self.vae_worker = vae_worker
+        self.text_encode_worker = text_encode_worker
+        self.vae_decode_worker = vae_decode_worker
         self.lora_worker = lora_worker
+        self.spatial_context_worker = spatial_context_worker
+        self.vae_encode_worker = vae_encode_worker
 
     def execute(self, request: SDXLAssemblyRequest, callback: Optional[Any] = None) -> SDXLAssemblyResult:
         """Executes the pipeline steps in strict chronological order."""
@@ -37,6 +41,7 @@ class SDXLAssembly:
         request.validate()
         
         timings: Dict[str, float] = {}
+        result_metadata: Dict[str, Any] = {}
         device = torch.device(request.device)
 
         try:
@@ -47,18 +52,34 @@ class SDXLAssembly:
 
             # 3. Resolve text conditioning (avoid holding extra latent memory)
             text_start = time.perf_counter()
-            conditioning = self.text_worker.get_conditioning()
+            conditioning = self.text_encode_worker.get_conditioning()
             timings["text_encode"] = time.perf_counter() - text_start
             if bool(request.metadata.get("release_text_encoder_after_task", False)):
                 text_release_start = time.perf_counter()
-                if hasattr(self.text_worker, "teardown_assembly_order"):
-                    self.text_worker.teardown_assembly_order()
+                if hasattr(self.text_encode_worker, "teardown_assembly_order"):
+                    self.text_encode_worker.teardown_assembly_order()
                 timings["text_release"] = time.perf_counter() - text_release_start
 
-            # 4. Coordinate VAE latent preparation
-            vae_start = time.perf_counter()
-            latent_bundle = self.vae_worker.prepare_latents(device)
-            timings["vae_prep"] = time.perf_counter() - vae_start
+            # 4. Coordinate spatial preparation and VAE encode
+            spatial_artifacts = None
+            denoise_mask_cpu = None
+            if request.spatial_context is not None:
+                spatial_prep_start = time.perf_counter()
+                prepared_context = self.spatial_context_worker.prepare()
+                timings["spatial_prep"] = time.perf_counter() - spatial_prep_start
+                
+                vae_encode_start = time.perf_counter()
+                spatial_artifacts = self.vae_encode_worker.encode(prepared_context)
+                timings["vae_encode"] = time.perf_counter() - vae_encode_start
+                
+                latent_samples_cpu, denoise_mask_cpu = self._resolve_spatial_inputs(request, spatial_artifacts)
+                result_metadata["spatial_contract"] = self._build_spatial_metadata(request, spatial_artifacts)
+            else:
+                vae_start = time.perf_counter()
+                latent_bundle = self.vae_decode_worker.prepare_latents(torch.device("cpu"))
+                timings["vae_prep"] = time.perf_counter() - vae_start
+                
+                latent_samples_cpu = latent_bundle.samples
 
             # Extension Point: Pre-diffusion ControlNet preprocessing artifacts & application
             self._prepare_controlnet_artifacts(request)
@@ -69,9 +90,22 @@ class SDXLAssembly:
             timings["unet_start"] = time.perf_counter() - unet_start
 
             try:
+                # Materialize latents on target GPU device immediately before UNet denoise
+                materialize_start = time.perf_counter()
+                latent_samples_gpu = latent_samples_cpu.to(device, dtype=torch.float16)
+                denoise_mask_gpu = (
+                    denoise_mask_cpu.to(device=device, dtype=torch.float32)
+                    if denoise_mask_cpu is not None
+                    else None
+                )
+                timings["latent_materialize"] = time.perf_counter() - materialize_start
+                
                 denoise_start = time.perf_counter()
                 samples = self.unet_spine.denoise(
-                    latent_bundle.samples, conditioning, callback=callback
+                    latent_samples_gpu,
+                    conditioning,
+                    callback=callback,
+                    denoise_mask=denoise_mask_gpu,
                 )
                 timings["unet_denoise"] = time.perf_counter() - denoise_start
             finally:
@@ -85,7 +119,7 @@ class SDXLAssembly:
         # 6. Decode results using VAE worker
         try:
             decode_start = time.perf_counter()
-            output_image, load_time, decode_time = self.vae_worker.decode(samples, device)
+            output_image, load_time, decode_time = self.vae_decode_worker.decode(samples, device)
             timings["vae_decode"] = time.perf_counter() - decode_start
         except resources.InterruptProcessingException:
             raise
@@ -111,8 +145,50 @@ class SDXLAssembly:
             timings=timings,
             metadata={
                 "runtime_identity": runtime_identity.as_dict(),
+                **result_metadata,
             },
         )
+
+    def _resolve_spatial_inputs(
+        self,
+        request: SDXLAssemblyRequest,
+        spatial_artifacts: Any,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        spatial_mode = str(request.spatial_context.mode if request.spatial_context is not None else "image").strip().lower()
+        if spatial_mode in {"inpaint", "outpaint"}:
+            latent = (
+                spatial_artifacts.bb_latent
+                if spatial_artifacts.bb_latent is not None
+                else spatial_artifacts.masked_latent
+            )
+            if latent is None:
+                latent = spatial_artifacts.route_latent
+        else:
+            latent = spatial_artifacts.route_latent
+            if latent is None:
+                latent = spatial_artifacts.bb_latent
+
+        if latent is None:
+            raise RuntimeError(f"Spatial artifacts did not produce a usable latent for mode={spatial_mode}.")
+        return latent, spatial_artifacts.denoise_mask
+
+    def _build_spatial_metadata(self, request: SDXLAssemblyRequest, spatial_artifacts: Any) -> Dict[str, Any]:
+        spatial_mode = str(request.spatial_context.mode if request.spatial_context is not None else "image").strip().lower()
+        return {
+            "mode": spatial_mode,
+            "cache_hit": bool(spatial_artifacts.cache_hit),
+            "source_fingerprint": spatial_artifacts.source_fingerprint,
+            "image_fingerprint": spatial_artifacts.image_fingerprint,
+            "mask_fingerprint": spatial_artifacts.mask_fingerprint,
+            "route_latent_fingerprint": spatial_artifacts.route_latent_fingerprint,
+            "masked_latent_fingerprint": spatial_artifacts.masked_latent_fingerprint,
+            "bb_latent_fingerprint": spatial_artifacts.bb_latent_fingerprint,
+            "denoise_mask_fingerprint": spatial_artifacts.denoise_mask_fingerprint,
+            "blend_mask_fingerprint": spatial_artifacts.blend_mask_fingerprint,
+            "bbox": tuple(int(v) for v in spatial_artifacts.bbox),
+            "bbox_area_ratio": float(spatial_artifacts.bbox_area_ratio),
+            "mask_coverage": float(spatial_artifacts.mask_coverage),
+        }
 
     # Extension Points for ControlNet
     def _prepare_controlnet_artifacts(self, request: SDXLAssemblyRequest) -> None:
@@ -123,17 +199,25 @@ class SDXLAssembly:
         """Deterministically tears down the assembly and its components in strict order."""
         log_telemetry("cleanup_begin", "reason=assembly_close")
         
-        # 1. TransientVaeWorker unloads VAE tensors first
-        if hasattr(self.vae_worker, "teardown_assembly_order"):
-            self.vae_worker.teardown_assembly_order()
+        # 1. vae_decode_worker unloads VAE tensors first
+        if hasattr(self.vae_decode_worker, "teardown_assembly_order"):
+            self.vae_decode_worker.teardown_assembly_order()
             
-        # 2. LoraPatchWorker rolls back or detaches patch weights
+        # 1.2. vae_encode_worker unloads VAE tensors
+        if self.vae_encode_worker is not None and hasattr(self.vae_encode_worker, "teardown_assembly_order"):
+            self.vae_encode_worker.teardown_assembly_order()
+            
+        # 1.3. spatial_context_worker cleanup
+        if self.spatial_context_worker is not None and hasattr(self.spatial_context_worker, "teardown_assembly_order"):
+            self.spatial_context_worker.teardown_assembly_order()
+            
+        # 2. LoraWorker rolls back or detaches patch weights
         if hasattr(self.lora_worker, "teardown_assembly_order"):
             self.lora_worker.teardown_assembly_order()
             
-        # 3. TextEncoderWorker releases CPU/GPU pinned models
-        if hasattr(self.text_worker, "teardown_assembly_order"):
-            self.text_worker.teardown_assembly_order()
+        # 3. text_encode_worker releases CPU/GPU pinned models
+        if hasattr(self.text_encode_worker, "teardown_assembly_order"):
+            self.text_encode_worker.teardown_assembly_order()
             
         # 4. UNetSpine unloads or deallocates weights
         if hasattr(self.unet_spine, "teardown_assembly_order"):

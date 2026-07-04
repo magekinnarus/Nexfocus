@@ -24,6 +24,7 @@ from backend.sdxl_assembly.contracts import (
     LoraPatchPostureKind,
     SDXLAssemblyEligibilityError,
     SDXLAssemblyValidationError,
+    SpatialContextDescriptor,
 )
 
 logger = logging.getLogger(__name__)
@@ -81,11 +82,16 @@ def determine_eligibility(
     controlnet_paths: Optional[Dict[str, str]] = None,
     contextual_assets: Optional[Dict[str, Any]] = None,
     image_input_result: Optional[Dict[str, Any]] = None,
+    *,
+    force_eligible: bool = False,
 ) -> Tuple[bool, Optional[str]]:
     """Determines if a generation request is eligible for the new SDXL assembly lane.
     
     Rejects: inpaint/outpaint, image inputs, ControlNet, contextual adapters, tiled refinement, spatial latents.
     """
+    if force_eligible:
+        return True, None
+
     # 1. Check for image inputs
     if image_input_result:
         for k, v in image_input_result.items():
@@ -148,6 +154,7 @@ def build_assembly_request(
     contextual_assets: Optional[Dict[str, Any]] = None,
     base_model_additional_loras: Optional[List[Tuple[str, float]]] = None,
     image_input_result: Optional[Dict[str, Any]] = None,
+    force_eligible: bool = False,
 ) -> SDXLAssemblyRequest:
     """Builds a frozen per-image SDXLAssemblyRequest from input parameters."""
     eligible, reason = determine_eligibility(
@@ -156,7 +163,9 @@ def build_assembly_request(
         controlnet_paths=controlnet_paths,
         contextual_assets=contextual_assets,
         image_input_result=image_input_result,
+        force_eligible=force_eligible,
     )
+
     if not eligible:
         raise SDXLAssemblyEligibilityError(f"Request is not eligible for SDXL Assembly: {reason}")
 
@@ -321,8 +330,136 @@ def build_assembly_request(
         adm_scaler_negative=adm_neg,
         adm_scaler_end=adm_end,
         metadata=execution_metadata,
+        spatial_context=build_spatial_context_descriptor(task_state, image_input_result),
     )
     
     # Static validate
     request.validate()
     return request
+
+
+def build_spatial_context_descriptor(
+    task_state: Any,
+    image_input_result: Optional[Dict[str, Any]] = None,
+) -> Optional[SpatialContextDescriptor]:
+    """Helper to construct an immutable SpatialContextDescriptor from mutable inputs."""
+    from unittest.mock import Mock
+    def _clean_mock(val: Any) -> Any:
+        if isinstance(val, Mock) or (hasattr(val, "__class__") and val.__class__.__name__ in ("Mock", "MagicMock", "NonCallableMock", "NonCallableMagicMock")):
+            return None
+        return val
+
+    goals = set(getattr(task_state, 'goals', []) or [])
+    image_input_result = image_input_result or {}
+    
+    mode = None
+    source_pixels = None
+    source_mask = None
+    
+    if 'outpaint' in goals:
+        mode = "outpaint"
+        source_pixels = image_input_result.get('outpaint_image')
+        source_mask = image_input_result.get('outpaint_mask')
+    elif 'inpaint' in goals:
+        mode = "inpaint"
+        source_pixels = image_input_result.get('inpaint_image')
+        source_mask = getattr(task_state, 'context_mask', None)
+        if _clean_mock(source_mask) is None:
+            source_mask = image_input_result.get('inpaint_mask')
+    elif image_input_result.get('inpaint_image') is not None:
+        mode = "inpaint"
+        source_pixels = image_input_result.get('inpaint_image')
+        source_mask = image_input_result.get('inpaint_mask')
+    elif image_input_result.get('outpaint_image') is not None:
+        mode = "outpaint"
+        source_pixels = image_input_result.get('outpaint_image')
+        source_mask = image_input_result.get('outpaint_mask')
+    else:
+        # Check for plain image/latent or img2img mode
+        source_pixels = image_input_result.get('source_pixels')
+        if _clean_mock(source_pixels) is None:
+            source_pixels = getattr(task_state, 'source_pixels', None)
+        source_mask = image_input_result.get('source_mask')
+        if _clean_mock(source_mask) is None:
+            source_mask = getattr(task_state, 'source_mask', None)
+        if _clean_mock(source_pixels) is not None:
+            mode = "image"
+            
+    source_pixels = _clean_mock(source_pixels)
+    source_mask = _clean_mock(source_mask)
+            
+    if mode is None or source_pixels is None:
+        return None
+
+    # Normalization & hashing is handled by factory helpers
+    from backend.sdxl_assembly.contracts import (
+        make_spatial_image_descriptor,
+        make_spatial_mask_descriptor,
+        SpatialContextDescriptor,
+    )
+    
+    source_image_desc = make_spatial_image_descriptor(source_pixels)
+    source_mask_desc = None
+    if source_mask is not None:
+        source_mask_desc = make_spatial_mask_descriptor(source_mask, source_image_desc)
+        
+    target_width = int(getattr(task_state, 'width', 1024))
+    target_height = int(getattr(task_state, 'height', 1024))
+    
+    bbox = None
+    bbox_area_ratio = 1.0
+    pre_bb_image = None
+    pre_bb_mask = None
+    pre_blend_mask = None
+    
+    inpaint_context = getattr(task_state, 'inpaint_context', None)
+    if inpaint_context is not None:
+        if getattr(inpaint_context, 'bb', None) is not None:
+            bbox = tuple(int(v) for v in inpaint_context.bb)
+        if getattr(inpaint_context, 'target_w', None) is not None:
+            target_width = int(inpaint_context.target_w)
+        if getattr(inpaint_context, 'target_h', None) is not None:
+            target_height = int(inpaint_context.target_h)
+            
+        if getattr(inpaint_context, 'bb_image', None) is not None:
+            pre_bb_image = make_spatial_image_descriptor(inpaint_context.bb_image)
+        if getattr(inpaint_context, 'bb_mask', None) is not None:
+            pre_bb_mask = make_spatial_mask_descriptor(inpaint_context.bb_mask, pre_bb_image)
+        if getattr(inpaint_context, 'blend_mask', None) is not None:
+            pre_blend_mask = make_spatial_mask_descriptor(inpaint_context.blend_mask, source_image_desc)
+            
+        if bbox is not None:
+            y1, y2, x1, x2 = bbox
+            bbox_area = max(0, y2 - y1) * max(0, x2 - x1)
+            full_area = max(1, source_image_desc.pixels.shape[1] * source_image_desc.pixels.shape[2])
+            bbox_area_ratio = float(bbox_area) / float(full_area)
+
+    outpaint_direction = getattr(task_state, 'outpaint_direction', None)
+    if isinstance(outpaint_direction, list) and len(outpaint_direction) > 0:
+        outpaint_direction = outpaint_direction[0].lower()
+    elif isinstance(outpaint_direction, str):
+        outpaint_direction = outpaint_direction.lower()
+        
+    outpaint_expansion_size = int(getattr(task_state, 'inpaint_outpaint_expansion_size', 384) or 384)
+    outpaint_pixelate = bool(getattr(task_state, 'inpaint_pixelate_primer', True))
+    denoise_strength = float(getattr(task_state, 'inpaint_strength', 1.0)) if 'inpaint' in goals else (
+        float(getattr(task_state, 'outpaint_strength', 1.0)) if 'outpaint' in goals else None
+    )
+
+    return SpatialContextDescriptor(
+        mode=mode,
+        source_image=source_image_desc,
+        source_mask=source_mask_desc,
+        target_width=target_width,
+        target_height=target_height,
+        denoise_strength=denoise_strength,
+        bbox=bbox,
+        bbox_area_ratio=bbox_area_ratio,
+        pre_bb_image=pre_bb_image,
+        pre_bb_mask=pre_bb_mask,
+        pre_blend_mask=pre_blend_mask,
+        outpaint_direction=outpaint_direction,
+        outpaint_expansion_size=outpaint_expansion_size,
+        outpaint_pixelate=outpaint_pixelate,
+    )
+

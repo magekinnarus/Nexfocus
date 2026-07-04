@@ -181,8 +181,8 @@ def test_sdxl_assembly_execute_preserves_interrupts(tmp_path):
     )
 
     lora_worker = SimpleNamespace(materialize_patches=lambda: None, teardown_assembly_order=lambda: None)
-    text_worker = SimpleNamespace(get_conditioning=lambda: {}, teardown_assembly_order=lambda: None)
-    vae_worker = SimpleNamespace(
+    text_encode_worker = SimpleNamespace(get_conditioning=lambda: {}, teardown_assembly_order=lambda: None)
+    vae_decode_worker = SimpleNamespace(
         prepare_latents=lambda _device: SimpleNamespace(samples=torch.zeros((1, 4, 8, 8))),
         teardown_assembly_order=lambda: None,
     )
@@ -193,7 +193,12 @@ def test_sdxl_assembly_execute_preserves_interrupts(tmp_path):
         teardown_assembly_order=lambda: None,
     )
 
-    assembly = SDXLAssembly(unet_spine, text_worker, vae_worker, lora_worker)
+    assembly = SDXLAssembly(
+        unet_spine=unet_spine,
+        text_encode_worker=text_encode_worker,
+        vae_decode_worker=vae_decode_worker,
+        lora_worker=lora_worker,
+    )
 
     with pytest.raises(resources.InterruptProcessingException):
         assembly.execute(request)
@@ -262,7 +267,7 @@ def test_process_task_assembly_route_emits_preview_image(monkeypatch):
                     model=SimpleNamespace(latent_format=latent_format),
                 )
             ),
-            vae_worker=SimpleNamespace(vae=None),
+            vae_decode_worker=SimpleNamespace(vae=None),
         )
         kwargs['progressbar_callback'](
             0,

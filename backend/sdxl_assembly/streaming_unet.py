@@ -9,16 +9,16 @@ import torch
 from backend.sdxl_assembly.contracts import SDXLAssemblyRequest
 from backend.sdxl_assembly.progress import log_telemetry
 from backend.sdxl_assembly.runtime_state import acquire_unet_component
-from backend.sdxl_assembly.streaming_lora import StreamingLoraPatchWorker
+from backend.sdxl_assembly.cpu_lora_worker import CpuLoraWorker
 
 logger = logging.getLogger(__name__)
 
 class StreamingUnetSpine:
     """Worker representing StreamingUnetSpine (CPU-pinned weights streamed slice-by-slice)."""
     
-    def __init__(self, request: SDXLAssemblyRequest, lora_worker: StreamingLoraPatchWorker | None = None) -> None:
+    def __init__(self, request: SDXLAssemblyRequest, lora_worker: CpuLoraWorker | None = None) -> None:
         self.request = request
-        self.lora_worker = lora_worker or StreamingLoraPatchWorker(request)
+        self.lora_worker = lora_worker or CpuLoraWorker(request)
         self.unet = None
         self.is_active = False
 
@@ -54,7 +54,13 @@ class StreamingUnetSpine:
         
         self.is_active = True
 
-    def denoise(self, latent: torch.Tensor, conditioning: Any, callback: Optional[Any] = None) -> torch.Tensor:
+    def denoise(
+        self,
+        latent: torch.Tensor,
+        conditioning: Any,
+        callback: Optional[Any] = None,
+        denoise_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """Runs the denoise loop with low VRAM prefetch and streaming posture."""
         device = torch.device(self.request.device)
         budget_bytes = self.request.prefetch_chunk_mb * 1024 * 1024
@@ -111,7 +117,7 @@ class StreamingUnetSpine:
                 converted_conds,
                 device,
                 latent_image=latent,
-                denoise_mask=None,
+                denoise_mask=denoise_mask,
                 seed=self.request.seed,
             )
 
@@ -159,11 +165,11 @@ class StreamingUnetSpine:
                         processed_conds,
                         latent_image=latent,
                         reference_noise=noise,
-                        denoise_mask=None,
+                        denoise_mask=denoise_mask,
                     ),
                     scaled_noise,
                     sigmas,
-                    extra_args={"denoise_mask": None},
+                    extra_args={"denoise_mask": denoise_mask},
                     callback=k_callback,
                     disable=True,
                 )

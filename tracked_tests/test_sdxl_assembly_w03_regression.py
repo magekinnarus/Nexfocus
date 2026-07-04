@@ -201,7 +201,7 @@ def test_director_wires_one_lora_worker_to_text_and_unet_workers():
     clear_all_caches()
     assembly = SDXLAssemblyDirector.select_assembly(_request(lora_stack_hash='stack_a'))
     try:
-        assert assembly.text_worker.lora_worker is assembly.lora_worker
+        assert assembly.text_encode_worker.lora_worker is assembly.lora_worker
         assert assembly.unet_spine.lora_worker is assembly.lora_worker
     finally:
         assembly.close()
@@ -236,10 +236,10 @@ def test_streaming_unet_host_pinning_is_explicit_request_metadata(monkeypatch):
 
 
 def test_lora_worker_caches_zero_patch_clip_results(monkeypatch):
-    import backend.sdxl_assembly.streaming_lora as streaming_lora
+    import backend.sdxl_assembly.cpu_lora_worker as cpu_lora_worker
 
     clear_all_caches()
-    streaming_lora._PARSED_LORA_CACHE.clear()
+    cpu_lora_worker._PARSED_LORA_CACHE.clear()
 
     load_calls = []
 
@@ -253,15 +253,15 @@ def test_lora_worker_caches_zero_patch_clip_results(monkeypatch):
         )
     )
 
-    monkeypatch.setattr(streaming_lora, "SafeOpenHeaderOnly", lambda _path: object())
-    monkeypatch.setattr(streaming_lora.backend_lora, "model_lora_keys_clip", lambda _model: {})
+    monkeypatch.setattr(cpu_lora_worker, "SafeOpenHeaderOnly", lambda _path: object())
+    monkeypatch.setattr(cpu_lora_worker.backend_lora, "model_lora_keys_clip", lambda _model: {})
     monkeypatch.setattr(
-        streaming_lora.backend_lora,
+        cpu_lora_worker.backend_lora,
         "load_lora",
         lambda _header, _key_map, log_missing=False: load_calls.append(log_missing) or {},
     )
 
-    worker = streaming_lora.StreamingLoraPatchWorker(
+    worker = cpu_lora_worker.CpuLoraWorker(
         _request(
             lora_stack_hash="stack_with_zero_clip_patch",
             lora_specs=(
@@ -279,7 +279,7 @@ def test_lora_worker_caches_zero_patch_clip_results(monkeypatch):
     assert worker.apply_clip_patches(clip) == 0
     assert len(load_calls) == 1
 
-    streaming_lora._PARSED_LORA_CACHE.clear()
+    cpu_lora_worker._PARSED_LORA_CACHE.clear()
     clear_all_caches()
 
 

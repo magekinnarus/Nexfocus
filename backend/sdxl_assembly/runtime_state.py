@@ -355,5 +355,8 @@ def clear_all_caches(*, reason: str | None = None) -> None:
     with _PROMPT_CONDITIONING_CACHE_LOCK:
         _PROMPT_CONDITIONING_CACHE.clear()
 
+    from backend.sdxl_assembly.vae_encode_worker import VaeEncodeWorker
+    VaeEncodeWorker._ENCODE_CACHE.clear()
+
     import gc
     gc.collect()

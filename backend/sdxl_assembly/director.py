@@ -41,12 +41,16 @@ class SDXLAssemblyDirector:
             )
 
         # Retrieve/instantiate posture-specific workers via Assembler.
-        # LoRA is an assembly-owned worker that text and UNet workers consume;
-        # they must not create hidden duplicate LoRA lifecycle owners.
-        lora_worker = SDXLAssemblyAssembler.acquire_lora_worker(request)
-        unet_spine = SDXLAssemblyAssembler.acquire_unet_spine(request, lora_worker=lora_worker)
-        text_worker = SDXLAssemblyAssembler.acquire_text_worker(request, lora_worker=lora_worker)
-        vae_worker = SDXLAssemblyAssembler.acquire_vae_worker(request)
+        cpu_lora_worker = SDXLAssemblyAssembler.acquire_cpu_lora_worker(request)
+        unet_spine = SDXLAssemblyAssembler.acquire_unet_spine(request, lora_worker=cpu_lora_worker)
+        text_encode_worker = SDXLAssemblyAssembler.acquire_text_encode_worker(request, lora_worker=cpu_lora_worker)
+        vae_decode_worker = SDXLAssemblyAssembler.acquire_vae_decode_worker(request)
+
+        spatial_context_worker = None
+        vae_encode_worker = None
+        if request.spatial_context is not None:
+            spatial_context_worker = SDXLAssemblyAssembler.acquire_spatial_context_worker(request)
+            vae_encode_worker = SDXLAssemblyAssembler.acquire_vae_encode_worker(request)
 
         # Log selection
         logger.debug(
@@ -59,7 +63,10 @@ class SDXLAssemblyDirector:
 
         return SDXLAssembly(
             unet_spine=unet_spine,
-            text_worker=text_worker,
-            vae_worker=vae_worker,
-            lora_worker=lora_worker,
+            text_encode_worker=text_encode_worker,
+            vae_decode_worker=vae_decode_worker,
+            lora_worker=cpu_lora_worker,
+            spatial_context_worker=spatial_context_worker,
+            vae_encode_worker=vae_encode_worker,
         )
+
