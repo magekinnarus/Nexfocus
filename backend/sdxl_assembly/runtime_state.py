@@ -358,9 +358,12 @@ def clear_all_caches(*, reason: str | None = None) -> None:
     from backend.sdxl_assembly.vae_encode_worker import VaeEncodeWorker
     from backend.sdxl_assembly.stream_st_preprocess_worker import StreamingStructuralPreprocessWorker
     from backend.sdxl_assembly.stream_st_cn_worker import StreamingStructuralControlWorker
+    from backend.sdxl_assembly.stream_ctx_cn_worker import StreamingContextualControlWorker
     VaeEncodeWorker._ENCODE_CACHE.clear()
     StreamingStructuralPreprocessWorker.clear_preprocess_cache()
     StreamingStructuralControlWorker.clear_support_cache()
+    StreamingContextualControlWorker.clear_payload_cache()
+    StreamingContextualControlWorker.clear_support_cache()
 
     import gc
     gc.collect()

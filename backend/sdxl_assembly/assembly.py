@@ -29,6 +29,7 @@ class SDXLAssembly:
         vae_encode_worker: Optional[Any] = None,
         st_preprocess_worker: Optional[Any] = None,
         st_control_worker: Optional[Any] = None,
+        ctx_control_worker: Optional[Any] = None,
     ) -> None:
         self.unet_spine = unet_spine
         self.text_encode_worker = text_encode_worker
@@ -38,6 +39,7 @@ class SDXLAssembly:
         self.vae_encode_worker = vae_encode_worker
         self.st_preprocess_worker = st_preprocess_worker
         self.st_control_worker = st_control_worker
+        self.ctx_control_worker = ctx_control_worker
 
     def execute(self, request: SDXLAssemblyRequest, callback: Optional[Any] = None) -> SDXLAssemblyResult:
         """Executes the pipeline steps in strict chronological order."""
@@ -49,6 +51,7 @@ class SDXLAssembly:
         device = torch.device(request.device)
         unet_started = False
         structural_control_session_active = False
+        contextual_session_active = False
 
         try:
             # 2. Materialize LoRA patches first
@@ -101,11 +104,22 @@ class SDXLAssembly:
                 conditioning = self.st_control_worker.attach_conditioning(conditioning, prepared_hints)
                 timings["structural_control_attach"] = time.perf_counter() - control_start
 
+            # 4.7. Streaming contextual control preprocess
+            if self.ctx_control_worker is not None and len(request.contextual_controls) > 0:
+                preprocess_start = time.perf_counter()
+                self.ctx_control_worker.preprocess()
+                timings["contextual_preprocess"] = time.perf_counter() - preprocess_start
+
             # 5. Coordinate UNet spine denoise
             unet_start = time.perf_counter()
             self.unet_spine.start()
             unet_started = True
             timings["unet_start"] = time.perf_counter() - unet_start
+
+            # 5.1. Streaming contextual control attach
+            if self.ctx_control_worker is not None and len(request.contextual_controls) > 0:
+                contextual_session_active = True
+                self.ctx_control_worker.attach_unet_patches(self.unet_spine)
 
             # Materialize latents on target GPU device immediately before UNet denoise
             materialize_start = time.perf_counter()
@@ -135,6 +149,8 @@ class SDXLAssembly:
                 self.unet_spine.end()
             if structural_control_session_active and self.st_control_worker is not None:
                 self.st_control_worker.end()
+            if contextual_session_active and self.ctx_control_worker is not None:
+                self.ctx_control_worker.end()
 
         # 6. Decode results using VAE worker
         try:
@@ -222,6 +238,10 @@ class SDXLAssembly:
         # 0. st_control_worker releases cached support weights
         if self.st_control_worker is not None and hasattr(self.st_control_worker, "release_owned_resources"):
             self.st_control_worker.release_owned_resources()
+
+        # 0.5. ctx_control_worker releases cached support weights
+        if self.ctx_control_worker is not None and hasattr(self.ctx_control_worker, "release_owned_resources"):
+            self.ctx_control_worker.release_owned_resources()
             
         # 1. vae_decode_worker unloads VAE tensors first
         if hasattr(self.vae_decode_worker, "teardown_assembly_order"):

@@ -68,19 +68,14 @@ cn_contextual = 'Contextual'
 cn_channels = [cn_structural, cn_contextual]
 
 cn_ip = 'ImagePrompt'
-cn_faceid = 'FaceID V2'
 cn_pulid = 'PuLID'
-cn_ip_face = 'FaceSwap'
 cn_canny = 'PyraCanny'
 cn_depth = 'Depth'
 cn_cpds = 'CPDS'
-cn_mlsd = 'MLSD'
 
-cn_structural_types = [cn_canny, cn_depth, cn_cpds, cn_mlsd]
-cn_contextual_types = [cn_ip, cn_faceid, cn_pulid]
-cn_type_aliases = {
-    cn_ip_face: cn_faceid,
-}
+cn_structural_types = [cn_canny, cn_depth, cn_cpds]
+cn_contextual_types = [cn_ip, cn_pulid]
+cn_type_aliases = {}
 cn_all_types = cn_structural_types + cn_contextual_types
 cn_type_to_channel = {guidance_type: cn_structural for guidance_type in cn_structural_types}
 cn_type_to_channel.update({guidance_type: cn_contextual for guidance_type in cn_contextual_types})
@@ -92,13 +87,10 @@ default_ip = cn_ip
 
 default_parameters = {
     cn_ip: (0.9, 0.9),
-    cn_faceid: (0.9, 0.9),
     cn_pulid: (0.9, 0.9),
-    cn_ip_face: (0.9, 0.9),
     cn_canny: (0.5, 0.9),
     cn_depth: (0.5, 0.9),
     cn_cpds: (0.5, 0.9),
-    cn_mlsd: (0.5, 0.9),
 }  # stop, weight
 
 

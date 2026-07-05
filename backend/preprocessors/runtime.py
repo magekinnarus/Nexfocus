@@ -6,8 +6,6 @@ import torch
 
 from backend import resources
 from backend import utils as backend_utils
-from .mlsd.models import MobileV2_MLSD_Large
-from .mlsd.utils import pred_lines
 
 DEPTH_MODEL_CONFIGS = {
     "vits": {"encoder": "vits", "features": 64, "out_channels": [48, 96, 192, 384]},
@@ -18,7 +16,6 @@ DEPTH_MODEL_CONFIGS = {
 
 _MODEL_CACHE = {
     "Depth": {"path": None, "model": None},
-    "MLSD": {"path": None, "model": None},
 }
 
 
@@ -91,12 +88,7 @@ def _load_depth_model(model_path):
 
 
 
-def _load_mlsd_model(model_path):
-    model = MobileV2_MLSD_Large()
-    state_dict = _prepare_state_dict(backend_utils.load_torch_file(model_path))
-    model.load_state_dict(state_dict, strict=True)
-    model.eval()
-    return model
+
 
 
 def _normalize_depth_input(image):
@@ -136,20 +128,7 @@ def _safe_step(x, step=2):
 
 
 
-def preprocess_mlsd(image, model_path, score_threshold=0.1, dist_threshold=0.1):
-    model = _get_cached_model("MLSD", model_path, _load_mlsd_model)
-    device = resources.get_torch_device()
-    model = model.to(device)
 
-    result = np.zeros_like(image, dtype=np.uint8)
-    with torch.no_grad():
-        lines = pred_lines(image, model, [512, 512], score_thr=score_threshold, dist_thr=dist_threshold)
-    for line in lines:
-        x_start, y_start, x_end, y_end = [int(value) for value in line]
-        cv2.line(result, (x_start, y_start), (x_end, y_end), (255, 255, 255), 1)
-
-    _offload_model(model)
-    return result
 
 
 def run_structural_preprocessor(method, image, model_path=None):
@@ -157,8 +136,4 @@ def run_structural_preprocessor(method, image, model_path=None):
         if not model_path:
             raise FileNotFoundError("Depth preprocessor path is missing")
         return preprocess_depth(image, model_path)
-    if method == "MLSD":
-        if not model_path:
-            raise FileNotFoundError("MLSD preprocessor path is missing")
-        return preprocess_mlsd(image, model_path)
     raise KeyError(f"Unsupported structural preprocessor method: {method}")

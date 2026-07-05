@@ -43,7 +43,6 @@
     "default_save_metadata_to_images": true,
     "path_loras_lcm": "/content/drive/MyDrive/Fooocus_Nex/models/performance_loras/lcm/",
     "path_loras_lightning": "/content/drive/MyDrive/Fooocus_Nex/models/performance_loras/lightning/",
-    "path_faceid_loras": "/content/drive/MyDrive/Fooocus_Nex/models/faceid_loras/",
     "path_vision_support": "/content/drive/MyDrive/Fooocus_Nex/models/vision_support/",
     "temp_path": "/tmp/fooocus"
 }

@@ -47,56 +47,6 @@
       ]
     },
     {
-      "id": "contextual.faceid.adapter",
-      "kind": "adapter",
-      "channel": "Contextual",
-      "method": "FaceID V2",
-      "loader_type": "ip_adapter_faceid_v2",
-      "artifact_type": "file",
-      "destination": "controlnet_models",
-      "relative_path": "ip-adapter-faceid-plusv2_sdxl.bin",
-      "sources": [
-        {
-          "url": "https://huggingface.co/h94/IP-Adapter-FaceID/resolve/main/ip-adapter-faceid-plusv2_sdxl.bin"
-        }
-      ]
-    },
-    {
-      "id": "contextual.faceid.lora",
-      "kind": "lora",
-      "channel": "Contextual",
-      "method": "FaceID V2",
-      "loader_type": "lora",
-      "artifact_type": "file",
-      "destination": "faceid_loras",
-      "relative_path": "ip-adapter-faceid-plusv2_sdxl_lora.safetensors",
-      "sources": [
-        {
-          "url": "https://huggingface.co/h94/IP-Adapter-FaceID/resolve/main/ip-adapter-faceid-plusv2_sdxl_lora.safetensors"
-        }
-      ]
-    },
-    {
-      "id": "contextual.insightface.buffalo_l",
-      "kind": "insightface",
-      "channel": "Contextual",
-      "method": "FaceID V2",
-      "loader_type": "insightface_pack",
-      "artifact_type": "archive",
-      "destination": "insightface",
-      "archive_name": "buffalo_l.zip",
-      "extract_subdir": "models/buffalo_l",
-      "flatten_first_subdir": true,
-      "expected_files": [
-        "det_10g.onnx"
-      ],
-      "sources": [
-        {
-          "url": "https://huggingface.co/vladmandic/insightface-faceanalysis/resolve/main/buffalo_l.zip"
-        }
-      ]
-    },
-    {
       "id": "contextual.insightface.antelopev2",
       "kind": "insightface",
       "channel": "Contextual",

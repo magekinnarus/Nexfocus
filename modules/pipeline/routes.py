@@ -493,7 +493,7 @@ class StructuralControlNetStage(PipelineStage):
         return _describe_route_resources(
             PipelineResourceRequirement(
                 resource_id='structural_preprocessors',
-                description='Structural preprocessors for Canny, CPDS, Depth, and MLSD guidance.',
+                description='Structural preprocessors for PyraCanny, CPDS, and Depth guidance.',
                 owner='backend.preprocessors.runtime',
                 tags=('controlnet', 'structural'),
             ),
@@ -541,7 +541,7 @@ class ContextualControlNetStage(PipelineStage):
         return _describe_route_resources(
             PipelineResourceRequirement(
                 resource_id='contextual_adapters',
-                description='Contextual guidance assets such as IP-Adapter, FaceID, and PuLID support models.',
+                description='Contextual guidance assets such as IP-Adapter and PuLID support models.',
                 owner='backend.ip_adapter',
                 tags=('controlnet', 'contextual'),
                 optional=True,

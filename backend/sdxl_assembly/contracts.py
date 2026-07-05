@@ -252,6 +252,46 @@ class StructuralHintArtifact:
 
 
 @dataclass(frozen=True)
+class SDXLContextualControlDescriptor:
+    ui_slot_index: int
+    control_type: str  # "ImagePrompt" or "PuLID"
+    image_pixels: torch.Tensor  # shape [B, H, W, C]
+    image_fingerprint: str
+    source_image_role: str
+    
+    # Model/Support identities
+    model_path: Path
+    model_sha256: str
+    clip_vision_path: Optional[Path] = None
+    clip_vision_sha256: Optional[str] = None
+    ip_negative_path: Optional[Path] = None
+    ip_negative_sha256: Optional[str] = None
+    eva_clip_path: Optional[Path] = None
+    eva_clip_sha256: Optional[str] = None
+    insightface_model_names: Tuple[str, ...] = field(default_factory=tuple)
+    
+    # Payload-affecting preprocess parameters
+    preprocess_params: Dict[str, Any] = field(default_factory=dict)
+    
+    # Application parameters (do NOT invalidate the payload artifact cache)
+    weight: float = 1.0
+    start_percent: float = 0.0
+    end_percent: float = 1.0
+    
+    unsupported_mode_errors: Tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class ContextualPayloadArtifact:
+    ui_slot_index: int
+    control_type: str
+    payload: Tuple[List[torch.Tensor], List[torch.Tensor]]  # (ip_conds, ip_unconds) CPU-parked tensors
+    payload_fingerprint: str
+    cache_hit: bool = False
+    preprocess_wall: float = 0.0
+
+
+@dataclass(frozen=True)
 class SDXLAssemblyRequest:
     # Queue and route identity: one request per concrete prompt/image task
     request_id: str
@@ -320,6 +360,9 @@ class SDXLAssemblyRequest:
     # Structural Control descriptors added in W07
     structural_controls: Tuple[SDXLStructuralControlDescriptor, ...] = field(default_factory=tuple)
     
+    # Contextual Control descriptors added in W08
+    contextual_controls: Tuple[SDXLContextualControlDescriptor, ...] = field(default_factory=tuple)
+    
     def validate(self) -> None:
         """Enforces minimum parameter checks on an already-resolved snapshot."""
         if not self.checkpoint.path.exists():
@@ -345,6 +388,18 @@ class SDXLAssemblyRequest:
                 raise SDXLAssemblyValidationError(f"Structural control checkpoint does not exist: {desc.checkpoint_path}")
             if len(desc.unsupported_mode_errors) > 0:
                 raise SDXLAssemblyValidationError(f"Unsupported structural mode: {desc.unsupported_mode_errors}")
+
+        for desc in self.contextual_controls:
+            if desc.ui_slot_index < 0 or desc.ui_slot_index > 3:
+                raise SDXLAssemblyValidationError(f"Contextual control slot index must be in range 0..3, got {desc.ui_slot_index}")
+            if desc.control_type == "FaceID V2" or desc.control_type == "FaceSwap":
+                raise SDXLAssemblyValidationError(f"FaceID V2 is explicitly retired on the new assembly path.")
+            if desc.control_type not in getattr(flags, "cn_contextual_types", []):
+                raise SDXLAssemblyValidationError(f"Unsupported contextual control type: {desc.control_type}")
+            if not desc.model_path.exists():
+                raise SDXLAssemblyValidationError(f"Contextual control model path does not exist: {desc.model_path}")
+            if len(desc.unsupported_mode_errors) > 0:
+                raise SDXLAssemblyValidationError(f"Unsupported contextual mode: {desc.unsupported_mode_errors}")
 
 @dataclass(frozen=True)
 class SDXLAssemblyResult:

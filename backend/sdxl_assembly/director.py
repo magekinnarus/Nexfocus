@@ -56,6 +56,9 @@ class SDXLAssemblyDirector:
         st_preprocess_worker = SDXLAssemblyAssembler.acquire_st_preprocess_worker(request)
         st_control_worker = SDXLAssemblyAssembler.acquire_st_control_worker(request)
 
+        # Acquire contextual control worker
+        ctx_control_worker = SDXLAssemblyAssembler.acquire_ctx_control_worker(request)
+
         # Log selection
         logger.debug(
             "[SDXL Telemetry] assembly_select | unet_posture=%s clip_posture=%s vae_posture=%s lora_posture=%s",
@@ -74,5 +77,6 @@ class SDXLAssemblyDirector:
             vae_encode_worker=vae_encode_worker,
             st_preprocess_worker=st_preprocess_worker,
             st_control_worker=st_control_worker,
+            ctx_control_worker=ctx_control_worker,
         )
 

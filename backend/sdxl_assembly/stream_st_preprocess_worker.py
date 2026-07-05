@@ -98,9 +98,8 @@ class StreamingStructuralPreprocessWorker:
                         cn_img = preprocessors.canny_pyramid(resized_pixels, low, high)
                     elif desc.control_type == flags.cn_cpds:
                         cn_img = preprocessors.cpds(resized_pixels)
-                    elif desc.control_type in (flags.cn_depth, flags.cn_mlsd):
-                        method = flags.cn_depth if desc.control_type == flags.cn_depth else flags.cn_mlsd
-                        cn_img = run_structural_preprocessor(method, resized_pixels, str(desc.preprocessor_path))
+                    elif desc.control_type == flags.cn_depth:
+                        cn_img = run_structural_preprocessor(flags.cn_depth, resized_pixels, str(desc.preprocessor_path))
                     else:
                         raise KeyError(f"Unknown structural type: {desc.control_type}")
                 finally:

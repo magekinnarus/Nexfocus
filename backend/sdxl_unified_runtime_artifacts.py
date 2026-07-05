@@ -977,7 +977,7 @@ class UnifiedSDXLRuntimeArtifactMixin:
         contextual_model_paths = contextual_assets.get("contextual_model_paths", {}) or {}
         clip_vision_path = contextual_assets.get("clip_vision_path")
         ip_negative_path = contextual_assets.get("ip_negative_path")
-        insightface_model_names = contextual_assets.get("insightface_model_names") or ["antelopev2", "buffalo_l"]
+        insightface_model_names = contextual_assets.get("insightface_model_names") or ["antelopev2"]
         eva_clip_path = contextual_assets.get("eva_clip_path")
 
         for raw_task in tasks or ():
@@ -1079,7 +1079,7 @@ class UnifiedSDXLRuntimeArtifactMixin:
             return execution_unet
 
         ip_face_tasks: list[Any] = []
-        for cn_type in (flags.cn_ip, flags.cn_faceid):
+        for cn_type in (flags.cn_ip,):
             ip_face_tasks.extend(list(contextual_tasks.get(cn_type, ())))
         pulid_tasks = list(contextual_tasks.get(flags.cn_pulid, ()))
 

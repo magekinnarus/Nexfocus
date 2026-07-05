@@ -423,17 +423,6 @@ def resolve_preflight_additional_loras(task_state) -> list:
     except Exception:
         pass
 
-    # 2. FaceID LoRA
-    try:
-        from modules import flags, model_registry
-
-        contextual_tasks = task_state.get_cn_tasks_for_channel(flags.cn_contextual)
-        if len(contextual_tasks.get(flags.cn_faceid, [])) > 0:
-            faceid_lora_path = model_registry.ensure_asset('contextual.faceid.lora')
-            additional_loras.append((faceid_lora_path, 1.0))
-    except Exception:
-        pass
-
     return additional_loras
 
 

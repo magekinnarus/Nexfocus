@@ -153,7 +153,6 @@ def download_models(
         config.paths_loras[0],
         config.path_loras_lcm,
         config.path_loras_lightning,
-        config.path_faceid_loras,
     ]
 
     for file_name, url in lora_downloads.items():

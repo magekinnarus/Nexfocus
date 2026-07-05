@@ -391,7 +391,6 @@ path_insightface = get_dir_or_set_default('path_insightface', '../models/insight
 path_removals = get_dir_or_set_default('path_removals', '../models/removals/', make_directory=True)
 path_loras_lcm = get_dir_or_set_default('path_loras_lcm', '../models/performance_loras/lcm/', make_directory=True)
 path_loras_lightning = get_dir_or_set_default('path_loras_lightning', '../models/performance_loras/lightning/', make_directory=True)
-path_faceid_loras = get_dir_or_set_default('path_faceid_loras', '../models/faceid_loras/', make_directory=True)
 
 
 # Add unet path to checkpoints for base model selection
@@ -417,8 +416,6 @@ for folder in paths_loras + [path_loras_lcm, path_loras_lightning]:
     if folder not in paths_lora_discovery:
         paths_lora_discovery.append(folder)
 paths_lora_lookup = list(paths_lora_discovery)
-if path_faceid_loras not in paths_lora_lookup:
-    paths_lora_lookup.append(path_faceid_loras)
 
 
 path_outputs = get_path_output()
@@ -463,7 +460,6 @@ asset_root_paths = {
     'loras': paths_loras[0],
     'loras_lcm': path_loras_lcm,
     'loras_lightning': path_loras_lightning,
-    'faceid_loras': path_faceid_loras,
     'embeddings': path_embeddings,
     'vae_approx': path_vae_approx,
     'vae': path_vae[0] if isinstance(path_vae, list) else path_vae,
@@ -485,7 +481,6 @@ asset_root_path_groups = {
     'loras': list(paths_loras),
     'loras_lcm': [path_loras_lcm],
     'loras_lightning': [path_loras_lightning],
-    'faceid_loras': [path_faceid_loras],
     'embeddings': [path_embeddings],
     'vae_approx': [path_vae_approx],
     'vae': list(path_vae) if isinstance(path_vae, list) else [path_vae],

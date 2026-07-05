@@ -60,36 +60,6 @@
           "url": "https://huggingface.co/bdsqlsz/qinglong_controlnet-lllite/resolve/main/bdsqlsz_controlllite_xl_depth.safetensors"
         }
       ]
-    },
-    {
-      "id": "structural.mlsd.preprocessor",
-      "kind": "preprocessor",
-      "channel": "Structural",
-      "method": "MLSD",
-      "loader_type": "mlsd",
-      "artifact_type": "file",
-      "destination": "preprocessors",
-      "relative_path": "mlsd_large_512_fp32.pth",
-      "sources": [
-        {
-          "url": "https://huggingface.co/lllyasviel/Annotators/resolve/main/mlsd_large_512_fp32.pth"
-        }
-      ]
-    },
-    {
-      "id": "structural.mlsd.controlnet",
-      "kind": "controlnet",
-      "channel": "Structural",
-      "method": "MLSD",
-      "loader_type": "controllllite",
-      "artifact_type": "file",
-      "destination": "controlnet_models",
-      "relative_path": "bdsqlsz_controlllite_xl_mlsd_V2.safetensors",
-      "sources": [
-        {
-          "url": "https://huggingface.co/bdsqlsz/qinglong_controlnet-lllite/resolve/main/bdsqlsz_controlllite_xl_mlsd_V2.safetensors"
-        }
-      ]
     }
   ]
 }

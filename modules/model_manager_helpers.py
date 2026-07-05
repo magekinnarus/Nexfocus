@@ -196,7 +196,6 @@ def _build_default_root_map() -> dict[str, list[str]]:
         'loras': _normalize_paths(config.paths_loras),
         'loras_lcm': _normalize_paths(config.path_loras_lcm),
         'loras_lightning': _normalize_paths(config.path_loras_lightning),
-        'faceid_loras': _normalize_paths(config.path_faceid_loras),
         'embeddings': _normalize_paths(config.path_embeddings),
         'vae_approx': _normalize_paths(config.path_vae_approx),
         'vae': _normalize_paths(config.path_vae),

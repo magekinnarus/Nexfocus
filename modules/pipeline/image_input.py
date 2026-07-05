@@ -529,21 +529,12 @@ def apply_image_input(task_state: 'TaskState', base_model_additional_loras, prog
                     structural_preprocessor_paths[cn_type] = model_registry.ensure_asset(preprocessor_asset_id)
 
         if any(len(contextual_tasks.get(cn_type, [])) > 0 for cn_type in flags.cn_contextual_types):
-            if len(contextual_tasks.get(flags.cn_ip, [])) > 0 or len(contextual_tasks.get(flags.cn_faceid, [])) > 0:
+            if len(contextual_tasks.get(flags.cn_ip, [])) > 0:
                 contextual_assets['clip_vision_path'] = model_registry.ensure_asset('contextual.shared.clip_vision')
 
             if len(contextual_tasks.get(flags.cn_ip, [])) > 0:
                 contextual_assets['ip_negative_path'] = model_registry.ensure_asset('contextual.shared.ip_negative')
                 contextual_assets['contextual_model_paths'][flags.cn_ip] = model_registry.ensure_asset('contextual.image_prompt.adapter')
-
-            if len(contextual_tasks.get(flags.cn_faceid, [])) > 0:
-                contextual_assets['contextual_model_paths'][flags.cn_faceid] = model_registry.ensure_asset('contextual.faceid.adapter')
-                faceid_lora_path = model_registry.ensure_asset('contextual.faceid.lora')
-                if (faceid_lora_path, 1.0) not in base_model_additional_loras:
-                    base_model_additional_loras += [(faceid_lora_path, 1.0)]
-                model_registry.ensure_asset('contextual.insightface.antelopev2')
-                model_registry.ensure_asset('contextual.insightface.buffalo_l')
-                contextual_assets['insightface_model_names'] = ['antelopev2', 'buffalo_l']
 
             if len(contextual_tasks.get(flags.cn_pulid, [])) > 0:
                 contextual_assets['contextual_model_paths'][flags.cn_pulid] = model_registry.ensure_asset('contextual.pulid.model')
@@ -672,11 +663,6 @@ def preprocess_structural_controlnets(task_state, structural_preprocessor_paths=
                 structural_tasks.get(flags.cn_depth, []),
                 structural_preprocessors.run_structural_preprocessor
             )
-            preprocess_structural_tasks(
-                flags.cn_mlsd,
-                structural_tasks.get(flags.cn_mlsd, []),
-                structural_preprocessors.run_structural_preprocessor
-            )
     finally:
         structural_preprocessors.apply_residency_policy('destroy')
 
@@ -694,7 +680,7 @@ def preprocess_contextual_controlnets(task_state, contextual_assets=None):
     contextual_model_paths = contextual_assets.get('contextual_model_paths', {})
     clip_vision_path = contextual_assets.get('clip_vision_path')
     ip_negative_path = contextual_assets.get('ip_negative_path')
-    insightface_model_names = contextual_assets.get('insightface_model_names') or ['antelopev2', 'buffalo_l']
+    insightface_model_names = contextual_assets.get('insightface_model_names') or ['antelopev2']
     eva_clip_path = contextual_assets.get('eva_clip_path')
 
     def normalize_contextual_task(task):
@@ -752,14 +738,13 @@ def preprocess_contextual_controlnets(task_state, contextual_assets=None):
             end_notes={'completed': True},
         ):
             preprocess_contextual_tasks(flags.cn_ip, contextual_tasks.get(flags.cn_ip, []), resize_to=224)
-            preprocess_contextual_tasks(flags.cn_faceid, contextual_tasks.get(flags.cn_faceid, []))
             preprocess_contextual_tasks(flags.cn_pulid, contextual_tasks.get(flags.cn_pulid, []))
     finally:
         contextual_ip_adapter.apply_contextual_residency('destroy')
         pulid_runtime.apply_contextual_residency('destroy')
 
     all_contextual_tasks = []
-    for cn_type in [flags.cn_ip, flags.cn_faceid]:
+    for cn_type in [flags.cn_ip]:
         all_contextual_tasks.extend(list(task_state.cn_tasks[cn_type]))
 
     pulid_tasks = list(task_state.cn_tasks[flags.cn_pulid])

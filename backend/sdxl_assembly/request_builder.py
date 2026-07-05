@@ -90,6 +90,20 @@ def determine_eligibility(
     
     Rejects: inpaint/outpaint, image inputs, ControlNet, contextual adapters, tiled refinement, spatial latents.
     """
+    # 0. Check for retired FaceID V2 / FaceSwap
+    ctx_model_paths = (contextual_assets or {}).get('contextual_model_paths', {})
+    prepared_ctx = getattr(task_state, 'prepared_contextual_cn_tasks', {}) or {}
+    cn_tasks = getattr(task_state, 'cn_tasks', {}) or {}
+    for name in ["FaceID V2", "FaceSwap", "cn_faceid", "cn_ip_face"]:
+        if name in ctx_model_paths or name in prepared_ctx or name in cn_tasks:
+            return False, "FaceID V2 / FaceSwap is explicitly retired on the new assembly path."
+
+    # 0.5. Check for retired MLSD
+    prepared_structural = getattr(task_state, 'prepared_structural_cn_tasks', {}) or {}
+    for name in ["MLSD", "cn_mlsd"]:
+        if name in (controlnet_paths or {}) or name in prepared_structural or name in cn_tasks:
+            return False, "MLSD is explicitly retired on the active ControlNet path."
+
     if force_eligible:
         return True, None
 
@@ -369,6 +383,97 @@ def build_assembly_request(
             )
             structural_controls_list.append(desc)
 
+    # Resolve contextual ControlNets
+    contextual_controls_list = []
+    if hasattr(task_state, 'get_cn_tasks_for_channel'):
+        contextual_tasks_dict = task_state.get_cn_tasks_for_channel(flags.cn_contextual)
+    else:
+        contextual_tasks_dict = {}
+
+    contextual_assets_resolved = contextual_assets or {}
+    if image_input_result and not contextual_assets_resolved:
+        contextual_assets_resolved = image_input_result.get('contextual_assets') or {}
+
+    contextual_model_paths = contextual_assets_resolved.get('contextual_model_paths', {})
+    clip_vision_path_str = contextual_assets_resolved.get('clip_vision_path')
+    ip_negative_path_str = contextual_assets_resolved.get('ip_negative_path')
+    eva_clip_path_str = contextual_assets_resolved.get('eva_clip_path')
+    insightface_model_names = list(contextual_assets_resolved.get('insightface_model_names') or ['antelopev2'])
+
+    clip_vision_identity = None
+    if clip_vision_path_str and os.path.exists(clip_vision_path_str):
+        clip_vision_identity = get_file_identity(clip_vision_path_str)
+
+    ip_negative_identity = None
+    if ip_negative_path_str and os.path.exists(ip_negative_path_str):
+        ip_negative_identity = get_file_identity(ip_negative_path_str)
+
+    eva_clip_identity = None
+    if eva_clip_path_str and os.path.exists(eva_clip_path_str):
+        eva_clip_identity = get_file_identity(eva_clip_path_str)
+
+    for cn_type in getattr(flags, 'cn_contextual_types', []):
+        tasks = contextual_tasks_dict.get(cn_type, [])
+        for idx, task in enumerate(tasks):
+            raw_img = task[0]
+            cn_stop = task[1]
+            cn_weight = task[2]
+            cn_start = task[3] if len(task) >= 4 else 0.0
+
+            if len(task) < 5:
+                raise SDXLAssemblyEligibilityError(
+                    "Contextual direct/probe requests require an explicit ui_slot_index; "
+                    "the live TaskState grouping path still does not preserve truthful slot continuity."
+                )
+
+            ui_slot_index = int(task[4])
+            
+            model_path_str = contextual_model_paths.get(cn_type)
+            if not model_path_str:
+                continue
+
+            model_identity = get_file_identity(model_path_str)
+
+            # Resolve image descriptor
+            from backend.sdxl_assembly.contracts import make_spatial_image_descriptor
+            image_desc = make_spatial_image_descriptor(raw_img)
+
+            source_image_role = "face_image" if cn_type == flags.cn_pulid else "image_prompt"
+
+            preprocess_params = {}
+            if cn_type == flags.cn_ip:
+                preprocess_params = {"resize_to": 224}
+            elif cn_type == flags.cn_pulid:
+                preprocess_params = {"resize_to": 512, "crop": "norm_crop"}
+
+            unsupported_mode_errors = []
+            if not model_identity.path.exists():
+                unsupported_mode_errors.append(f"Model path does not exist: {model_identity.path}")
+
+            from backend.sdxl_assembly.contracts import SDXLContextualControlDescriptor
+            desc = SDXLContextualControlDescriptor(
+                ui_slot_index=ui_slot_index,
+                control_type=cn_type,
+                image_pixels=image_desc.pixels,
+                image_fingerprint=image_desc.fingerprint,
+                source_image_role=source_image_role,
+                model_path=Path(model_path_str),
+                model_sha256=model_identity.sha256,
+                clip_vision_path=Path(clip_vision_path_str) if clip_vision_path_str else None,
+                clip_vision_sha256=clip_vision_identity.sha256 if clip_vision_identity else None,
+                ip_negative_path=Path(ip_negative_path_str) if ip_negative_path_str else None,
+                ip_negative_sha256=ip_negative_identity.sha256 if ip_negative_identity else None,
+                eva_clip_path=Path(eva_clip_path_str) if eva_clip_path_str else None,
+                eva_clip_sha256=eva_clip_identity.sha256 if eva_clip_identity else None,
+                insightface_model_names=tuple(insightface_model_names),
+                preprocess_params=preprocess_params,
+                weight=float(cn_weight),
+                start_percent=float(cn_start),
+                end_percent=float(cn_stop),
+                unsupported_mode_errors=tuple(unsupported_mode_errors)
+            )
+            contextual_controls_list.append(desc)
+
     request = SDXLAssemblyRequest(
         request_id=f"req_{current_task_id}_{int(time.time())}",
         route_id="txt2img_assembly",
@@ -410,6 +515,7 @@ def build_assembly_request(
         metadata=execution_metadata,
         spatial_context=build_spatial_context_descriptor(task_state, image_input_result),
         structural_controls=tuple(structural_controls_list),
+        contextual_controls=tuple(contextual_controls_list),
     )
     
     # Static validate
