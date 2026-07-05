@@ -196,6 +196,45 @@ def release_text_encoder_component_cache(reason: str | None = None) -> None:
     import gc
     gc.collect()
 
+
+def release_prompt_conditioning_cache(reason: str | None = None) -> None:
+    logger.debug("[SDXL Telemetry] Releasing prompt conditioning cache reason=%s", reason)
+    log_telemetry("prompt_cache_release", f"reason={reason or 'unspecified'}")
+    with _PROMPT_CONDITIONING_CACHE_LOCK:
+        _PROMPT_CONDITIONING_CACHE.clear()
+
+
+def release_model_prompt_caches(*, reason: str | None = None) -> None:
+    """Release SDXL model/prompt domains without clearing warm CN or spatial artifacts."""
+    clear_reason = reason or "model_prompt_domain_release"
+    logger.debug("[SDXL Telemetry] Releasing SDXL model/prompt caches reason=%s", clear_reason)
+    log_telemetry("assembly_model_prompt_cache_release", f"reason={clear_reason}")
+    release_active_sdxl_streaming_spine(reason=clear_reason)
+    release_text_encoder_component_cache(reason=clear_reason)
+    release_prompt_conditioning_cache(reason=clear_reason)
+
+    import gc
+    gc.collect()
+
+
+def release_spatial_vae_caches(*, reason: str | None = None) -> None:
+    """Release image/VAE-derived warm artifacts without touching ControlNet support models."""
+    clear_reason = reason or "spatial_vae_domain_release"
+    logger.debug("[SDXL Telemetry] Releasing SDXL spatial/VAE caches reason=%s", clear_reason)
+    log_telemetry("assembly_spatial_vae_cache_release", f"reason={clear_reason}")
+
+    from backend.sdxl_assembly.vae_encode_worker import VaeEncodeWorker
+    from backend.sdxl_assembly.stream_st_preprocess_worker import StreamingStructuralPreprocessWorker
+    from backend.sdxl_assembly.stream_ctx_cn_worker import StreamingContextualControlWorker
+
+    VaeEncodeWorker._ENCODE_CACHE.clear()
+    StreamingStructuralPreprocessWorker.clear_preprocess_cache()
+    StreamingContextualControlWorker.clear_payload_cache()
+
+    import gc
+    gc.collect()
+
+
 class SDXLStreamingRuntimeState:
     def __init__(self) -> None:
         self._lock = RLock()

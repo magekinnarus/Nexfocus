@@ -74,16 +74,34 @@ def _identity(path: Path, sha: str) -> ResolvedFileIdentity:
     )
 
 
-def test_production_eligibility_gate_still_rejects_image_inputs():
-    # Verify that the default eligibility check returns false for image inputs
+def test_production_eligibility_gate_admits_supported_image_inputs(tmp_path, monkeypatch):
+    checkpoint_path = tmp_path / 'sdxl_base.safetensors'
+    checkpoint_path.write_bytes(b'checkpoint')
+
+    monkeypatch.setattr(
+        'backend.sdxl_assembly.request_builder.get_file_from_folder_list',
+        lambda _name, _folders: str(checkpoint_path),
+    )
+    monkeypatch.setattr(
+        'backend.sdxl_assembly.request_builder.config.resolve_model_taxonomy',
+        lambda _path: SimpleNamespace(architecture=model_taxonomy.ARCHITECTURE_SDXL),
+    )
+
     state = _task_state()
+    state.input_image_checkbox = True
+    state.current_tab = "inpaint"
+    state.inpaint_input_image = np.zeros((64, 64, 3))
+    state.inpaint_mask_image = np.zeros((64, 64))
+    state.goals = ["inpaint"]
     eligible, reason = is_eligible_for_sdxl_assembly(
         task_state=state,
         loras=[],
-        image_input_result={"inpaint_image": np.zeros((64, 64, 3))},
+        image_input_result={
+            "inpaint_image": np.zeros((64, 64, 3)),
+            "inpaint_mask": np.zeros((64, 64)),
+        },
     )
-    assert not eligible
-    assert "inpaint_image" in reason
+    assert eligible, f"Expected inpaint to be eligible under W09, got: {reason}"
 
 
 def test_request_builder_forces_eligibility_and_captures_spatial_context(tmp_path, monkeypatch):

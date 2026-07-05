@@ -232,16 +232,16 @@ class SDXLAssembly:
         pass
 
     def close(self) -> None:
-        """Deterministically tears down the assembly and its components in strict order."""
+        """Detach request-local state without destroying reusable warm worker domains."""
         log_telemetry("cleanup_begin", "reason=assembly_close")
         
-        # 0. st_control_worker releases cached support weights
-        if self.st_control_worker is not None and hasattr(self.st_control_worker, "release_owned_resources"):
-            self.st_control_worker.release_owned_resources()
+        # 0. ControlNet workers keep support/payload caches warm across safe SDXL
+        # request closes. Full support teardown is reserved for explicit domain release.
+        if self.st_control_worker is not None and hasattr(self.st_control_worker, "end"):
+            self.st_control_worker.end()
 
-        # 0.5. ctx_control_worker releases cached support weights
-        if self.ctx_control_worker is not None and hasattr(self.ctx_control_worker, "release_owned_resources"):
-            self.ctx_control_worker.release_owned_resources()
+        if self.ctx_control_worker is not None and hasattr(self.ctx_control_worker, "end"):
+            self.ctx_control_worker.end()
             
         # 1. vae_decode_worker unloads VAE tensors first
         if hasattr(self.vae_decode_worker, "teardown_assembly_order"):

@@ -120,7 +120,7 @@ def test_sampling_callback_progress_scales_correctly_when_invoked_sparsely():
     assert task_state.current_progress == 100
 
 
-def test_release_sdxl_runtime_state_clears_greenfield_assembly_caches(monkeypatch):
+def test_release_sdxl_runtime_state_preserves_warm_cn_on_same_sdxl_family(monkeypatch):
     default_pipeline = _load_default_pipeline(monkeypatch)
 
     from backend import sdxl_unified_runtime
@@ -128,6 +128,7 @@ def test_release_sdxl_runtime_state_clears_greenfield_assembly_caches(monkeypatc
 
     cache_clear_calls = []
     assembly_clear_calls = []
+    assembly_model_prompt_calls = []
 
     monkeypatch.setattr(
         default_pipeline.resources,
@@ -143,6 +144,10 @@ def test_release_sdxl_runtime_state_clears_greenfield_assembly_caches(monkeypatc
     monkeypatch.setattr(
         "backend.sdxl_assembly.clear_all_caches",
         lambda **kwargs: assembly_clear_calls.append(kwargs.get("reason")),
+    )
+    monkeypatch.setattr(
+        "backend.sdxl_assembly.release_model_prompt_caches",
+        lambda **kwargs: assembly_model_prompt_calls.append(kwargs.get("reason")),
     )
 
     current_policy = sdxl_runtime_policy.resolve_sdxl_execution_policy(
@@ -169,7 +174,8 @@ def test_release_sdxl_runtime_state_clears_greenfield_assembly_caches(monkeypatc
 
     assert result["released"] is True
     assert cache_clear_calls == [False]
-    assert assembly_clear_calls == ["tracked_test"]
+    assert assembly_clear_calls == []
+    assert assembly_model_prompt_calls == ["tracked_test"]
 
 
 def test_assembly_progress_callback_throttles_raw_text_only_callback():
@@ -226,3 +232,48 @@ def test_process_transition_checkpoint_release_clears_greenfield_assembly_caches
     assert decision.reset_required is True
     assert release_calls
     assert all(reason == "route_transition" for reason in release_calls)
+
+
+def test_process_transition_same_sdxl_family_preserves_warm_cn_domains(monkeypatch):
+    from backend import process_transition
+
+    clear_active_process_key()
+
+    full_clear_calls = []
+    model_prompt_calls = []
+    monkeypatch.setattr(
+        "backend.sdxl_assembly.clear_all_caches",
+        lambda **kwargs: full_clear_calls.append(kwargs.get("reason")),
+    )
+    monkeypatch.setattr(
+        "backend.sdxl_assembly.release_model_prompt_caches",
+        lambda **kwargs: model_prompt_calls.append(kwargs.get("reason")),
+    )
+    monkeypatch.setattr(
+        "backend.resources.prepare_for_checkpoint_switch",
+        lambda **kwargs: kwargs["release_callback"]() if kwargs.get("release_callback") else None,
+    )
+    monkeypatch.setattr(
+        "backend.sdxl_unified_runtime.clear_unified_sdxl_runtime_component_cache",
+        lambda teardown=False: None,
+    )
+
+    current_key = build_process_key(
+        family=PROCESS_FAMILY_SDXL,
+        process_class=PROCESS_CLASS_STANDARD_SDXL,
+        authoritative_identity=("model-a.safetensors", "clip-a.safetensors"),
+    )
+    requested_key = build_process_key(
+        family=PROCESS_FAMILY_SDXL,
+        process_class=PROCESS_CLASS_STANDARD_SDXL,
+        authoritative_identity=("model-b.safetensors", "clip-a.safetensors"),
+    )
+
+    set_active_process_key(current_key)
+    decision = process_transition.apply_process_transition_gate(requested_key)
+
+    assert decision is not None
+    assert decision.reset_required is True
+    assert full_clear_calls == []
+    assert model_prompt_calls
+    assert all(reason == "route_transition" for reason in model_prompt_calls)

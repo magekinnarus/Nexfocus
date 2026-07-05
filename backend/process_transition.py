@@ -504,8 +504,16 @@ def release_process_boundary(current_key: ProcessKey | None, requested_key: Proc
             except Exception:
                 pass
             try:
-                from backend.sdxl_assembly import clear_all_caches as clear_sdxl_assembly_caches
-                clear_sdxl_assembly_caches(reason='route_transition')
+                same_sdxl_family = (
+                    requested_key is not None
+                    and requested_key.family == PROCESS_FAMILY_SDXL
+                )
+                if same_sdxl_family:
+                    from backend.sdxl_assembly import release_model_prompt_caches as release_sdxl_model_prompt_caches
+                    release_sdxl_model_prompt_caches(reason='route_transition')
+                else:
+                    from backend.sdxl_assembly import clear_all_caches as clear_sdxl_assembly_caches
+                    clear_sdxl_assembly_caches(reason='route_transition')
             except Exception:
                 pass
 

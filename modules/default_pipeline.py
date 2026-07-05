@@ -266,8 +266,8 @@ def refresh_base_model(name, vae_name=None, clip_name=None, sdxl_policy=None):
                         unet.unpatch_model(unpatch_weights=True)
 
             try:
-                from backend.sdxl_assembly import clear_all_caches as clear_sdxl_assembly_caches
-                clear_sdxl_assembly_caches(reason="checkpoint_switch")
+                from backend.sdxl_assembly import release_model_prompt_caches as release_sdxl_model_prompt_caches
+                release_sdxl_model_prompt_caches(reason="checkpoint_switch")
             except Exception:
                 pass
             
@@ -519,8 +519,16 @@ def release_sdxl_runtime_state(
             pass
 
         try:
-            from backend.sdxl_assembly import clear_all_caches as clear_sdxl_assembly_caches
-            clear_sdxl_assembly_caches(reason=reason or "sdxl_process_transition")
+            same_sdxl_family = (
+                next_process_key is not None
+                and next_process_key.family == process_transition.PROCESS_FAMILY_SDXL
+            )
+            if same_sdxl_family:
+                from backend.sdxl_assembly import release_model_prompt_caches as release_sdxl_model_prompt_caches
+                release_sdxl_model_prompt_caches(reason=reason or "sdxl_process_transition")
+            else:
+                from backend.sdxl_assembly import clear_all_caches as clear_sdxl_assembly_caches
+                clear_sdxl_assembly_caches(reason=reason or "sdxl_process_transition")
         except Exception:
             pass
 

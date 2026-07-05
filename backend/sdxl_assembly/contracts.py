@@ -380,8 +380,8 @@ class SDXLAssemblyRequest:
 
         import modules.flags as flags
         for desc in self.structural_controls:
-            if desc.slot_index <= 0:
-                raise SDXLAssemblyValidationError(f"Structural control slot index must be positive, got {desc.slot_index}")
+            if desc.slot_index < 0 or desc.slot_index > 3:
+                raise SDXLAssemblyValidationError(f"Structural control slot index must be in range 0..3, got {desc.slot_index}")
             if desc.control_type not in getattr(flags, "cn_structural_types", []):
                 raise SDXLAssemblyValidationError(f"Unsupported structural control type: {desc.control_type}")
             if not desc.checkpoint_path.exists():

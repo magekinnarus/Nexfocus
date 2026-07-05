@@ -598,7 +598,7 @@ def preprocess_structural_controlnets(task_state, structural_preprocessor_paths=
         from backend.sdxl_unified_runtime import _PREPROCESSOR_METRICS
         valid_tasks = []
         for slot_index, task in enumerate(tasks, start=1):
-            raw_img, cn_stop, cn_weight = task
+            raw_img, cn_stop, cn_weight = task[:3]
             cn_img = _unpack_cn_image(raw_img, cn_type)
             if cn_img is None:
                 continue
@@ -685,7 +685,7 @@ def preprocess_contextual_controlnets(task_state, contextual_assets=None):
 
     def normalize_contextual_task(task):
         if len(task) >= 4:
-            return [task[0], task[1], task[2], task[3]]
+            return list(task)
         if len(task) == 3:
             return [task[0], task[1], task[2], 0.0]
         raise ValueError(f'Unexpected contextual task shape: {task!r}')
@@ -701,7 +701,7 @@ def preprocess_contextual_controlnets(task_state, contextual_assets=None):
             return
 
         for slot_index, task in enumerate(tasks, start=1):
-            raw_img, cn_stop, cn_weight = task
+            raw_img, cn_stop, cn_weight = task[:3]
             cn_img = _unpack_cn_image(raw_img, cn_type)
             if cn_img is None:
                 continue

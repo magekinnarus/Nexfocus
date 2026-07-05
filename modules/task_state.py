@@ -156,7 +156,13 @@ class TaskState:
             normalized_type = flags.resolve_cn_type(cn_type, default=None)
             if normalized_type is None:
                 continue
-            normalized_tasks[normalized_type].extend(tasks)
+            for task in tasks:
+                task_list = list(task)
+                if len(task_list) == 3:
+                    task_list.append(0.0)
+                if len(task_list) == 4:
+                    task_list.append(len(normalized_tasks[normalized_type]))
+                normalized_tasks[normalized_type].append(task_list)
 
         self.cn_tasks = normalized_tasks
         self.cn_tasks_by_channel = {
@@ -175,8 +181,14 @@ class TaskState:
         if channel is None:
             return False
 
-        self.cn_tasks[normalized_type].append(task)
-        self.cn_tasks_by_channel[channel][normalized_type].append(task)
+        task_list = list(task)
+        if len(task_list) == 3:
+            task_list.append(0.0)
+        if len(task_list) == 4:
+            task_list.append(len(self.cn_tasks[normalized_type]))
+
+        self.cn_tasks[normalized_type].append(task_list)
+        self.cn_tasks_by_channel[channel][normalized_type].append(task_list)
         return True
 
     def set_cn_tasks(self, cn_type, tasks):
@@ -190,8 +202,17 @@ class TaskState:
         if channel is None:
             return False
 
-        self.cn_tasks[normalized_type] = tasks
-        self.cn_tasks_by_channel[channel][normalized_type] = list(tasks)
+        normalized_list = []
+        for task in tasks:
+            task_list = list(task)
+            if len(task_list) == 3:
+                task_list.append(0.0)
+            if len(task_list) == 4:
+                task_list.append(len(normalized_list))
+            normalized_list.append(task_list)
+
+        self.cn_tasks[normalized_type] = normalized_list
+        self.cn_tasks_by_channel[channel][normalized_type] = list(normalized_list)
         return True
 
     def get_cn_tasks_for_channel(self, channel):

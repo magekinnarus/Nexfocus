@@ -504,6 +504,7 @@ class StructuralControlNetStage(PipelineStage):
 
     def execute(self, context: PipelineRouteContext):
         from modules.pipeline.image_input import preprocess_structural_controlnets
+        from backend.sdxl_assembly.gateway import is_eligible_for_sdxl_assembly
 
         if not context.has_goal('cn'):
             return PipelineStageResult(notes={'status': 'skipped'})
@@ -511,6 +512,16 @@ class StructuralControlNetStage(PipelineStage):
         structural_tasks = context.task_state.get_cn_tasks_for_channel(flags.cn_structural)
         if sum(len(tasks) for tasks in structural_tasks.values()) == 0:
             return PipelineStageResult(notes={'status': 'skipped'})
+
+        eligible, _ = is_eligible_for_sdxl_assembly(
+            task_state=context.task_state,
+            loras=context.task_state.loras,
+            controlnet_paths=context.image_input_result.get('controlnet_paths', {}),
+            contextual_assets=context.image_input_result.get('contextual_assets', {}),
+            image_input_result=context.image_input_result,
+        )
+        if eligible:
+            return PipelineStageResult(notes={'status': 'assembly_delegated'})
 
         preprocess_structural_controlnets(
             context.task_state,
@@ -553,6 +564,7 @@ class ContextualControlNetStage(PipelineStage):
 
     def execute(self, context: PipelineRouteContext):
         from modules.pipeline.image_input import preprocess_contextual_controlnets
+        from backend.sdxl_assembly.gateway import is_eligible_for_sdxl_assembly
 
         if not context.has_goal('cn'):
             return PipelineStageResult(notes={'status': 'skipped'})
@@ -560,6 +572,16 @@ class ContextualControlNetStage(PipelineStage):
         contextual_tasks = context.task_state.get_cn_tasks_for_channel(flags.cn_contextual)
         if sum(len(tasks) for tasks in contextual_tasks.values()) == 0:
             return PipelineStageResult(notes={'status': 'skipped'})
+
+        eligible, _ = is_eligible_for_sdxl_assembly(
+            task_state=context.task_state,
+            loras=context.task_state.loras,
+            controlnet_paths=context.image_input_result.get('controlnet_paths', {}),
+            contextual_assets=context.image_input_result.get('contextual_assets', {}),
+            image_input_result=context.image_input_result,
+        )
+        if eligible:
+            return PipelineStageResult(notes={'status': 'assembly_delegated'})
 
         preprocess_contextual_controlnets(
             context.task_state,

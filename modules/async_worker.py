@@ -113,7 +113,8 @@ class AsyncTask:
                 continue
 
             cn_type = flags.resolve_cn_type(raw_cn_type, default=None)
-            if cn_type is None or not s.add_cn_task(cn_type, [cn_img, cn_stop, cn_weight]):
+            cn_start = args.get(f'cn_{i}_start', 0.0)
+            if cn_type is None or not s.add_cn_task(cn_type, [cn_img, cn_stop, cn_weight, cn_start, i]):
                 print(f'[ControlNet] Skipping unsupported guidance type: {raw_cn_type!r}')
 
     @property

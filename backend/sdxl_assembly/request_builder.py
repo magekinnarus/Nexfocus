@@ -47,6 +47,111 @@ def _task_attr_or_none(task_state: Any, name: str) -> Any:
         return state_dict.get(name)
     return None
 
+
+def _dict_or_empty(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _has_active_tasks(tasks: Any) -> bool:
+    if tasks is None:
+        return False
+    try:
+        return len(tasks) > 0
+    except TypeError:
+        return bool(tasks)
+
+
+def _normalize_cn_path_map(paths: Any) -> Dict[str, str]:
+    normalized: Dict[str, str] = {}
+    for cn_type, path in _dict_or_empty(paths).items():
+        resolved_type = flags.resolve_cn_type(cn_type, default=cn_type)
+        normalized[resolved_type] = path
+    return normalized
+
+
+def _resolve_controlnet_paths(
+    controlnet_paths: Optional[Dict[str, str]],
+    image_input_result: Optional[Dict[str, Any]],
+) -> Dict[str, str]:
+    resolved: Dict[str, str] = {}
+    if image_input_result:
+        resolved.update(_normalize_cn_path_map(image_input_result.get("controlnet_paths") or {}))
+    if controlnet_paths:
+        resolved.update(_normalize_cn_path_map(controlnet_paths))
+    return resolved
+
+
+def _resolve_contextual_assets(
+    contextual_assets: Optional[Dict[str, Any]],
+    image_input_result: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    resolved: Dict[str, Any] = {}
+    if image_input_result:
+        resolved.update(_dict_or_empty(image_input_result.get("contextual_assets") or {}))
+    if contextual_assets:
+        explicit_assets = _dict_or_empty(contextual_assets)
+        merged_model_paths = dict(_dict_or_empty(resolved.get("contextual_model_paths")))
+        merged_model_paths.update(_dict_or_empty(explicit_assets.get("contextual_model_paths")))
+        resolved.update(explicit_assets)
+        if merged_model_paths:
+            resolved["contextual_model_paths"] = merged_model_paths
+    return resolved
+
+
+def _resolve_structural_preprocessor_paths(
+    image_input_result: Optional[Dict[str, Any]],
+) -> Dict[str, str]:
+    if not image_input_result:
+        return {}
+    return _normalize_cn_path_map(image_input_result.get("structural_preprocessor_paths") or {})
+
+
+def _path_exists(path_str: Any) -> bool:
+    return bool(path_str) and os.path.exists(str(path_str))
+
+
+def _require_existing_path(path_str: Any, label: str) -> str:
+    if not path_str:
+        raise SDXLAssemblyEligibilityError(f"{label} is missing.")
+    path = str(path_str)
+    if not os.path.exists(path):
+        raise SDXLAssemblyEligibilityError(f"{label} does not exist: {path}")
+    return path
+
+
+def _active_cn_task_types(
+    task_state: Any,
+    prepared_structural: Dict[str, Any],
+    prepared_contextual: Dict[str, Any],
+) -> Tuple[set[str], set[str], set[str]]:
+    structural_types: set[str] = set()
+    contextual_types: set[str] = set()
+    all_types: set[str] = set()
+
+    def remember(cn_type: Any, tasks: Any) -> None:
+        if not _has_active_tasks(tasks):
+            return
+        normalized_type = flags.resolve_cn_type(cn_type, default=cn_type)
+        all_types.add(normalized_type)
+        channel = flags.get_cn_channel(normalized_type)
+        if channel == flags.cn_structural:
+            structural_types.add(normalized_type)
+        elif channel == flags.cn_contextual:
+            contextual_types.add(normalized_type)
+
+    for cn_type, tasks in _dict_or_empty(getattr(task_state, "cn_tasks", {}) or {}).items():
+        remember(cn_type, tasks)
+    for cn_type, tasks in prepared_structural.items():
+        remember(cn_type, tasks)
+    for cn_type, tasks in prepared_contextual.items():
+        remember(cn_type, tasks)
+
+    return structural_types, contextual_types, all_types
+
+
+def _structural_preprocessor_required(task_state: Any, cn_type: str) -> bool:
+    return cn_type == flags.cn_depth and not bool(getattr(task_state, "skipping_cn_preprocessor", False))
+
 def get_file_identity(path_str: str) -> ResolvedFileIdentity:
     """Calculates or retrieves cached file identity metadata."""
     if not path_str or not os.path.exists(path_str):
@@ -88,57 +193,102 @@ def determine_eligibility(
 ) -> Tuple[bool, Optional[str]]:
     """Determines if a generation request is eligible for the new SDXL assembly lane.
     
-    Rejects: inpaint/outpaint, image inputs, ControlNet, contextual adapters, tiled refinement, spatial latents.
+    W09 production lane supports:
+    - txt2img, inpaint, outpaint routes.
+    - ControlNet structural: PyraCanny, Depth, CPDS.
+    - ControlNet contextual: ImagePrompt, PuLID.
+    
+    Rejects: FaceID V2, FaceSwap, MLSD (retired); Resident SDXL/ControlNet (deferred);
+             Flux Fill, removal, upscale, tiled refinement, non-SDXL base models.
     """
     # 0. Check for retired FaceID V2 / FaceSwap
-    ctx_model_paths = (contextual_assets or {}).get('contextual_model_paths', {})
-    prepared_ctx = getattr(task_state, 'prepared_contextual_cn_tasks', {}) or {}
-    cn_tasks = getattr(task_state, 'cn_tasks', {}) or {}
+    resolved_controlnet_paths = _resolve_controlnet_paths(controlnet_paths, image_input_result)
+    resolved_contextual_assets = _resolve_contextual_assets(contextual_assets, image_input_result)
+    contextual_model_paths = _normalize_cn_path_map(
+        resolved_contextual_assets.get('contextual_model_paths', {})
+    )
+    structural_preprocessor_paths = _resolve_structural_preprocessor_paths(image_input_result)
+    prepared_ctx = _dict_or_empty(getattr(task_state, 'prepared_contextual_cn_tasks', {}) or {})
+    cn_tasks = _dict_or_empty(getattr(task_state, 'cn_tasks', {}) or {})
     for name in ["FaceID V2", "FaceSwap", "cn_faceid", "cn_ip_face"]:
-        if name in ctx_model_paths or name in prepared_ctx or name in cn_tasks:
+        if name in contextual_model_paths or name in prepared_ctx or name in cn_tasks:
             return False, "FaceID V2 / FaceSwap is explicitly retired on the new assembly path."
 
     # 0.5. Check for retired MLSD
-    prepared_structural = getattr(task_state, 'prepared_structural_cn_tasks', {}) or {}
+    prepared_structural = _dict_or_empty(getattr(task_state, 'prepared_structural_cn_tasks', {}) or {})
     for name in ["MLSD", "cn_mlsd"]:
-        if name in (controlnet_paths or {}) or name in prepared_structural or name in cn_tasks:
+        if name in resolved_controlnet_paths or name in prepared_structural or name in cn_tasks:
             return False, "MLSD is explicitly retired on the active ControlNet path."
+
+    # 1. Check for resident SDXL or resident ControlNet
+    policy = getattr(task_state, 'sdxl_execution_policy', None)
+    if policy is not None and getattr(policy, 'execution_mode', None) == 'resident':
+        return False, "Resident SDXL posture is not supported on the new assembly lane"
 
     if force_eligible:
         return True, None
 
-    # 1. Check for image inputs
-    if image_input_result:
-        for k, v in image_input_result.items():
-            if v is not None:
-                return False, f"image_input_result key '{k}' is active"
-
-    # 2. Check for inpaint / outpaint goals
-    goals = set(getattr(task_state, 'goals', []) or [])
-    if 'inpaint' in goals or 'outpaint' in goals:
-        return False, f"Inpaint/Outpaint goals are active: {goals}"
-
-    # 3. Check for tiled refinement
+    # 2. Check for tiled refinement
     if bool(getattr(task_state, 'tiled', False)):
         return False, "Tiled refinement is active"
 
-    # 4. Check for structural ControlNet
-    if controlnet_paths:
-        return False, "Structural ControlNet paths are active"
-    prepared_structural = getattr(task_state, 'prepared_structural_cn_tasks', {}) or {}
-    if any(tasks for tasks in prepared_structural.values()):
-        return False, "Prepared structural ControlNet tasks are active"
-
-    # 5. Check for contextual adapters
-    if contextual_assets:
-        return False, "Contextual adapter assets are active"
-    prepared_contextual = getattr(task_state, 'prepared_contextual_cn_tasks', {}) or {}
-    if any(tasks for tasks in prepared_contextual.values()):
-        return False, "Prepared contextual adapter tasks are active"
-
-    # 6. Check for spatial latent requests / initial latent
+    # 3. Check for spatial latent requests / initial latent (direct/probe override, not inpaint/outpaint VAE latents)
     if getattr(task_state, 'initial_latent', None) is not None:
         return False, "Spatial latent / initial_latent is active"
+
+    # 4. Resolve Route Intent
+    from modules.route_intent import resolve_route_intent
+    intent = resolve_route_intent(task_state)
+    
+    # 5. Route check
+    if intent.route_id not in {"txt2img", "inpaint", "outpaint"}:
+        return False, f"Route '{intent.route_id}' is not eligible for SDXL Assembly"
+
+    # 6. Check for active ControlNet types and the resolved assets needed to execute them.
+    active_structural_types, active_contextual_types, active_task_types = _active_cn_task_types(
+        task_state,
+        prepared_structural,
+        prepared_ctx,
+    )
+    active_cn_types = set(active_task_types)
+    active_cn_types.update(resolved_controlnet_paths.keys())
+    active_cn_types.update(contextual_model_paths.keys())
+
+    for cn_type in active_cn_types:
+        normalized_type = flags.resolve_cn_type(cn_type, default=cn_type)
+        if normalized_type not in flags.cn_all_types:
+            return False, f"ControlNet type '{cn_type}' is not supported on the new assembly lane"
+
+    for cn_type in sorted(active_structural_types):
+        checkpoint_path = resolved_controlnet_paths.get(cn_type)
+        if not _path_exists(checkpoint_path):
+            return False, (
+                f"Structural ControlNet '{cn_type}' requires a resolved checkpoint path "
+                "before it can use the SDXL assembly lane."
+            )
+        if _structural_preprocessor_required(task_state, cn_type):
+            preprocessor_path = structural_preprocessor_paths.get(cn_type)
+            if not _path_exists(preprocessor_path):
+                return False, (
+                    f"Structural ControlNet '{cn_type}' requires a resolved preprocessor path "
+                    "before it can use the SDXL assembly lane."
+                )
+
+    for cn_type in sorted(active_contextual_types):
+        model_path = contextual_model_paths.get(cn_type)
+        if not _path_exists(model_path):
+            return False, (
+                f"Contextual ControlNet '{cn_type}' requires a resolved model path "
+                "before it can use the SDXL assembly lane."
+            )
+        if cn_type == flags.cn_ip:
+            if not _path_exists(resolved_contextual_assets.get('clip_vision_path')):
+                return False, "ImagePrompt requires a resolved CLIP vision path before it can use the SDXL assembly lane."
+            if not _path_exists(resolved_contextual_assets.get('ip_negative_path')):
+                return False, "ImagePrompt requires a resolved IP negative path before it can use the SDXL assembly lane."
+        elif cn_type == flags.cn_pulid:
+            if not _path_exists(resolved_contextual_assets.get('eva_clip_path')):
+                return False, "PuLID requires a resolved EVA-CLIP path before it can use the SDXL assembly lane."
 
     # 7. Check for SDXL architecture
     try:
@@ -313,21 +463,18 @@ def build_assembly_request(
     else:
         struct_tasks_dict = {}
 
-    structural_preprocessor_paths = {}
-    if image_input_result:
-        structural_preprocessor_paths = image_input_result.get('structural_preprocessor_paths') or {}
-
-    cn_paths = controlnet_paths or {}
-    if image_input_result and not cn_paths:
-        cn_paths = image_input_result.get('controlnet_paths') or {}
+    structural_preprocessor_paths = _resolve_structural_preprocessor_paths(image_input_result)
+    cn_paths = _resolve_controlnet_paths(controlnet_paths, image_input_result)
 
     for cn_type in getattr(flags, 'cn_structural_types', []):
         tasks = struct_tasks_dict.get(cn_type, [])
         for task in tasks:
-            raw_img, cn_stop, cn_weight = task
-            ckpt_path_str = cn_paths.get(cn_type)
-            if not ckpt_path_str:
-                continue
+            raw_img, cn_stop, cn_weight = task[:3]
+            cn_start = task[3] if len(task) >= 4 else 0.0
+            ckpt_path_str = _require_existing_path(
+                cn_paths.get(cn_type),
+                f"Structural ControlNet '{cn_type}' checkpoint path",
+            )
 
             checkpoint_identity = get_file_identity(ckpt_path_str)
             checkpoint_type = determine_controlnet_type(ckpt_path_str)
@@ -343,6 +490,11 @@ def build_assembly_request(
 
             preprocessor_path = None
             preprocessor_path_str = structural_preprocessor_paths.get(cn_type)
+            if _structural_preprocessor_required(task_state, cn_type):
+                preprocessor_path_str = _require_existing_path(
+                    preprocessor_path_str,
+                    f"Structural ControlNet '{cn_type}' preprocessor path",
+                )
             if preprocessor_path_str:
                 preprocessor_path = Path(preprocessor_path_str)
 
@@ -362,7 +514,7 @@ def build_assembly_request(
             if not checkpoint_identity.path.exists():
                 unsupported_mode_errors.append(f"Checkpoint path does not exist: {checkpoint_identity.path}")
 
-            slot_index = len(structural_controls_list) + 1
+            slot_index = int(task[4]) if len(task) >= 5 else len(structural_controls_list) + 1
             desc = SDXLStructuralControlDescriptor(
                 slot_index=slot_index,
                 control_type=cn_type,
@@ -377,7 +529,7 @@ def build_assembly_request(
                 checkpoint_sha256=checkpoint_identity.sha256,
                 checkpoint_type=checkpoint_type,
                 weight=float(cn_weight),
-                start_percent=0.0,
+                start_percent=float(cn_start),
                 end_percent=float(cn_stop),
                 unsupported_mode_errors=tuple(unsupported_mode_errors)
             )
@@ -390,11 +542,9 @@ def build_assembly_request(
     else:
         contextual_tasks_dict = {}
 
-    contextual_assets_resolved = contextual_assets or {}
-    if image_input_result and not contextual_assets_resolved:
-        contextual_assets_resolved = image_input_result.get('contextual_assets') or {}
+    contextual_assets_resolved = _resolve_contextual_assets(contextual_assets, image_input_result)
 
-    contextual_model_paths = contextual_assets_resolved.get('contextual_model_paths', {})
+    contextual_model_paths = _normalize_cn_path_map(contextual_assets_resolved.get('contextual_model_paths', {}))
     clip_vision_path_str = contextual_assets_resolved.get('clip_vision_path')
     ip_negative_path_str = contextual_assets_resolved.get('ip_negative_path')
     eva_clip_path_str = contextual_assets_resolved.get('eva_clip_path')
@@ -428,9 +578,30 @@ def build_assembly_request(
 
             ui_slot_index = int(task[4])
             
-            model_path_str = contextual_model_paths.get(cn_type)
-            if not model_path_str:
-                continue
+            model_path_str = _require_existing_path(
+                contextual_model_paths.get(cn_type),
+                f"Contextual ControlNet '{cn_type}' model path",
+            )
+            if cn_type == flags.cn_ip:
+                clip_vision_path_str = _require_existing_path(
+                    clip_vision_path_str,
+                    "ImagePrompt CLIP vision path",
+                )
+                ip_negative_path_str = _require_existing_path(
+                    ip_negative_path_str,
+                    "ImagePrompt IP negative path",
+                )
+                if clip_vision_identity is None:
+                    clip_vision_identity = get_file_identity(clip_vision_path_str)
+                if ip_negative_identity is None:
+                    ip_negative_identity = get_file_identity(ip_negative_path_str)
+            elif cn_type == flags.cn_pulid:
+                eva_clip_path_str = _require_existing_path(
+                    eva_clip_path_str,
+                    "PuLID EVA-CLIP path",
+                )
+                if eva_clip_identity is None:
+                    eva_clip_identity = get_file_identity(eva_clip_path_str)
 
             model_identity = get_file_identity(model_path_str)
 
