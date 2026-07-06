@@ -238,33 +238,57 @@ class SDXLAssembly:
         # 0. ControlNet workers keep support/payload caches warm across safe SDXL
         # request closes. Full support teardown is reserved for explicit domain release.
         if self.st_control_worker is not None and hasattr(self.st_control_worker, "end"):
-            self.st_control_worker.end()
+            try:
+                self.st_control_worker.end()
+            except Exception as e:
+                logger.warning(f"Error detaching structural control worker: {e}")
 
         if self.ctx_control_worker is not None and hasattr(self.ctx_control_worker, "end"):
-            self.ctx_control_worker.end()
+            try:
+                self.ctx_control_worker.end()
+            except Exception as e:
+                logger.warning(f"Error detaching contextual control worker: {e}")
             
         # 1. vae_decode_worker unloads VAE tensors first
         if hasattr(self.vae_decode_worker, "teardown_assembly_order"):
-            self.vae_decode_worker.teardown_assembly_order()
+            try:
+                self.vae_decode_worker.teardown_assembly_order()
+            except Exception as e:
+                logger.warning(f"Error closing vae_decode_worker: {e}")
             
         # 1.2. vae_encode_worker unloads VAE tensors
         if self.vae_encode_worker is not None and hasattr(self.vae_encode_worker, "teardown_assembly_order"):
-            self.vae_encode_worker.teardown_assembly_order()
+            try:
+                self.vae_encode_worker.teardown_assembly_order()
+            except Exception as e:
+                logger.warning(f"Error closing vae_encode_worker: {e}")
             
         # 1.3. spatial_context_worker cleanup
         if self.spatial_context_worker is not None and hasattr(self.spatial_context_worker, "teardown_assembly_order"):
-            self.spatial_context_worker.teardown_assembly_order()
+            try:
+                self.spatial_context_worker.teardown_assembly_order()
+            except Exception as e:
+                logger.warning(f"Error closing spatial_context_worker: {e}")
             
         # 2. LoraWorker rolls back or detaches patch weights
         if hasattr(self.lora_worker, "teardown_assembly_order"):
-            self.lora_worker.teardown_assembly_order()
+            try:
+                self.lora_worker.teardown_assembly_order()
+            except Exception as e:
+                logger.warning(f"Error closing lora_worker: {e}")
             
         # 3. text_encode_worker releases CPU/GPU pinned models
         if hasattr(self.text_encode_worker, "teardown_assembly_order"):
-            self.text_encode_worker.teardown_assembly_order()
+            try:
+                self.text_encode_worker.teardown_assembly_order()
+            except Exception as e:
+                logger.warning(f"Error closing text_encode_worker: {e}")
             
         # 4. UNetSpine unloads or deallocates weights
         if hasattr(self.unet_spine, "teardown_assembly_order"):
-            self.unet_spine.teardown_assembly_order()
+            try:
+                self.unet_spine.teardown_assembly_order()
+            except Exception as e:
+                logger.warning(f"Error closing unet_spine: {e}")
             
         log_telemetry("cleanup_complete", "reason=assembly_close")

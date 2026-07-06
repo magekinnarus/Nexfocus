@@ -18,4 +18,13 @@ from backend.sdxl_assembly.runtime_state import (
     clear_all_caches,
     release_model_prompt_caches,
     release_spatial_vae_caches,
+    LifecycleDomain,
+    release_domain,
+)
+from backend.sdxl_assembly.lifecycle_coordinator import (
+    LifecycleChange,
+    LifecycleReleasePlan,
+    LifecycleReleaseResult,
+    plan_release_for_changes,
+    release_for_changes,
 )
