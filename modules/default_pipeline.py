@@ -266,8 +266,20 @@ def refresh_base_model(name, vae_name=None, clip_name=None, sdxl_policy=None):
                         unet.unpatch_model(unpatch_weights=True)
 
             try:
-                from backend.sdxl_assembly import release_model_prompt_caches as release_sdxl_model_prompt_caches
-                release_sdxl_model_prompt_caches(reason="checkpoint_switch")
+                from backend.sdxl_assembly.lifecycle_coordinator import release_for_changes, LifecycleChange
+                changes = []
+                current_vae_name = getattr(previous_model, 'vae_filename', None)
+
+                if previous_model_filename != filename:
+                    changes.append(LifecycleChange.CHECKPOINT_CHANGE)
+                if current_clip_name != clip_name:
+                    changes.append(LifecycleChange.MODEL_CHANGE)
+                if current_vae_name != vae_filename:
+                    changes.append(LifecycleChange.SPATIAL_VAE_CHANGE)
+                if not changes:
+                    changes.append(LifecycleChange.MODEL_CHANGE)
+
+                release_for_changes(changes, reason="checkpoint_switch")
             except Exception:
                 pass
             
@@ -492,6 +504,8 @@ def release_sdxl_runtime_state(
     hard_reset=False,
     current_model_name=None,
     next_model_name=None,
+    current_vae_name=None,
+    next_vae_name=None,
 ):
     global final_unet, final_clip, final_vae, refresh_state
 
@@ -519,16 +533,16 @@ def release_sdxl_runtime_state(
             pass
 
         try:
-            same_sdxl_family = (
-                next_process_key is not None
-                and next_process_key.family == process_transition.PROCESS_FAMILY_SDXL
+            from backend.sdxl_assembly.lifecycle_coordinator import release_for_changes, LifecycleChange
+            changes = process_transition.classify_sdxl_process_key_changes(
+                current_process_key,
+                next_process_key,
             )
-            if same_sdxl_family:
-                from backend.sdxl_assembly import release_model_prompt_caches as release_sdxl_model_prompt_caches
-                release_sdxl_model_prompt_caches(reason=reason or "sdxl_process_transition")
-            else:
-                from backend.sdxl_assembly import clear_all_caches as clear_sdxl_assembly_caches
-                clear_sdxl_assembly_caches(reason=reason or "sdxl_process_transition")
+            if current_vae_name != next_vae_name and LifecycleChange.SPATIAL_VAE_CHANGE not in changes:
+                changes.append(LifecycleChange.SPATIAL_VAE_CHANGE)
+            if not changes:
+                changes.append(LifecycleChange.MODEL_CHANGE)
+            release_for_changes(changes, reason=reason or "sdxl_process_transition")
         except Exception:
             pass
 
@@ -618,6 +632,8 @@ def refresh_everything(base_model_name, loras,
         next_process_key=current_state.get('sdxl_process_key'),
         current_model_name=refresh_state.get('base_model_name') or getattr(model_base, 'filename', None),
         next_model_name=base_model_name,
+        current_vae_name=refresh_state.get('vae_name') or getattr(model_base, 'vae_filename', None),
+        next_vae_name=vae_name,
         reason='refresh_everything_transition',
         hard_reset=bool(process_key_changed),
     )

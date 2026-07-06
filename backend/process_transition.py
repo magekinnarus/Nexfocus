@@ -359,6 +359,68 @@ def describe_process_key(key: ProcessKey | None) -> str:
     )
 
 
+def _sdxl_identity_components(key: ProcessKey | None) -> tuple[Any | None, Any | None, tuple[Any, ...]]:
+    if key is None:
+        return None, None, ()
+
+    raw_identity = getattr(key, "authoritative_identity", None)
+    if isinstance(raw_identity, tuple):
+        identity = raw_identity
+    elif raw_identity is None:
+        identity = ()
+    elif isinstance(raw_identity, list):
+        identity = tuple(raw_identity)
+    else:
+        identity = (raw_identity,)
+
+    checkpoint_identity = identity[0] if len(identity) > 0 else None
+    is_gguf_route = str(getattr(key, "route_family", "") or "").lower() == "gguf"
+    clip_identity = None if is_gguf_route else (identity[1] if len(identity) > 1 else None)
+    lora_offset = 1 if is_gguf_route else 2
+    lora_identity = tuple(identity[lora_offset:]) if len(identity) > lora_offset else ()
+    return checkpoint_identity, clip_identity, lora_identity
+
+
+def classify_sdxl_process_key_changes(
+    current_key: ProcessKey | None,
+    requested_key: ProcessKey | None,
+) -> list[Any]:
+    from backend.sdxl_assembly.lifecycle_coordinator import LifecycleChange
+
+    changes: list[LifecycleChange] = []
+
+    def add(change: LifecycleChange) -> None:
+        if change not in changes:
+            changes.append(change)
+
+    if requested_key is None or requested_key.family != PROCESS_FAMILY_SDXL:
+        add(LifecycleChange.FAMILY_CHANGE)
+        return changes
+
+    if current_key is None:
+        add(LifecycleChange.CHECKPOINT_CHANGE)
+        return changes
+
+    if current_key.process_class != requested_key.process_class:
+        add(LifecycleChange.SPINE_POSTURE_CHANGE)
+
+    if current_key.authoritative_identity != requested_key.authoritative_identity:
+        current_checkpoint, current_clip, current_loras = _sdxl_identity_components(current_key)
+        requested_checkpoint, requested_clip, requested_loras = _sdxl_identity_components(requested_key)
+
+        if current_checkpoint != requested_checkpoint:
+            add(LifecycleChange.CHECKPOINT_CHANGE)
+        if current_clip != requested_clip:
+            add(LifecycleChange.MODEL_CHANGE)
+        if current_loras != requested_loras:
+            add(LifecycleChange.LORA_STACK_CHANGE)
+
+        if not changes:
+            add(LifecycleChange.MODEL_CHANGE)
+
+    return changes
+
+
 def log_stage_telemetry(
     stage_name: str,
     target_phase: str | None = None,
@@ -504,16 +566,11 @@ def release_process_boundary(current_key: ProcessKey | None, requested_key: Proc
             except Exception:
                 pass
             try:
-                same_sdxl_family = (
-                    requested_key is not None
-                    and requested_key.family == PROCESS_FAMILY_SDXL
-                )
-                if same_sdxl_family:
-                    from backend.sdxl_assembly import release_model_prompt_caches as release_sdxl_model_prompt_caches
-                    release_sdxl_model_prompt_caches(reason='route_transition')
-                else:
-                    from backend.sdxl_assembly import clear_all_caches as clear_sdxl_assembly_caches
-                    clear_sdxl_assembly_caches(reason='route_transition')
+                from backend.sdxl_assembly.lifecycle_coordinator import release_for_changes, LifecycleChange
+                changes = classify_sdxl_process_key_changes(current_key, requested_key)
+                if not changes:
+                    changes.append(LifecycleChange.MODEL_CHANGE)
+                release_for_changes(changes, reason='route_transition')
             except Exception:
                 pass
 
@@ -538,6 +595,8 @@ def release_process_boundary(current_key: ProcessKey | None, requested_key: Proc
                     next_process_key=requested_key,
                     current_model_name=current_model_name,
                     next_model_name=next_model_name,
+                    current_vae_name=None,
+                    next_vae_name=None,
                     reason='route_transition',
                     hard_reset=False,
                 )

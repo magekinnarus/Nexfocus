@@ -125,10 +125,10 @@ def test_release_sdxl_runtime_state_preserves_warm_cn_on_same_sdxl_family(monkey
 
     from backend import sdxl_unified_runtime
     from backend import sdxl_runtime_policy
+    from backend.sdxl_assembly.lifecycle_coordinator import LifecycleChange
 
     cache_clear_calls = []
-    assembly_clear_calls = []
-    assembly_model_prompt_calls = []
+    coordinator_release_calls = []
 
     monkeypatch.setattr(
         default_pipeline.resources,
@@ -142,12 +142,8 @@ def test_release_sdxl_runtime_state_preserves_warm_cn_on_same_sdxl_family(monkey
     )
     monkeypatch.setattr(default_pipeline, "clear_all_caches", lambda: None)
     monkeypatch.setattr(
-        "backend.sdxl_assembly.clear_all_caches",
-        lambda **kwargs: assembly_clear_calls.append(kwargs.get("reason")),
-    )
-    monkeypatch.setattr(
-        "backend.sdxl_assembly.release_model_prompt_caches",
-        lambda **kwargs: assembly_model_prompt_calls.append(kwargs.get("reason")),
+        "backend.sdxl_assembly.lifecycle_coordinator.release_for_changes",
+        lambda changes, reason=None, **kwargs: coordinator_release_calls.append((changes, reason)),
     )
 
     current_policy = sdxl_runtime_policy.resolve_sdxl_execution_policy(
@@ -174,8 +170,9 @@ def test_release_sdxl_runtime_state_preserves_warm_cn_on_same_sdxl_family(monkey
 
     assert result["released"] is True
     assert cache_clear_calls == [False]
-    assert assembly_clear_calls == []
-    assert assembly_model_prompt_calls == ["tracked_test"]
+    assert len(coordinator_release_calls) > 0
+    assert all(reason == "tracked_test" for _, reason in coordinator_release_calls)
+    assert any(LifecycleChange.MODEL_CHANGE in changes for changes, _ in coordinator_release_calls)
 
 
 def test_assembly_progress_callback_throttles_raw_text_only_callback():
@@ -197,13 +194,14 @@ def test_assembly_progress_callback_throttles_raw_text_only_callback():
 
 def test_process_transition_checkpoint_release_clears_greenfield_assembly_caches(monkeypatch):
     from backend import process_transition
+    from backend.sdxl_assembly.lifecycle_coordinator import LifecycleChange
 
     clear_active_process_key()
 
     release_calls = []
     monkeypatch.setattr(
-        "backend.sdxl_assembly.clear_all_caches",
-        lambda **kwargs: release_calls.append(kwargs.get("reason")),
+        "backend.sdxl_assembly.lifecycle_coordinator.release_for_changes",
+        lambda changes, reason=None, **kwargs: release_calls.append((changes, reason)),
     )
     monkeypatch.setattr(
         "backend.resources.prepare_for_checkpoint_switch",
@@ -231,23 +229,20 @@ def test_process_transition_checkpoint_release_clears_greenfield_assembly_caches
     assert decision is not None
     assert decision.reset_required is True
     assert release_calls
-    assert all(reason == "route_transition" for reason in release_calls)
+    assert all(reason == "route_transition" for _, reason in release_calls)
+    assert any(LifecycleChange.FAMILY_CHANGE in changes for changes, _ in release_calls)
 
 
 def test_process_transition_same_sdxl_family_preserves_warm_cn_domains(monkeypatch):
     from backend import process_transition
+    from backend.sdxl_assembly.lifecycle_coordinator import LifecycleChange
 
     clear_active_process_key()
 
-    full_clear_calls = []
-    model_prompt_calls = []
+    release_calls = []
     monkeypatch.setattr(
-        "backend.sdxl_assembly.clear_all_caches",
-        lambda **kwargs: full_clear_calls.append(kwargs.get("reason")),
-    )
-    monkeypatch.setattr(
-        "backend.sdxl_assembly.release_model_prompt_caches",
-        lambda **kwargs: model_prompt_calls.append(kwargs.get("reason")),
+        "backend.sdxl_assembly.lifecycle_coordinator.release_for_changes",
+        lambda changes, reason=None, **kwargs: release_calls.append((changes, reason)),
     )
     monkeypatch.setattr(
         "backend.resources.prepare_for_checkpoint_switch",
@@ -274,6 +269,7 @@ def test_process_transition_same_sdxl_family_preserves_warm_cn_domains(monkeypat
 
     assert decision is not None
     assert decision.reset_required is True
-    assert full_clear_calls == []
-    assert model_prompt_calls
-    assert all(reason == "route_transition" for reason in model_prompt_calls)
+    assert len(release_calls) > 0
+    assert all(reason == "route_transition" for _, reason in release_calls)
+    assert any(LifecycleChange.CHECKPOINT_CHANGE in changes for changes, _ in release_calls)
+    assert all(LifecycleChange.FAMILY_CHANGE not in changes for changes, _ in release_calls)

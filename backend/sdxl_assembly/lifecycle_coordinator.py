@@ -263,6 +263,20 @@ def release_domains(
     assembly: Any | None = None,
     raise_on_error: bool = False,
 ) -> LifecycleReleaseResult:
+    is_full_teardown = False
+    if domain_or_domains == LifecycleDomain.FULL_TEARDOWN:
+        is_full_teardown = True
+    elif isinstance(domain_or_domains, (list, tuple, set)):
+        if LifecycleDomain.FULL_TEARDOWN in domain_or_domains:
+            is_full_teardown = True
+
+    if is_full_teardown:
+        try:
+            from backend.sdxl_assembly.gateway import clear_gateway_state
+            clear_gateway_state()
+        except Exception:
+            pass
+
     clear_reason = reason or "unspecified"
     plan = LifecycleReleasePlan(
         domains=_normalize_domains(domain_or_domains),
