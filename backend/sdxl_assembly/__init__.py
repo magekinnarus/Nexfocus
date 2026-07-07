@@ -17,6 +17,7 @@ from backend.sdxl_assembly.gateway import is_eligible_for_sdxl_assembly, run_sdx
 from backend.sdxl_assembly.runtime_state import (
     clear_all_caches,
     release_model_prompt_caches,
+    release_prompt_conditioning_caches,
     release_spatial_vae_caches,
     LifecycleDomain,
     release_domain,

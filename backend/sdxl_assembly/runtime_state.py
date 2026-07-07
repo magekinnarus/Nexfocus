@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 class LifecycleDomain(str, Enum):
     RUN_BOUND = "run_bound"
+    PROMPT_CONDITIONING = "prompt_conditioning"
     MODEL_PROMPT = "model_prompt"
     SPATIAL_VAE = "spatial_vae"
     STRUCTURAL_CN = "structural_cn"
@@ -237,6 +238,13 @@ def release_model_prompt_caches(*, reason: str | None = None) -> None:
     clear_reason = reason or "model_prompt_domain_release"
     log_telemetry("assembly_model_prompt_cache_release", f"reason={clear_reason}")
     release_domain(LifecycleDomain.MODEL_PROMPT, reason=clear_reason)
+
+
+def release_prompt_conditioning_caches(*, reason: str | None = None) -> None:
+    """Release prompt-conditioning artifacts without rebuilding the warm UNet spine."""
+    clear_reason = reason or "prompt_conditioning_domain_release"
+    log_telemetry("assembly_prompt_conditioning_cache_release", f"reason={clear_reason}")
+    release_domain(LifecycleDomain.PROMPT_CONDITIONING, reason=clear_reason)
 
 
 def release_spatial_vae_caches(*, reason: str | None = None) -> None:

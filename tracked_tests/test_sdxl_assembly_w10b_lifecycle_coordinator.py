@@ -67,6 +67,13 @@ def test_lifecycle_planner_maps_change_events_to_release_domains():
     plan = plan_release_for_changes(
         [
             LifecycleChange.PROMPT_CHANGE,
+        ],
+        reason="prompt_only_refresh",
+    )
+    assert plan.domains == (LifecycleDomain.PROMPT_CONDITIONING,)
+
+    plan = plan_release_for_changes(
+        [
             LifecycleChange.LORA_STACK_CHANGE,
             LifecycleChange.CHECKPOINT_CHANGE,
             LifecycleChange.SPINE_POSTURE_CHANGE,

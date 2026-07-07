@@ -107,6 +107,10 @@ def plan_release_for_changes(
     domains: list[LifecycleDomain] = []
 
     def add(domain: LifecycleDomain) -> None:
+        if domain == LifecycleDomain.MODEL_PROMPT and LifecycleDomain.PROMPT_CONDITIONING in domains:
+            domains.remove(LifecycleDomain.PROMPT_CONDITIONING)
+        if domain == LifecycleDomain.PROMPT_CONDITIONING and LifecycleDomain.MODEL_PROMPT in domains:
+            return
         if domain not in domains:
             domains.append(domain)
 
@@ -123,12 +127,13 @@ def plan_release_for_changes(
             )
         if change == LifecycleChange.REQUEST_END.value:
             add(LifecycleDomain.RUN_BOUND)
+        elif change == LifecycleChange.PROMPT_CHANGE.value:
+            add(LifecycleDomain.PROMPT_CONDITIONING)
         elif change in {
             LifecycleChange.SPINE_POSTURE_CHANGE.value,
             LifecycleChange.MODEL_CHANGE.value,
             LifecycleChange.CHECKPOINT_CHANGE.value,
             LifecycleChange.LORA_STACK_CHANGE.value,
-            LifecycleChange.PROMPT_CHANGE.value,
         }:
             add(LifecycleDomain.MODEL_PROMPT)
         elif change in {
@@ -215,6 +220,18 @@ def _release_model_prompt(errors: list[LifecycleReleaseError], reason: str) -> N
     _run_step(errors, domain, "parsed_lora_cache", clear_lora_cache)
 
 
+def _release_prompt_conditioning(errors: list[LifecycleReleaseError], reason: str) -> None:
+    from backend.sdxl_assembly import runtime_state
+
+    domain = LifecycleDomain.PROMPT_CONDITIONING
+    _run_step(
+        errors,
+        domain,
+        "prompt_conditioning_cache",
+        lambda: runtime_state.release_prompt_conditioning_cache(reason=reason),
+    )
+
+
 def _release_spatial_vae(errors: list[LifecycleReleaseError]) -> None:
     def clear_encode_cache() -> None:
         from backend.sdxl_assembly.vae_encode_worker import VaeEncodeWorker
@@ -289,6 +306,8 @@ def release_domains(
         log_telemetry("release_domain", f"domain={domain.value} reason={clear_reason}")
         if domain == LifecycleDomain.RUN_BOUND:
             _release_run_bound(errors, assembly)
+        elif domain == LifecycleDomain.PROMPT_CONDITIONING:
+            _release_prompt_conditioning(errors, clear_reason)
         elif domain == LifecycleDomain.MODEL_PROMPT:
             _release_model_prompt(errors, clear_reason)
         elif domain == LifecycleDomain.SPATIAL_VAE:
