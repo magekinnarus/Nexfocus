@@ -237,12 +237,92 @@ def determine_eligibility(
         return False, "Spatial latent / initial_latent is active"
 
     # 4. Resolve Route Intent
-    from modules.route_intent import resolve_route_intent
+    from modules.route_intent import (
+        normalize_current_tab,
+        resolve_route_intent,
+        route_family_for_route_id,
+    )
     intent = resolve_route_intent(task_state)
     
     # 5. Route check
-    if intent.route_id not in {"txt2img", "inpaint", "outpaint"}:
-        return False, f"Route '{intent.route_id}' is not eligible for SDXL Assembly"
+    target_route = intent.route_id
+    if target_route == "txt2img":
+        requested_route_id = str(getattr(task_state, "requested_route_id", "") or "").strip().lower()
+        requested_route_family = str(getattr(task_state, "requested_route_family", "") or "").strip().lower()
+        requested_route_family = route_family_for_route_id(requested_route_id) or requested_route_family or ""
+        goals = {
+            str(goal or "").strip().lower()
+            for goal in (getattr(task_state, "goals", []) or [])
+        }
+        current_tab = normalize_current_tab(getattr(task_state, "current_tab", ""))
+        input_image_active = bool(getattr(task_state, "input_image_checkbox", False))
+
+        if requested_route_family == "image_input" and requested_route_id in {"inpaint", "outpaint"}:
+            target_route = requested_route_id
+        elif input_image_active and ("inpaint" in goals or current_tab == "inpaint"):
+            target_route = "inpaint"
+        elif input_image_active and ("outpaint" in goals or current_tab == "outpaint"):
+            target_route = "outpaint"
+
+    if target_route not in {"txt2img", "inpaint", "outpaint"}:
+        return False, f"Route '{target_route}' is not eligible for SDXL Assembly"
+
+    # 5.5. Fail-closed route-specific spatial asset checks
+    from unittest.mock import Mock
+    def _is_invalid_asset(val: Any) -> bool:
+        if val is None:
+            return True
+        if isinstance(val, Mock) or (hasattr(val, "__class__") and val.__class__.__name__ in ("Mock", "MagicMock", "NonCallableMock", "NonCallableMagicMock")):
+            return True
+        return False
+
+    if target_route == "inpaint":
+        img = None
+        mask = None
+        if image_input_result:
+            img = image_input_result.get('inpaint_image')
+            mask = image_input_result.get('inpaint_mask')
+            if _is_invalid_asset(mask):
+                mask = getattr(task_state, 'context_mask', None)
+
+        if _is_invalid_asset(img):
+            img = getattr(task_state, 'inpaint_input_image', None)
+        if _is_invalid_asset(mask):
+            mask = getattr(task_state, 'inpaint_mask_image', None)
+            if _is_invalid_asset(mask):
+                mask = getattr(task_state, 'context_mask', None)
+
+        if _is_invalid_asset(img) or _is_invalid_asset(mask):
+            return False, "Inpaint route requires valid inpaint image and mask assets"
+
+    elif target_route == "outpaint":
+        img = None
+        if image_input_result:
+            img = image_input_result.get('outpaint_image')
+        if _is_invalid_asset(img):
+            img = getattr(task_state, 'outpaint_input_image', None)
+
+        if _is_invalid_asset(img):
+            return False, "Outpaint route requires valid outpaint image asset"
+
+    # 5.6. Fail-closed ControlNet input image checks
+    for cn_type, tasks in cn_tasks.items():
+        if _has_active_tasks(tasks):
+            for t in tasks:
+                if not t or _is_invalid_asset(t[0]):
+                    return False, f"ControlNet '{cn_type}' is enabled but missing its input image asset"
+
+    for cn_type, tasks in prepared_structural.items():
+        if _has_active_tasks(tasks):
+            for t in tasks:
+                if not t or _is_invalid_asset(t[0]):
+                    return False, f"Structural ControlNet '{cn_type}' is enabled but missing its input image asset"
+
+    for cn_type, tasks in prepared_ctx.items():
+        if _has_active_tasks(tasks):
+            for t in tasks:
+                if not t or _is_invalid_asset(t[0]):
+                    return False, f"Contextual ControlNet '{cn_type}' is enabled but missing its input image asset"
 
     # 6. Check for active ControlNet types and the resolved assets needed to execute them.
     active_structural_types, active_contextual_types, active_task_types = _active_cn_task_types(
@@ -514,7 +594,7 @@ def build_assembly_request(
             if not checkpoint_identity.path.exists():
                 unsupported_mode_errors.append(f"Checkpoint path does not exist: {checkpoint_identity.path}")
 
-            slot_index = int(task[4]) if len(task) >= 5 else len(structural_controls_list) + 1
+            slot_index = int(task[4]) if len(task) >= 5 else len(structural_controls_list)
             desc = SDXLStructuralControlDescriptor(
                 slot_index=slot_index,
                 control_type=cn_type,

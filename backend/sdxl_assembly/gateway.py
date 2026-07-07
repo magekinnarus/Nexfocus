@@ -68,8 +68,10 @@ def _spatial_context_signature(spatial_context: Any) -> Any:
 
 
 def _structural_control_signature(control: Any) -> Any:
+    slot_idx = getattr(control, "slot_index", None)
+    slot_idx = -1 if slot_idx is None else int(slot_idx)
     return (
-        int(getattr(control, "slot_index", -1) or -1),
+        slot_idx,
         str(getattr(control, "control_type", "") or ""),
         getattr(control, "image_fingerprint", None),
         str(getattr(control, "preprocessor_id", "") or ""),
@@ -86,8 +88,10 @@ def _structural_control_signature(control: Any) -> Any:
 
 
 def _contextual_control_signature(control: Any) -> Any:
+    ui_slot_idx = getattr(control, "ui_slot_index", None)
+    ui_slot_idx = -1 if ui_slot_idx is None else int(ui_slot_idx)
     return (
-        int(getattr(control, "ui_slot_index", -1) or -1),
+        ui_slot_idx,
         str(getattr(control, "control_type", "") or ""),
         getattr(control, "image_fingerprint", None),
         str(getattr(control, "source_image_role", "") or ""),
