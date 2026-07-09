@@ -255,6 +255,14 @@ Notes:
   because of the pre-existing `args_manager` argparse incompatibility.
 - Treat this command as the broad regression sweep after the targeted matrix is
   already green.
+- Reserved W11 scaffold modules currently exist as intentionally skipped
+  placeholders until their slices land:
+  `tracked_tests/test_w11_gan_upscale_worker.py`,
+  `tracked_tests/test_w11_upscale_route_contract.py`,
+  `tracked_tests/test_w11_remove_workers.py`,
+  `tracked_tests/test_w11_color_enhanced_upscale.py`,
+  `tracked_tests/test_w11_auxiliary_queue_preview.py`, and
+  `tracked_tests/test_w11_color_enhanced_upscale_smoke.py`.
 
 ## Optional Benchmarks
 
