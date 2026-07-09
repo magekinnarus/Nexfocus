@@ -5,6 +5,7 @@ import torch
 from contextlib import contextmanager
 from threading import RLock
 from typing import Any, Callable, Optional
+from backend import resources
 from backend.sdxl_assembly.contracts import SDXLAssemblyRequest
 
 logger = logging.getLogger(__name__)
@@ -145,5 +146,7 @@ class SDXLAssemblyProgressCallback:
         ):
             try:
                 self.raw_callback(step, x0, x, total_steps, y)
+            except resources.InterruptProcessingException:
+                raise
             except Exception as e:
                 logger.error(f"[SDXL Assembly] Error in raw progress callback: {e}")

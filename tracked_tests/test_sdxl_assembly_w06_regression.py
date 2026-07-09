@@ -256,3 +256,126 @@ def test_assembly_coordinates_spatial_context_worker_and_vae_encode_worker(tmp_p
     assert res.metadata["spatial_contract"]["mode"] == "inpaint"
     assert res.metadata["spatial_contract"]["bb_latent_fingerprint"] == "bb_latent_fingerprint"
     assert res.metadata["spatial_contract"]["denoise_mask_fingerprint"] == "denoise_mask_fingerprint"
+
+
+def test_assembly_composes_inpaint_patch_back_to_full_canvas(tmp_path):
+    checkpoint_path = tmp_path / 'checkpoint.safetensors'
+    checkpoint_path.write_bytes(b'checkpoint')
+
+    from backend.sdxl_assembly.contracts import (
+        PreparedSpatialContext,
+        SpatialAssemblyArtifacts,
+        SpatialContextDescriptor,
+        make_spatial_image_descriptor,
+        make_spatial_mask_descriptor,
+    )
+
+    source_pixels = np.zeros((8, 8, 3), dtype=np.uint8)
+    source_mask = np.zeros((8, 8), dtype=np.uint8)
+    source_mask[2:6, 1:5] = 255
+    bbox = (2, 6, 1, 5)
+
+    img_desc = make_spatial_image_descriptor(source_pixels)
+    mask_desc = make_spatial_mask_descriptor(source_mask, img_desc)
+    spatial_desc = SpatialContextDescriptor(
+        mode='inpaint',
+        source_image=img_desc,
+        source_mask=mask_desc,
+        target_width=4,
+        target_height=4,
+        bbox=bbox,
+    )
+
+    request = SDXLAssemblyRequest(
+        request_id='req_compose_inpaint',
+        route_id='probe',
+        image_index=0,
+        image_count=1,
+        checkpoint=_identity(checkpoint_path, 'checkpoint_sha'),
+        vae=None,
+        model_variant_key='sdxl',
+        prompt='prompt',
+        negative_prompt='negative',
+        positive_texts=('prompt',),
+        negative_texts=('negative',),
+        width=4,
+        height=4,
+        steps=3,
+        cfg=5.0,
+        sampler='euler',
+        scheduler='karras',
+        seed=123,
+        device='cpu',
+        spatial_context=spatial_desc,
+    )
+
+    blend_mask = torch.zeros((1, 8, 8), dtype=torch.float32)
+    blend_mask[:, 2:6, 1:5] = 1.0
+    prepared_context = PreparedSpatialContext(
+        mode='inpaint',
+        original_pixels=img_desc.pixels,
+        original_mask=mask_desc.mask,
+        bb_pixels=torch.zeros((1, 4, 4, 3), dtype=torch.float32),
+        bb_mask=torch.ones((1, 4, 4), dtype=torch.float32),
+        blend_mask=blend_mask,
+        bbox=bbox,
+        image_fingerprint=img_desc.fingerprint,
+        mask_fingerprint=mask_desc.fingerprint,
+        bb_pixels_fingerprint='bb_pixels',
+        bb_mask_fingerprint='bb_mask',
+    )
+
+    spatial_artifacts = SpatialAssemblyArtifacts(
+        route_latent=torch.zeros((1, 4, 4, 4), dtype=torch.float32),
+        bb_latent=torch.zeros((1, 4, 4, 4), dtype=torch.float32),
+        denoise_mask=torch.ones((1, 1, 4, 4), dtype=torch.float32),
+        blend_mask=blend_mask,
+        source_fingerprint=img_desc.fingerprint,
+        image_fingerprint=img_desc.fingerprint,
+        route_latent_fingerprint='route_latent',
+        bb_latent_fingerprint='bb_latent',
+        denoise_mask_fingerprint='denoise_mask',
+        blend_mask_fingerprint='blend_mask',
+        bbox=bbox,
+    )
+
+    spatial_worker = SimpleNamespace(
+        prepare=lambda: prepared_context,
+        teardown_assembly_order=lambda: None,
+    )
+    vae_encode_worker = SimpleNamespace(
+        encode=lambda _ctx: spatial_artifacts,
+        teardown_assembly_order=lambda: None,
+    )
+    lora_worker = SimpleNamespace(materialize_patches=lambda: None, teardown_assembly_order=lambda: None)
+    text_encode_worker = SimpleNamespace(get_conditioning=lambda: {}, teardown_assembly_order=lambda: None)
+    vae_decode_worker = SimpleNamespace(
+        decode=lambda _latent, _device: (np.ones((4, 4, 3), dtype=np.uint8) * 255, 0.0, 0.0),
+        teardown_assembly_order=lambda: None,
+    )
+    unet_spine = SimpleNamespace(
+        start=lambda: None,
+        denoise=lambda latent, *args, **kwargs: latent,
+        end=lambda: None,
+        teardown_assembly_order=lambda: None,
+    )
+
+    assembly = SDXLAssembly(
+        unet_spine=unet_spine,
+        text_encode_worker=text_encode_worker,
+        vae_decode_worker=vae_decode_worker,
+        lora_worker=lora_worker,
+        spatial_context_worker=spatial_worker,
+        vae_encode_worker=vae_encode_worker,
+    )
+
+    res = assembly.execute(request)
+
+    assert res.output_image.shape == (8, 8, 3)
+    assert res.width == 8
+    assert res.height == 8
+    assert np.all(res.output_image[2:6, 1:5] == 255)
+    assert np.all(res.output_image[:2] == 0)
+    assert np.all(res.output_image[6:] == 0)
+    assert np.all(res.output_image[:, :1] == 0)
+    assert np.all(res.output_image[:, 5:] == 0)

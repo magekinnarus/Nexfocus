@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+from dataclasses import replace
 
 import numpy as np
 import torch
@@ -19,6 +20,7 @@ from backend.sdxl_assembly.contracts import (
 )
 from backend.sdxl_assembly.director import SDXLAssemblyDirector
 from backend.sdxl_assembly.runtime_state import (
+    acquire_patched_text_encoder_component,
     acquire_text_encoder_component,
     acquire_unet_component,
     acquire_vae_component,
@@ -280,6 +282,144 @@ def test_lora_worker_caches_zero_patch_clip_results(monkeypatch):
     assert len(load_calls) == 1
 
     cpu_lora_worker._PARSED_LORA_CACHE.clear()
+    clear_all_caches()
+
+
+def test_patched_text_encoder_slot_reuses_same_clip_for_prompt_and_layer_changes(monkeypatch):
+    import backend.sdxl_assembly.runtime_state as runtime_state
+    from backend.cpu_compiler import CpuArtifactCompiler
+
+    clear_all_caches()
+    acquire_calls = []
+    compile_calls = []
+
+    def make_clip(label: str):
+        return SimpleNamespace(
+            label=label,
+            patcher=SimpleNamespace(
+                model=SimpleNamespace(),
+                model_size=lambda: 1024,
+            ),
+            clip_layer=lambda _layer_idx: None,
+        )
+
+    monkeypatch.setattr(
+        runtime_state,
+        "acquire_text_encoder_component",
+        lambda _request: acquire_calls.append(_request.prompt_payload_hash) or make_clip(f"clip_{len(acquire_calls)}"),
+    )
+    monkeypatch.setattr(
+        CpuArtifactCompiler,
+        "compile_patcher",
+        lambda patcher: compile_calls.append(patcher) or {"status": "compiled", "host_pinned_bytes": 0},
+    )
+
+    class DummyLoraWorker:
+        def __init__(self):
+            self.clip_patch_count = 0
+            self.calls = 0
+
+        def apply_clip_patches(self, clip):
+            self.calls += 1
+            self.clip_patch_count = 4
+
+    request = _request(
+        prompt_payload_hash="prompt_a",
+        clip_layer=-2,
+        lora_specs=(
+            SDXLLoraSpec(
+                file_identity=_identity("clip_lora.safetensors", "clip_lora_sha"),
+                unet_weight=1.0,
+                clip_weight=0.75,
+                enabled=True,
+            ),
+        ),
+    )
+
+    first_worker = DummyLoraWorker()
+    second_worker = DummyLoraWorker()
+
+    first_clip = acquire_patched_text_encoder_component(request, lora_worker=first_worker)
+    second_clip = acquire_patched_text_encoder_component(
+        replace(request, prompt_payload_hash="prompt_b", clip_layer=-4),
+        lora_worker=second_worker,
+    )
+
+    assert first_clip is second_clip
+    assert len(acquire_calls) == 1
+    assert len(compile_calls) == 1
+    assert first_worker.calls == 1
+    assert second_worker.calls == 0
+
+    clear_all_caches()
+
+
+def test_patched_text_encoder_slot_rebuilds_when_clip_lora_signature_changes(monkeypatch):
+    import backend.sdxl_assembly.runtime_state as runtime_state
+    from backend.cpu_compiler import CpuArtifactCompiler
+
+    clear_all_caches()
+    acquire_calls = []
+    compile_calls = []
+
+    def make_clip(label: str):
+        return SimpleNamespace(
+            label=label,
+            patcher=SimpleNamespace(
+                model=SimpleNamespace(),
+                model_size=lambda: 1024,
+            ),
+            clip_layer=lambda _layer_idx: None,
+        )
+
+    monkeypatch.setattr(
+        runtime_state,
+        "acquire_text_encoder_component",
+        lambda _request: acquire_calls.append(_request.lora_stack_hash) or make_clip(f"clip_{len(acquire_calls)}"),
+    )
+    monkeypatch.setattr(
+        CpuArtifactCompiler,
+        "compile_patcher",
+        lambda patcher: compile_calls.append(patcher) or {"status": "compiled", "host_pinned_bytes": 0},
+    )
+
+    class DummyLoraWorker:
+        def __init__(self):
+            self.clip_patch_count = 0
+
+        def apply_clip_patches(self, clip):
+            self.clip_patch_count = 4
+
+    request_a = _request(
+        lora_stack_hash="stack_a",
+        lora_specs=(
+            SDXLLoraSpec(
+                file_identity=_identity("clip_lora_a.safetensors", "clip_lora_sha_a"),
+                unet_weight=1.0,
+                clip_weight=1.0,
+                enabled=True,
+            ),
+        ),
+    )
+    request_b = _request(
+        lora_stack_hash="stack_b",
+        lora_specs=(
+            SDXLLoraSpec(
+                file_identity=_identity("clip_lora_b.safetensors", "clip_lora_sha_b"),
+                unet_weight=1.0,
+                clip_weight=1.0,
+                enabled=True,
+            ),
+        ),
+    )
+
+    first_clip = acquire_patched_text_encoder_component(request_a, lora_worker=DummyLoraWorker())
+    second_clip = acquire_patched_text_encoder_component(request_b, lora_worker=DummyLoraWorker())
+
+    assert first_clip is not second_clip
+    assert len(acquire_calls) == 2
+    assert len(compile_calls) == 2
+
     clear_all_caches()
 
 

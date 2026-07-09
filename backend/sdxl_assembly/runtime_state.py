@@ -30,14 +30,55 @@ class SDXLStreamingSpineKey:
     lora_stack_hash: str
     scheduler: str
 
+
+@dataclass(frozen=True)
+class SDXLPatchedTextEncoderKey:
+    checkpoint_sha256: str
+    clip_posture: str
+    clip_lora_signature: Tuple[Tuple[str, float], ...]
+
 # In-memory clean text encoder cache. UNet ownership belongs to the streaming
 # spine, and VAE ownership is transient, so neither is cached here.
 _TEXT_ENCODER_COMPONENT_CACHE: Dict[str, Any] = {}
 _TEXT_ENCODER_COMPONENT_CACHE_LOCK = RLock()
 
+# Single warm patched CLIP slot for the current checkpoint + CLIP-side LoRA stack.
+_PATCHED_TEXT_ENCODER_COMPONENT_SLOT_KEY: SDXLPatchedTextEncoderKey | None = None
+_PATCHED_TEXT_ENCODER_COMPONENT_SLOT: Any | None = None
+_PATCHED_TEXT_ENCODER_COMPONENT_SLOT_LOCK = RLock()
+
 # In-memory prompt conditioning caches
 _PROMPT_CONDITIONING_CACHE: Dict[Tuple[str, str, int, str, Tuple[Tuple[str, float], ...]], Any] = {}
 _PROMPT_CONDITIONING_CACHE_LOCK = RLock()
+
+
+def _clip_lora_signature(request: SDXLAssemblyRequest) -> Tuple[Tuple[str, float], ...]:
+    return tuple(
+        (spec.file_identity.sha256, spec.clip_weight)
+        for spec in request.lora_specs
+        if spec.enabled and spec.clip_weight != 0.0
+    )
+
+
+def _patched_text_encoder_key(request: SDXLAssemblyRequest) -> SDXLPatchedTextEncoderKey | None:
+    clip_lora_signature = _clip_lora_signature(request)
+    if not clip_lora_signature:
+        return None
+    return SDXLPatchedTextEncoderKey(
+        checkpoint_sha256=request.checkpoint.sha256,
+        clip_posture=request.clip_posture.value,
+        clip_lora_signature=clip_lora_signature,
+    )
+
+
+def _clear_patched_text_encoder_component_slot_locked() -> bool:
+    global _PATCHED_TEXT_ENCODER_COMPONENT_SLOT_KEY
+    global _PATCHED_TEXT_ENCODER_COMPONENT_SLOT
+
+    had_slot = _PATCHED_TEXT_ENCODER_COMPONENT_SLOT is not None
+    _PATCHED_TEXT_ENCODER_COMPONENT_SLOT_KEY = None
+    _PATCHED_TEXT_ENCODER_COMPONENT_SLOT = None
+    return had_slot
 
 
 def _clone_owned_component(component: Any, component_name: str, *, isolate_model: bool = False) -> Any:
@@ -118,6 +159,61 @@ def acquire_text_encoder_component(request: SDXLAssemblyRequest) -> Any:
         return _clone_owned_component(clip, "CLIP", isolate_model=isolate_for_lora)
 
 
+def acquire_patched_text_encoder_component(
+    request: SDXLAssemblyRequest,
+    *,
+    lora_worker: Any,
+) -> Any:
+    """Return a single warm patched CLIP for the active checkpoint + CLIP-side LoRAs."""
+    slot_key = _patched_text_encoder_key(request)
+    if slot_key is None:
+        with _PATCHED_TEXT_ENCODER_COMPONENT_SLOT_LOCK:
+            _clear_patched_text_encoder_component_slot_locked()
+        return acquire_text_encoder_component(request)
+
+    with _PATCHED_TEXT_ENCODER_COMPONENT_SLOT_LOCK:
+        global _PATCHED_TEXT_ENCODER_COMPONENT_SLOT_KEY
+        global _PATCHED_TEXT_ENCODER_COMPONENT_SLOT
+
+        if (
+            _PATCHED_TEXT_ENCODER_COMPONENT_SLOT is not None
+            and _PATCHED_TEXT_ENCODER_COMPONENT_SLOT_KEY == slot_key
+        ):
+            logger.debug(
+                "[SDXL Telemetry] Warm patched text encoder HIT for checkpoint=%s",
+                request.checkpoint.sha256,
+            )
+            log_telemetry("patched_text_encoder_cache_hit", f"checkpoint={request.checkpoint.path.name}")
+            return _PATCHED_TEXT_ENCODER_COMPONENT_SLOT
+
+        had_previous_slot = _clear_patched_text_encoder_component_slot_locked()
+        if had_previous_slot:
+            logger.debug("[SDXL Telemetry] Releasing stale warm patched text encoder before rebuild.")
+
+        clip = acquire_text_encoder_component(request)
+        lora_worker.apply_clip_patches(clip)
+        if int(getattr(lora_worker, "clip_patch_count", 0) or 0) <= 0:
+            logger.debug(
+                "[SDXL Telemetry] Patched text encoder build resolved no CLIP-side patches for checkpoint=%s",
+                request.checkpoint.sha256,
+            )
+            log_telemetry("patched_text_encoder_cache_bypass", f"checkpoint={request.checkpoint.path.name}")
+            return clip
+
+        from backend.cpu_compiler import CpuArtifactCompiler
+
+        logger.debug(
+            "[SDXL Telemetry] Building warm patched text encoder for checkpoint=%s patches=%d",
+            request.checkpoint.sha256,
+            lora_worker.clip_patch_count,
+        )
+        log_telemetry("patched_text_encoder_cache_miss", f"checkpoint={request.checkpoint.path.name}")
+        CpuArtifactCompiler.compile_patcher(clip.patcher)
+        _PATCHED_TEXT_ENCODER_COMPONENT_SLOT_KEY = slot_key
+        _PATCHED_TEXT_ENCODER_COMPONENT_SLOT = clip
+        return clip
+
+
 def acquire_vae_component(request: SDXLAssemblyRequest) -> Any:
     """Load a VAE component for transient decode ownership."""
     source_path = str(request.vae.path) if request.vae else str(request.checkpoint.path)
@@ -164,11 +260,7 @@ def acquire_base_components(request: SDXLAssemblyRequest) -> Tuple[Any, Any, Any
 
 def lookup_prompt_conditioning(request: SDXLAssemblyRequest) -> Any | None:
     """Retrieves cached prompt conditioning if exact text-side keys match."""
-    clip_lora_signature = tuple(
-        (spec.file_identity.sha256, spec.clip_weight)
-        for spec in request.lora_specs
-        if spec.enabled and spec.clip_weight != 0.0
-    )
+    clip_lora_signature = _clip_lora_signature(request)
     key = (
         request.checkpoint.sha256,
         request.prompt_payload_hash,
@@ -183,11 +275,7 @@ def lookup_prompt_conditioning(request: SDXLAssemblyRequest) -> Any | None:
 
 def remember_prompt_conditioning(request: SDXLAssemblyRequest, conditioning_payload: Any) -> None:
     """Caches prompt conditioning under text-side key."""
-    clip_lora_signature = tuple(
-        (spec.file_identity.sha256, spec.clip_weight)
-        for spec in request.lora_specs
-        if spec.enabled and spec.clip_weight != 0.0
-    )
+    clip_lora_signature = _clip_lora_signature(request)
     key = (
         request.checkpoint.sha256,
         request.prompt_payload_hash,
@@ -204,6 +292,8 @@ def release_text_encoder_component_cache(reason: str | None = None) -> None:
     log_telemetry("text_encoder_cache_release", f"reason={reason or 'unspecified'}")
     with _TEXT_ENCODER_COMPONENT_CACHE_LOCK:
         _TEXT_ENCODER_COMPONENT_CACHE.clear()
+    with _PATCHED_TEXT_ENCODER_COMPONENT_SLOT_LOCK:
+        _clear_patched_text_encoder_component_slot_locked()
     import gc
     gc.collect()
 
@@ -364,6 +454,8 @@ def debug_component_cache_report() -> Dict[str, Any]:
         "active_unet_realized_cpu_mb": 0.0,
         "text_cache_count": 0,
         "text_cache_mb": 0.0,
+        "patched_text_cache_active": False,
+        "patched_text_cache_mb": 0.0,
     }
 
     with _STREAMING_RUNTIME_STATE._lock:
@@ -395,6 +487,18 @@ def debug_component_cache_report() -> Dict[str, Any]:
             if callable(model_size):
                 try:
                     report["text_cache_mb"] += float(model_size()) / (1024 * 1024)
+                except Exception:
+                    pass
+
+    with _PATCHED_TEXT_ENCODER_COMPONENT_SLOT_LOCK:
+        patched_clip = _PATCHED_TEXT_ENCODER_COMPONENT_SLOT
+        if patched_clip is not None:
+            report["patched_text_cache_active"] = True
+            patcher = getattr(patched_clip, "patcher", None)
+            model_size = getattr(patcher, "model_size", None)
+            if callable(model_size):
+                try:
+                    report["patched_text_cache_mb"] = float(model_size()) / (1024 * 1024)
                 except Exception:
                     pass
 

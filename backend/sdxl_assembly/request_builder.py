@@ -7,13 +7,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import logging
 
+import numpy as np
 import psutil
 import torch
 
 import modules.config as config
 import modules.flags as flags
+import modules.mask_processing as mask_processing
 import modules.model_taxonomy as model_taxonomy
-from modules.util import get_file_from_folder_list
+from modules.util import HWC3, get_file_from_folder_list
 from backend.sdxl_assembly.contracts import (
     SDXLAssemblyRequest,
     SDXLLoraSpec,
@@ -119,6 +121,29 @@ def _require_existing_path(path_str: Any, label: str) -> str:
     return path
 
 
+def _make_control_image_descriptor(raw_img: Any, label: str):
+    from backend.sdxl_assembly.contracts import make_spatial_image_descriptor
+
+    if raw_img is None:
+        raise SDXLAssemblyEligibilityError(f"{label} is missing its input image asset.")
+
+    candidate = str(raw_img) if isinstance(raw_img, os.PathLike) else raw_img
+    if not isinstance(candidate, (torch.Tensor, np.ndarray, list, tuple)):
+        unpacked = mask_processing.unpack_gradio_data(candidate)
+        if unpacked is None:
+            raise SDXLAssemblyEligibilityError(
+                f"{label} could not resolve its input image asset into pixels."
+            )
+        candidate = HWC3(unpacked)
+
+    try:
+        return make_spatial_image_descriptor(candidate)
+    except (TypeError, ValueError) as exc:
+        raise SDXLAssemblyEligibilityError(
+            f"{label} could not normalize its input image asset: {exc}"
+        ) from exc
+
+
 def _active_cn_task_types(
     task_state: Any,
     prepared_structural: Dict[str, Any],
@@ -181,6 +206,20 @@ def get_file_identity(path_str: str) -> ResolvedFileIdentity:
     )
     _FILE_IDENTITY_CACHE[cache_key] = identity
     return identity
+
+
+def _resolve_requested_vae_path(task_state: Any) -> Optional[str]:
+    """Resolve the assembly VAE selection to a concrete file path.
+
+    SDXL's default/shared VAE contract is the explicit `sdxl_vae.safetensors`
+    asset under the configured VAE roots, not a checkpoint-embedded fallback.
+    """
+    vae_name = str(getattr(task_state, 'vae_name', '') or '').strip()
+    if vae_name in {'', flags.default_vae, 'Default (model)', 'Default (Same as model)'}:
+        vae_name = flags.default_vae
+    if not vae_name:
+        return None
+    return get_file_from_folder_list(vae_name, config.path_vae)
 
 def determine_eligibility(
     task_state: Any,
@@ -420,15 +459,8 @@ def build_assembly_request(
     checkpoint_identity = get_file_identity(checkpoint_path)
 
     # Resolve VAE
-    vae_name = str(getattr(task_state, 'vae_name', '') or '').strip()
-    if vae_name in {'', flags.default_vae, 'Default (model)', 'Default (Same as model)'}:
-        vae_path = flags.default_vae
-    else:
-        vae_path = get_file_from_folder_list(vae_name, config.path_vae)
-        
-    vae_identity = None
-    if vae_path and os.path.exists(vae_path):
-        vae_identity = get_file_identity(vae_path)
+    vae_path = _resolve_requested_vae_path(task_state)
+    vae_identity = get_file_identity(vae_path) if vae_path else None
 
     # Resolve LoRA Specs
     resolved_input_loras = list(
@@ -556,12 +588,14 @@ def build_assembly_request(
                 f"Structural ControlNet '{cn_type}' checkpoint path",
             )
 
-            checkpoint_identity = get_file_identity(ckpt_path_str)
+            controlnet_identity = get_file_identity(ckpt_path_str)
             checkpoint_type = determine_controlnet_type(ckpt_path_str)
 
-            # Resolve image descriptor
-            from backend.sdxl_assembly.contracts import make_spatial_image_descriptor
-            image_desc = make_spatial_image_descriptor(raw_img)
+            # Accept either already-prepared tensors or unresolved UI-backed image payloads.
+            image_desc = _make_control_image_descriptor(
+                raw_img,
+                f"Structural ControlNet '{cn_type}'",
+            )
 
             # Resolve preprocessor
             preprocessor_id = cn_type
@@ -591,8 +625,8 @@ def build_assembly_request(
             target_height = int(getattr(task_state, 'height', 1024))
 
             unsupported_mode_errors = []
-            if not checkpoint_identity.path.exists():
-                unsupported_mode_errors.append(f"Checkpoint path does not exist: {checkpoint_identity.path}")
+            if not controlnet_identity.path.exists():
+                unsupported_mode_errors.append(f"Checkpoint path does not exist: {controlnet_identity.path}")
 
             slot_index = int(task[4]) if len(task) >= 5 else len(structural_controls_list)
             desc = SDXLStructuralControlDescriptor(
@@ -606,7 +640,7 @@ def build_assembly_request(
                 target_width=target_width,
                 target_height=target_height,
                 checkpoint_path=Path(ckpt_path_str),
-                checkpoint_sha256=checkpoint_identity.sha256,
+                checkpoint_sha256=controlnet_identity.sha256,
                 checkpoint_type=checkpoint_type,
                 weight=float(cn_weight),
                 start_percent=float(cn_start),
@@ -685,9 +719,11 @@ def build_assembly_request(
 
             model_identity = get_file_identity(model_path_str)
 
-            # Resolve image descriptor
-            from backend.sdxl_assembly.contracts import make_spatial_image_descriptor
-            image_desc = make_spatial_image_descriptor(raw_img)
+            # Accept either already-prepared tensors or unresolved UI-backed image payloads.
+            image_desc = _make_control_image_descriptor(
+                raw_img,
+                f"Contextual ControlNet '{cn_type}'",
+            )
 
             source_image_role = "face_image" if cn_type == flags.cn_pulid else "image_prompt"
 

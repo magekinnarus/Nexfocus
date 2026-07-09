@@ -13,6 +13,7 @@ from backend.sdxl_assembly.contracts import (
     SDXLRuntimeIdentity,
 )
 from backend.sdxl_assembly.progress import log_telemetry
+from modules import blending
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ class SDXLAssembly:
         unet_started = False
         structural_control_session_active = False
         contextual_session_active = False
+        prepared_context = None
 
         try:
             # 2. Materialize LoRA patches first
@@ -156,6 +158,12 @@ class SDXLAssembly:
         try:
             decode_start = time.perf_counter()
             output_image, load_time, decode_time = self.vae_decode_worker.decode(samples, device)
+            output_image = self._compose_spatial_output(
+                request=request,
+                prepared_context=prepared_context,
+                spatial_artifacts=spatial_artifacts,
+                output_image=output_image,
+            )
             timings["vae_decode"] = time.perf_counter() - decode_start
         except resources.InterruptProcessingException:
             raise
@@ -225,6 +233,116 @@ class SDXLAssembly:
             "bbox_area_ratio": float(spatial_artifacts.bbox_area_ratio),
             "mask_coverage": float(spatial_artifacts.mask_coverage),
         }
+
+    def _compose_spatial_output(
+        self,
+        *,
+        request: SDXLAssemblyRequest,
+        prepared_context: Any,
+        spatial_artifacts: Any,
+        output_image: np.ndarray,
+    ) -> np.ndarray:
+        if request.spatial_context is None or prepared_context is None or spatial_artifacts is None:
+            return output_image
+
+        spatial_mode = str(request.spatial_context.mode or "image").strip().lower()
+        if spatial_mode not in {"inpaint", "outpaint"}:
+            return output_image
+
+        bbox = getattr(prepared_context, "bbox", None) or getattr(spatial_artifacts, "bbox", None)
+        if bbox is None:
+            return output_image
+        y1, y2, x1, x2 = [int(v) for v in bbox]
+        if y2 <= y1 or x2 <= x1:
+            return output_image
+
+        if spatial_mode == "outpaint" and getattr(prepared_context, "working_pixels", None) is not None:
+            base_pixels = prepared_context.working_pixels
+        else:
+            base_pixels = getattr(prepared_context, "original_pixels", None)
+        if base_pixels is None:
+            return output_image
+
+        blend_mask = getattr(prepared_context, "blend_mask", None)
+        if blend_mask is None:
+            blend_mask = getattr(spatial_artifacts, "blend_mask", None)
+        if blend_mask is None:
+            return output_image
+
+        base_batch = self._ensure_image_batch_tensor(base_pixels)
+        patch_batch = self._ensure_image_batch_tensor(output_image)
+        blend_batch = self._ensure_mask_batch_tensor(blend_mask)
+        if base_batch is None or patch_batch is None or blend_batch is None:
+            return output_image
+
+        if patch_batch.shape[0] != base_batch.shape[0]:
+            if patch_batch.shape[0] == 1 and base_batch.shape[0] > 1:
+                patch_batch = patch_batch.repeat(base_batch.shape[0], 1, 1, 1)
+            else:
+                raise ValueError("Decoded patch batch size does not match compose base batch size.")
+        if blend_batch.shape[0] != base_batch.shape[0]:
+            if blend_batch.shape[0] == 1 and base_batch.shape[0] > 1:
+                blend_batch = blend_batch.repeat(base_batch.shape[0], 1, 1)
+            else:
+                raise ValueError("Blend mask batch size does not match compose base batch size.")
+
+        patch_h = max(1, y2 - y1)
+        patch_w = max(1, x2 - x1)
+        patch_resized = torch.nn.functional.interpolate(
+            patch_batch.movedim(-1, 1),
+            size=(patch_h, patch_w),
+            mode="bilinear",
+            align_corners=False,
+        ).movedim(1, -1)
+
+        result = base_batch.clone()
+        base_h = int(base_batch.shape[1])
+        base_w = int(base_batch.shape[2])
+        iy1, iy2 = max(0, y1), min(base_h, y2)
+        ix1, ix2 = max(0, x1), min(base_w, x2)
+        cy1, cy2 = iy1 - y1, iy2 - y1
+        cx1, cx2 = ix1 - x1, ix2 - x1
+        if iy2 > iy1 and ix2 > ix1:
+            result[:, iy1:iy2, ix1:ix2, :] = patch_resized[:, cy1:cy2, cx1:cx2, :]
+
+        weight = blending.apply_sin2_curve(blend_batch[..., None].to(dtype=torch.float32))
+        composed = torch.clamp(result * weight + base_batch * (1.0 - weight), min=0.0, max=1.0)
+        return self._tensor_to_output_image(composed, output_image)
+
+    def _ensure_image_batch_tensor(self, value: Any) -> torch.Tensor | None:
+        if value is None:
+            return None
+        tensor = torch.as_tensor(value).detach().cpu()
+        if tensor.ndim == 3:
+            tensor = tensor.unsqueeze(0)
+        if tensor.ndim != 4 or tensor.shape[-1] < 3:
+            raise ValueError(f"Expected an image tensor shaped [B, H, W, C], got {tuple(tensor.shape)}.")
+        tensor = tensor[..., :3].to(dtype=torch.float32).contiguous()
+        if tensor.numel() and float(tensor.max().item()) > 1.0:
+            tensor = tensor / 255.0
+        return tensor.clamp_(0.0, 1.0)
+
+    def _ensure_mask_batch_tensor(self, value: Any) -> torch.Tensor | None:
+        if value is None:
+            return None
+        tensor = torch.as_tensor(value).detach().cpu()
+        if tensor.ndim == 2:
+            tensor = tensor.unsqueeze(0)
+        if tensor.ndim == 4:
+            tensor = tensor.amax(dim=-1)
+        if tensor.ndim != 3:
+            raise ValueError(f"Expected a mask tensor shaped [B, H, W], got {tuple(tensor.shape)}.")
+        tensor = tensor.to(dtype=torch.float32).contiguous()
+        if tensor.numel() and float(tensor.max().item()) > 1.0:
+            tensor = tensor / 255.0
+        return tensor.clamp_(0.0, 1.0)
+
+    def _tensor_to_output_image(self, tensor: torch.Tensor, reference: np.ndarray) -> np.ndarray:
+        image = tensor.detach().cpu()[0, ..., :3].clamp(0.0, 1.0).contiguous().numpy()
+        reference_array = np.asarray(reference)
+        if np.issubdtype(reference_array.dtype, np.integer):
+            return np.clip(np.rint(image * 255.0), 0.0, 255.0).astype(reference_array.dtype, copy=False)
+        return image.astype(reference_array.dtype if reference_array.dtype != np.dtype("O") else np.float32, copy=False)
 
     # Extension Points for ControlNet
     def _prepare_controlnet_artifacts(self, request: SDXLAssemblyRequest) -> None:

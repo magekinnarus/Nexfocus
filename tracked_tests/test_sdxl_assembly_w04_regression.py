@@ -81,11 +81,15 @@ def test_build_assembly_request_uses_task_state_streaming_settings_and_processed
     checkpoint_path.write_bytes(b'checkpoint')
     inline_lora_path = tmp_path / 'inline_lora.safetensors'
     inline_lora_path.write_bytes(b'lora')
+    shared_vae_path = tmp_path / 'sdxl' / 'sdxl_vae.safetensors'
+    shared_vae_path.parent.mkdir(parents=True, exist_ok=True)
+    shared_vae_path.write_bytes(b'vae')
 
     def fake_resolve(name, _folders):
         lookup = {
             'sdxl_base.safetensors': checkpoint_path,
             'inline_lora.safetensors': inline_lora_path,
+            'sdxl_vae.safetensors': shared_vae_path,
         }
         return str(lookup[name])
 
@@ -103,7 +107,7 @@ def test_build_assembly_request_uses_task_state_streaming_settings_and_processed
             prefetch_depth=2,
             prefetch_chunk_mb=128,
             loras_processed=[('inline_lora.safetensors', 0.7)],
-            sdxl_execution_policy=SimpleNamespace(execution_mode='resident'),
+            sdxl_execution_policy=SimpleNamespace(execution_mode='streaming'),
         ),
         task_dict=_task_dict(),
         current_task_id=0,
@@ -122,11 +126,63 @@ def test_build_assembly_request_uses_task_state_streaming_settings_and_processed
     assert request.lora_specs[0].file_identity.path == inline_lora_path
 
 
+def test_build_assembly_request_resolves_default_shared_vae_path(tmp_path, monkeypatch):
+    checkpoint_path = tmp_path / 'sdxl_base.safetensors'
+    checkpoint_path.write_bytes(b'checkpoint')
+    shared_vae_path = tmp_path / 'vae' / 'sdxl' / 'sdxl_vae.safetensors'
+    shared_vae_path.parent.mkdir(parents=True, exist_ok=True)
+    shared_vae_path.write_bytes(b'vae')
+
+    def fake_resolve(name, _folders):
+        lookup = {
+            'sdxl_base.safetensors': checkpoint_path,
+            'sdxl_vae.safetensors': shared_vae_path,
+        }
+        return str(lookup[name])
+
+    monkeypatch.setattr(
+        'backend.sdxl_assembly.request_builder.get_file_from_folder_list',
+        fake_resolve,
+    )
+    monkeypatch.setattr(
+        'backend.sdxl_assembly.request_builder.config.resolve_model_taxonomy',
+        lambda _path: SimpleNamespace(architecture=model_taxonomy.ARCHITECTURE_SDXL),
+    )
+
+    request = build_assembly_request(
+        task_state=_task_state(vae_name='Default (model)'),
+        task_dict=_task_dict(),
+        current_task_id=0,
+        total_count=1,
+        all_steps=3,
+        preparation_steps=0,
+        denoising_strength=1.0,
+        final_scheduler_name='karras',
+        loras=[],
+    )
+
+    assert request.vae is not None
+    assert request.vae.path == shared_vae_path
+    assert request.vae.sha256
+
+
 def test_run_sdxl_assembly_task_preserves_interrupts(monkeypatch):
     import backend.sdxl_assembly.gateway as gateway
 
     close_calls = []
-    request = object()
+    request = SimpleNamespace(
+        checkpoint=SimpleNamespace(sha256='checkpoint_sha'),
+        vae=None,
+        unet_posture=SimpleNamespace(value='streaming'),
+        clip_posture=SimpleNamespace(value='cpu_pinned'),
+        vae_posture=SimpleNamespace(value='transient'),
+        lora_posture=SimpleNamespace(value='streaming'),
+        lora_stack_hash='lora_hash',
+        prompt_payload_hash='prompt_hash',
+        spatial_context=None,
+        structural_controls=(),
+        contextual_controls=(),
+    )
 
     class FakeAssembly:
         def execute(self, _request, callback=None):
@@ -301,6 +357,16 @@ def test_process_task_assembly_route_emits_preview_image(monkeypatch):
         item[0] == 'preview' and isinstance(item[1][2], np.ndarray)
         for item in task_state.yields
     )
+
+
+def test_assembly_progress_callback_preserves_interrupt_processing_exception():
+    callback = SDXLAssemblyProgressCallback(
+        SimpleNamespace(),
+        lambda *args, **kwargs: (_ for _ in ()).throw(resources.InterruptProcessingException()),
+    )
+
+    with pytest.raises(resources.InterruptProcessingException):
+        callback(0, None, None, 4, None)
 
 
 def test_assembly_progress_callback_throttles_full_memory_telemetry(monkeypatch):

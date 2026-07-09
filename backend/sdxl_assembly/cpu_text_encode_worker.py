@@ -1,19 +1,16 @@
 from __future__ import annotations
 
 import time
-import logging
 from typing import Any, Dict
 from backend.sdxl_assembly.contracts import SDXLAssemblyRequest
 from backend.sdxl_assembly.progress import log_telemetry
 from backend.sdxl_assembly.runtime_state import (
-    acquire_text_encoder_component,
+    acquire_patched_text_encoder_component,
     lookup_prompt_conditioning,
     remember_prompt_conditioning,
     release_text_encoder_component_cache,
 )
 from backend.sdxl_assembly.cpu_lora_worker import CpuLoraWorker
-
-logger = logging.getLogger(__name__)
 
 class CpuTextEncodeWorker:
     """Worker representing CpuTextEncodeWorker (CLIP-L and CLIP-G on CPU)."""
@@ -35,20 +32,15 @@ class CpuTextEncodeWorker:
             log_telemetry("prompt_encode_complete", "cache_hit=True")
             return cached_cond
 
-        # 2. Cache MISS: Load owned CLIP, apply LoRAs, and encode
+        # 2. Cache MISS: Acquire the current patched CLIP slot and encode.
         start_time = time.perf_counter()
         clip = None
         try:
-            clip = acquire_text_encoder_component(self.request)
-            
-            # Apply LoRAs to CLIP patcher if clip_weight != 0
-            self.lora_worker.apply_clip_patches(clip)
-            
-            if self.lora_worker.clip_patch_count > 0:
-                from backend.cpu_compiler import CpuArtifactCompiler
-                logger.debug("[SDXL Telemetry] Compiling %d LoRA patches onto CLIP on CPU...", self.lora_worker.clip_patch_count)
-                CpuArtifactCompiler.compile_patcher(clip.patcher)
-                
+            clip = acquire_patched_text_encoder_component(
+                self.request,
+                lora_worker=self.lora_worker,
+            )
+
             from backend import conditioning
             
             # Respect clip layer skip

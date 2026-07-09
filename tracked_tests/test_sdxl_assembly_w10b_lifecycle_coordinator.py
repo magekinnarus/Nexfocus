@@ -17,6 +17,7 @@ from backend.sdxl_assembly.runtime_state import (
     clear_all_caches,
     release_domain,
 )
+import backend.sdxl_assembly.runtime_state as runtime_state
 from backend.sdxl_assembly.stream_ctx_cn_worker import StreamingContextualControlWorker
 from backend.sdxl_assembly.stream_st_cn_worker import StreamingStructuralControlWorker
 from backend.sdxl_assembly.stream_st_preprocess_worker import StreamingStructuralPreprocessWorker
@@ -27,6 +28,8 @@ from backend.sdxl_assembly.vae_encode_worker import VaeEncodeWorker
 def _seed_warm_domains():
     _TEXT_ENCODER_COMPONENT_CACHE.clear()
     _TEXT_ENCODER_COMPONENT_CACHE["clip"] = MagicMock()
+    runtime_state._PATCHED_TEXT_ENCODER_COMPONENT_SLOT = MagicMock()
+    runtime_state._PATCHED_TEXT_ENCODER_COMPONENT_SLOT_KEY = ("checkpoint", "cpu_pinned", (("lora", 1.0),))
     _PROMPT_CONDITIONING_CACHE.clear()
     _PROMPT_CONDITIONING_CACHE[("prompt",)] = object()
     _STREAMING_RUNTIME_STATE._spine = MagicMock()
@@ -54,6 +57,8 @@ def _assert_all_domains_cleared() -> None:
     assert _STREAMING_RUNTIME_STATE._spine is None
     assert _STREAMING_RUNTIME_STATE._key is None
     assert len(_TEXT_ENCODER_COMPONENT_CACHE) == 0
+    assert runtime_state._PATCHED_TEXT_ENCODER_COMPONENT_SLOT is None
+    assert runtime_state._PATCHED_TEXT_ENCODER_COMPONENT_SLOT_KEY is None
     assert len(_PROMPT_CONDITIONING_CACHE) == 0
     assert len(_PARSED_LORA_CACHE) == 0
     assert len(VaeEncodeWorker._ENCODE_CACHE) == 0
@@ -108,6 +113,8 @@ def test_run_bound_release_closes_assembly_without_clearing_warm_domains():
     assert result.ok
     assembly.close.assert_called_once()
     assert len(_TEXT_ENCODER_COMPONENT_CACHE) == 1
+    assert runtime_state._PATCHED_TEXT_ENCODER_COMPONENT_SLOT is not None
+    assert runtime_state._PATCHED_TEXT_ENCODER_COMPONENT_SLOT_KEY is not None
     assert len(VaeEncodeWorker._ENCODE_CACHE) == 1
     assert len(StreamingStructuralControlWorker._SUPPORT_MODEL_CACHE) == 1
     assert len(StreamingContextualControlWorker._PAYLOAD_CACHE) == 1

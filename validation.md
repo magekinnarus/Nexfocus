@@ -73,7 +73,7 @@ Compile sanity on the authoritative runtime surfaces:
 
 ```powershell
 $fluxV3Files = Get-ChildItem backend\flux_fill_v3\*.py | ForEach-Object { $_.FullName }
-.\venv\Scripts\python.exe -m py_compile @fluxV3Files backend\memory_governor.py backend\resources.py backend\sdxl_runtime_policy.py backend\sdxl_streaming_runtime.py backend\sdxl_unified_runtime.py backend\staging_manager.py modules\async_worker.py modules\objr_engine.py modules\parameter_registry.py modules\pipeline\inference.py modules\pipeline\routes.py modules\pipeline\tiled_refinement.py modules\runtime_surface_state.py modules\runtime_surface_api.py modules\task_state.py modules\ui_components\advanced_panel.py modules\ui_logic.py webui.py tools\check_validation_env.py tracked_tests\test_memory_residency.py tracked_tests\test_pipeline_routes.py tracked_tests\test_pipeline_stage_runtime.py tests\test_runtime_surface_api.py
+.\venv\Scripts\python.exe -m py_compile @fluxV3Files backend\memory_governor.py backend\resources.py backend\sdxl_runtime_policy.py backend\sdxl_streaming_runtime.py backend\sdxl_unified_runtime.py backend\staging_manager.py backend\sdxl_assembly\cpu_text_encode_worker.py backend\sdxl_assembly\progress.py backend\sdxl_assembly\runtime_state.py modules\async_worker.py modules\objr_engine.py modules\parameter_registry.py modules\pipeline\inference.py modules\pipeline\routes.py modules\pipeline\tiled_refinement.py modules\runtime_surface_state.py modules\runtime_surface_api.py modules\task_state.py modules\ui_components\advanced_panel.py modules\ui_logic.py webui.py tools\check_validation_env.py tracked_tests\test_memory_residency.py tracked_tests\test_pipeline_routes.py tracked_tests\test_pipeline_stage_runtime.py tracked_tests\test_sdxl_assembly_w03_regression.py tracked_tests\test_sdxl_assembly_w04_regression.py tracked_tests\test_sdxl_assembly_w10b_lifecycle_coordinator.py tests\test_runtime_surface_api.py tests\test_sdxl_assembly_w10d.py tests\test_sdxl_outer_wiring_w10c.py
 ```
 
 ## Regression Matrix
@@ -118,6 +118,21 @@ Covers:
 - disk-paged T5 adaptive GC cadence with critical-headroom fallback
 - runtime-surface preview and completed-image API ownership
 - transition isolation behavior
+
+### 4. Worker-Centric SDXL Lifecycle / Queue-Boundary / Interrupt Regressions
+
+```powershell
+.\venv\Scripts\python.exe -m pytest tests\test_sdxl_assembly_w10b.py tests\test_sdxl_assembly_w10d.py tests\test_sdxl_outer_wiring_w10c.py tracked_tests\test_sdxl_assembly_w03_regression.py tracked_tests\test_sdxl_assembly_w10b_lifecycle_coordinator.py -q
+.\venv\Scripts\python.exe -m pytest tracked_tests\test_sdxl_assembly_w04_regression.py -k "assembly_progress_callback_preserves_interrupt_processing_exception or assembly_progress_callback_throttles_full_memory_telemetry" -q
+.\venv\Scripts\python.exe -m pytest tests\test_runtime_surface_api.py -k "runtime_surface_skip_action_interrupts_active_task" -q
+```
+
+Covers:
+
+- prompt-only invalidation narrowing into `prompt_conditioning`
+- same-stack warm patched-CLIP reuse on prompt / `clip_skip` changes
+- queue-frozen route truth, slot continuity, and fail-closed admission
+- SDXL assembly callback interrupt preservation for running-task `Skip`
 
 ## Manual Acceptance Replay
 
@@ -200,7 +215,23 @@ Expected result:
 - after switching back to `disk_paged`, the next request tears down the warm
   CPU-resident text encoder before disk-paged execution begins
 
-### 5. Tracked Route / Stage Smoke
+### 5. SDXL Prompt-Only Warm Reuse And Skip Replay
+
+Run this exact UI sequence on the streaming SDXL lane:
+
+1. `Txt2Img or Inpaint (cold, with a CLIP-side LoRA stack if available)`
+2. `Prompt change` while keeping checkpoint, LoRA stack, and route assets the same
+3. `Prompt change` again
+4. While the later run is sampling, press `Skip`
+
+Expected result:
+
+- prompt-only edits do not reload a clean UNet or trigger UNet-side LoRA prepatching
+- same-stack prompt edits reuse the current warm patched CLIP slot instead of rebuilding CLIP from scratch
+- `Skip` cleanly interrupts the current image without surfacing the prior callback error
+- if later queued work exists, execution advances to the next queued item instead of continuing the skipped image
+
+### 6. Tracked Route / Stage Smoke
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tracked_tests\test_pipeline_routes.py tracked_tests\test_pipeline_stage_runtime.py tracked_tests\test_memory_residency.py -q
@@ -212,7 +243,7 @@ Covers:
 - stage runner execution contract
 - memory residency dispatch smoke
 
-### 6. Full Suite
+### 7. Full Suite
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tests\ --ignore=tests\test_bgr.py --ignore=tests\test_objr.py -q
