@@ -138,6 +138,8 @@ Covers:
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tracked_tests\test_w11_gan_upscale_worker.py tracked_tests\test_w11_upscale_route_contract.py -q
+.\venv\Scripts\python.exe -m pytest tracked_tests\test_w11_remove_workers.py tests\test_internal_assets.py -q
+.\venv\Scripts\python.exe -m pytest tests\test_flux_fill_integration.py -k "remove_object_with_engine_dispatches_mat_and_flux or removal_stage_persists_background_and_object_outputs or flux_fill_removal_stage" -q
 ```
 
 Covers:
@@ -148,6 +150,14 @@ Covers:
 - scalar-only UI scale metadata caching with no retained model object
 - absence of broad runtime/cache cleanup during GAN execution
 - direct light upscale and GAN-first `super-upscale` tiled-refinement handoff
+- backend-owned BGR/MAT load, infer, detach, teardown, and failure cleanup
+- sequential BGR-then-MAT auxiliary leases with no model overlap
+- direct BGR/MAT route dispatch and neutral RGBA/mask/image output contracts
+- legacy transparent-RGBA source compositing onto white at the route file boundary
+- truthful auxiliary progress text on direct BGR/MAT routes with no false Flux label
+- MAT small-image and tiled-image behavior, including deterministic seed input
+- model-registry asset resolution without legacy module-global model caches
+- Flux removal remaining on the Flux Fill v3 adapter boundary
 
 ## Manual Acceptance Replay
 
@@ -181,11 +191,18 @@ Run this exact UI sequence:
 
 1. `Remove (bg remove + obj remove)`
 
-Expected result:
+Expected result for the W11b direct MAT path:
 
-- background removal still takes the aggressive removal preflight
-- object refinement then hands off to the Flux Fill removal adapter cleanly
-- combined removal completes successfully after the non-Flux pre-stage
+- the BGR worker completes teardown and releases its auxiliary lease before MAT
+  admission begins
+- the MAT worker completes and releases its own lease after receiving neutral
+  image/mask arrays
+- no `cleanup_memory(... unload_models=True/force_cache=True)` or main-family
+  teardown runs for the BGR/MAT pair
+
+Flux Fill object removal remains a separate main-family adapter path. Its
+transition/preflight reconciliation is carried into W11d and is not inferred
+from the BGR/MAT evidence above.
 
 ### 3. Colab Free Disk-Paged T5 Replay
 
@@ -272,7 +289,6 @@ Notes:
   already green.
 - Remaining W11 scaffold modules exist as intentionally skipped placeholders
   until their slices land:
-  `tracked_tests/test_w11_remove_workers.py`,
   `tracked_tests/test_w11_color_enhanced_upscale.py`,
   `tracked_tests/test_w11_auxiliary_queue_preview.py`, and
   `tracked_tests/test_w11_color_enhanced_upscale_smoke.py`.

@@ -11,6 +11,7 @@ from backend import conditioning
 from backend import environment_profile as environment_profiles
 from backend import sdxl_runtime_policy
 import modules.flags as flags
+from modules.util import HWC3
 from modules.route_intent import resolve_route_intent
 from modules.pipeline.stage_runtime import (
     PipelineResourceRequirement,
@@ -109,6 +110,23 @@ def _load_logged_image_payload(payload):
         with Image.open(payload) as image:
             return np.array(image)
     return payload
+
+
+def _load_removal_array(filepath: str, *, mode: str) -> np.ndarray:
+    """Load a removal-stage transport file into a neutral workflow array."""
+    with Image.open(filepath) as image:
+        if str(mode).upper() == 'RGB':
+            # Preserve the legacy removal-shell contract: transparent source
+            # pixels are composited onto white instead of exposing hidden RGB.
+            return HWC3(np.array(image.convert('RGBA')))
+        return np.array(image.convert(mode))
+
+
+def _save_removal_temp(payload) -> str | None:
+    """Persist a neutral removal output without giving persistence model ownership."""
+    from modules import mask_processing
+
+    return mask_processing.save_to_temp_png(payload)
 
 
 def _resolve_logged_image_dimensions(payload, *, fallback_height: int, fallback_width: int) -> tuple[int, int]:
@@ -965,16 +983,16 @@ class RemovalStage(PipelineStage):
     def describe_resources(self, context: PipelineRouteContext):
         return _describe_route_resources(
             PipelineResourceRequirement(
-                resource_id='bgr_engine',
-                description='Background removal engine loaded on demand.',
-                owner='modules.bgr_engine',
+                resource_id='background_removal_worker',
+                description='Ephemeral backend-owned InSPyReNet background-removal worker.',
+                owner='backend.auxiliary_workers.background_removal_worker',
                 tags=('removal',),
                 optional=True,
             ),
             PipelineResourceRequirement(
-                resource_id='objr_engine',
-                description='Object removal engine loaded on demand.',
-                owner='modules.objr_engine',
+                resource_id='mat_inpaint_worker',
+                description='Ephemeral backend-owned MAT object-inpaint worker.',
+                owner='backend.auxiliary_workers.mat_inpaint_worker',
                 tags=('removal',),
                 optional=True,
             ),
@@ -984,10 +1002,7 @@ class RemovalStage(PipelineStage):
         return StageMemoryEstimate(vram_mb=2048.0, notes={'basis': 'engine-load-headroom'})
 
     def execute(self, context: PipelineRouteContext):
-        import modules.bgr_engine as bgr_engine
         from modules.flux_fill_surface import OBJR_ENGINE_FLUX_FILL, normalize_objr_engine
-        import modules.objr_engine as objr_engine
-        from backend.flux import LegacyFluxArchivedError
         from backend import resources
 
         task_state = context.task_state
@@ -1001,22 +1016,32 @@ class RemovalStage(PipelineStage):
         )
         resources.begin_memory_phase('removal', notes={'goals': list(task_state.goals)})
         try:
-            if flags.remove_bg in task_state.goals or not use_flux_fill_removal_adapter or aggressive_flux_remove_cleanup:
-                if context.progressbar_callback is not None:
-                    context.progressbar_callback(task_state, 5, 'Clearing VRAM for Removal Models...')
-                resources.cleanup_memory('removal_preflight', unload_models=True, force_cache=True, trim_host=True, notes={'goals': list(task_state.goals)}, target_phase=resources.MemoryPhase.REMOVAL)
+            # BGR and MAT are standalone auxiliary workers. Their admission
+            # must not trigger broad memory-governor cleanup. Flux removal is
+            # intentionally left on its separate main-family transition path.
+            if use_flux_fill_removal_adapter:
+                if aggressive_flux_remove_cleanup:
+                    if context.progressbar_callback is not None:
+                        context.progressbar_callback(task_state, 5, 'Clearing VRAM for Removal Models...')
+                    resources.cleanup_memory('removal_preflight', unload_models=True, force_cache=True, trim_host=True, notes={'goals': list(task_state.goals)}, target_phase=resources.MemoryPhase.REMOVAL)
+                elif context.progressbar_callback is not None:
+                    context.progressbar_callback(task_state, 5, 'Preparing Flux Fill Removal...')
             elif context.progressbar_callback is not None:
-                context.progressbar_callback(task_state, 5, 'Preparing Flux Fill Removal...')
+                context.progressbar_callback(task_state, 5, 'Preparing Auxiliary Removal...')
 
             if flags.remove_bg in task_state.goals:
+                from backend.auxiliary_workers import run_background_removal
+
                 if context.progressbar_callback is not None:
                     context.progressbar_callback(task_state, 10, 'Background Removal Starting...')
-                char_path, mask_path = bgr_engine.remove_background_from_file(
-                    filepath=task_state.remove_base_image,
+                image_np = _load_removal_array(task_state.remove_base_image, mode='RGB')
+                rgba_image, binary_mask = run_background_removal(
+                    image_np,
                     threshold=task_state.bgr_threshold,
                     jit=task_state.bgr_jit,
                 )
-                bgr_engine.unload_model()
+                char_path = _save_removal_temp(rgba_image)
+                mask_path = _save_removal_temp(binary_mask)
                 persisted_char_path = _save_logged_output(
                     context,
                     char_path,
@@ -1068,26 +1093,19 @@ class RemovalStage(PipelineStage):
                             do_not_show_finished_images=True,
                         )
                 else:
+                    from backend.auxiliary_workers import run_mat_inpaint
+
                     if context.progressbar_callback is not None:
                         context.progressbar_callback(task_state, 60 if flags.remove_bg in task_state.goals else 10, 'Object Removal Starting...')
-                    res_path = objr_engine.remove_object_from_file(
-                        image_path=task_state.remove_base_image,
-                        mask_path=task_state.remove_mask_image,
+                    image_np = _load_removal_array(task_state.remove_base_image, mode='RGB')
+                    mask_np = _load_removal_array(task_state.remove_mask_image, mode='L')
+                    result_np = run_mat_inpaint(
+                        image_np,
+                        mask_np,
                         seed=task_state.seed,
                         mask_dilate=task_state.objr_mask_dilate,
-                        engine=task_state.objr_engine,
-                        flux_conditioning=task_state.flux_fill_conditioning,
-                        flux_prompt=task_state.remove_prompt,
-                        flux_prompt_cache=task_state.flux_fill_prompt_cache,
-                        flux_mask_blur=task_state.objr_mask_blur,
-                        flux_blend_mode=task_state.objr_blend_mode,
-                        flux_steps=int(task_state.steps),
-                        flux_sampler=task_state.sampler_name,
-                        flux_scheduler=task_state.scheduler_name,
-                        flux_callback=None,
-                        flux_disable_pbar=True,
                     )
-                    objr_engine.unload_model()
+                    res_path = _save_removal_temp(result_np)
                     persisted_res_path = _save_logged_output(
                         context,
                         res_path,
