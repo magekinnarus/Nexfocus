@@ -409,16 +409,14 @@ def update_upscale_scale_info(image_path, model_name, scale_override):
     
     if model_name == 'None' or model_name is None:
          return gr.update(value="<b>Scale:</b> No model selected.")
+
+    if scale_override > 0:
+        return gr.update(value=f"<b>Scale:</b> {scale_override}x (Overridden)")
     
     import modules.upscaler as upscaler
     try:
-        model = upscaler.load_model(model_name)
-        native_scale = upscaler.get_model_scale(model)
-        
-        if scale_override > 0:
-            return gr.update(value=f"<b>Scale:</b> {scale_override}x (Overridden)")
-        else:
-            return gr.update(value=f"<b>Scale:</b> {native_scale}x (Model default)")
+        native_scale = upscaler.get_model_scale_for_name(model_name)
+        return gr.update(value=f"<b>Scale:</b> {native_scale}x (Model default)")
     except Exception as e:
         return gr.update(value=f"<b>Scale:</b> Error detection: {str(e)}")
 

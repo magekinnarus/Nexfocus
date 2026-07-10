@@ -1,18 +1,9 @@
 import os
-import torch
-import numpy as np
-import logging
+from pathlib import Path
 
-import modules.core as core
-import backend.resources as resources
-import ldm_patched.modules.utils
-import ldm_patched.pfn.model_loading as loading
 from modules.config import path_upscale_models
 
-logger = logging.getLogger(__name__)
-
-_cached_model = None
-_cached_model_name = None
+_MODEL_SCALE_METADATA_CACHE: dict[tuple[str, int, int], int] = {}
 
 def list_available_models():
     """Scan models/upscale_models/ for .pth files."""
@@ -42,141 +33,64 @@ def get_model_scale(model):
     # Priority 3: Fallback to name-based if it's a wrapper or if attribute missing
     return 4  # Default fallback if unknown
 
-def load_model(model_name):
-    """Load model by name, using cache if available."""
-    global _cached_model, _cached_model_name
-    
-    if _cached_model_name == model_name and _cached_model is not None:
-        return _cached_model
-    
-    model_path = None
+
+def _resolve_model_path(model_name: str) -> Path:
     for folder in path_upscale_models:
-        p = os.path.join(folder, model_name)
-        if os.path.exists(p):
-            model_path = p
-            break
-            
-    if model_path is None:
-        raise FileNotFoundError(f"Upscale model not found: {model_name}")
-        
-    logger.info(f"Loading upscale model {model_path} ...")
-    
-    # Use existing loading infrastructure
-    if model_path.endswith('.safetensors'):
-        from ldm_patched.modules.utils import load_torch_file
-        sd = load_torch_file(model_path, device='cpu')
-    else:
-        sd = torch.load(model_path, map_location='cpu', weights_only=True)
-    
-    model = loading.load_state_dict(sd)
-    model.eval()
-    model.cpu()
-    
-    _cached_model = model
-    _cached_model_name = model_name
-    
-    return model
+        candidate = Path(folder) / model_name
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(f"Upscale model not found: {model_name}")
+
+
+def get_model_scale_for_name(model_name: str) -> int:
+    """Probe scale through a temporary worker and retain scalar metadata only."""
+    model_path = _resolve_model_path(model_name)
+    stat = model_path.stat()
+    cache_key = (str(model_path.resolve()), int(stat.st_size), int(stat.st_mtime_ns))
+    cached_scale = _MODEL_SCALE_METADATA_CACHE.get(cache_key)
+    if cached_scale is not None:
+        return cached_scale
+
+    from backend.auxiliary_workers.gan_upscale_worker import GanUpscaleWorker
+
+    worker = GanUpscaleWorker()
+    try:
+        worker.load(model_name)
+        native_scale = worker.get_native_scale()
+    finally:
+        worker.teardown()
+
+    _MODEL_SCALE_METADATA_CACHE.clear()
+    _MODEL_SCALE_METADATA_CACHE[cache_key] = int(native_scale)
+    return int(native_scale)
+
 
 def clear_model_cache():
-    global _cached_model, _cached_model_name
-    _cached_model = None
-    _cached_model_name = None
-    
-    import gc
-    gc.collect()
-    
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
-    
-    resources.soft_empty_cache()
-    print("Upscale model cache cleared and memory reclaimed.")
+    """Compatibility name retained for clearing metadata-only scale entries."""
+    _MODEL_SCALE_METADATA_CACHE.clear()
+
+
+def load_model(model_name):
+    """Reject the retired direct-load API so this bridge cannot own live state."""
+    raise RuntimeError(
+        "modules.upscaler.load_model no longer owns GAN model state; "
+        "use GanUpscaleWorker or get_model_scale_for_name()."
+    )
+
 
 def perform_upscale(img, model_name=None, scale_override=None, retain_warm=False):
+    """Compatibility bridge into the worker-owned ephemeral GAN path.
+
+    ``retain_warm`` remains in the signature for callers but never grants this
+    bridge authority to clear or retain another assembly's artifacts.
     """
-    Upscale an image using the specified model.
-    img: numpy array [H, W, C]
-    model_name: filename of the model in models/upscale_models/
-    scale_override: optional scale to force
-    retain_warm: if True, do not unload non-upscaler models
-    """
-    global _cached_model, _cached_model_name
-    
     if img is None:
         return None
 
-    # Default to first available or hardcoded if None (for backward compatibility during transition)
-    if model_name is None:
-        available = list_available_models()
-        if available:
-            if '4xNomos2_otf_esrgan.pth' in available:
-                model_name = '4xNomos2_otf_esrgan.pth'
-            else:
-                model_name = available[0]
-        else:
-            # Fallback for when no models are present (e.g. fresh install)
-            # This will fail unless we keep the old default logic, but mission says rewritten
-            raise ValueError("No upscale models found and none specified.")
+    from backend.auxiliary_workers.gan_upscale_worker import run_gan_upscale
 
-    print(f'Upscaling image with shape {str(img.shape)} using {model_name} ...')
-
-    model = load_model(model_name)
-    device = resources.get_torch_device()
-    
-    # Precision selection: prefer Float32 for GANs by default for maximum compatibility.
-    # Pascal (10x0) and older GPUs see massive performance hits in FP16.
-    model.float()
-    
-    # Optional: logic to re-enable FP16 for Ampere+ could go here, 
-    # but FP32 is currently the 'safe' baseline for global 30s target.
-    
-    model.to(device)
-
-    # Detect scale and color space via Spandrel (chaiNNer standard)
-    native_scale = 4
-    is_bgr = True
-    
-    if hasattr(model, "architecture"):
-        # Spandrel Unified Metadata
-        native_scale = getattr(model, "scale", 4)
-        arch_id = model.architecture.id
-        
-        # Check tags and architecture for color space
-        if "RGB" in model.tags:
-            is_bgr = False
-        elif "BGR" in model.tags:
-            is_bgr = True
-        elif any(x in arch_id for x in ["RealESRGANv2", "RealPLKSR", "SCET", "SwinIR", "HAT"]):
-            is_bgr = False
-            
-    target_scale = scale_override if scale_override is not None else native_scale
-    
-    from modules.upscale_engine import NexUpscaleEngine
-    import gc
-    
-    def upscale_fn(t):
-        return model(t)
-        
-    print(f"[Fooocus] Upscaling image via Nex-Engine (Native Space: {'BGR' if is_bgr else 'RGB'})...")
-    
-    # Get the model's actual dtype for perfect precision matching in the engine
-    m_dtype = next(model.model.parameters()).dtype if hasattr(model, "model") else torch.float32
-    
-    engine = NexUpscaleEngine()
-    result = engine.process(img, upscale_fn, native_scale, device, is_bgr=is_bgr, dtype=m_dtype)
-
-    # Aggressive memory reclamation after the heavy GAN pass
-    model.cpu()
-    if not retain_warm:
-        resources.teardown_active_runtime("upscaler_completion")
-    gc.collect()
-    resources.soft_empty_cache()
-
-    # Handle scale override via bicubic resize if needed
-    if target_scale != native_scale:
-        import cv2
-        h, w = img.shape[:2]
-        new_h, new_w = int(h * target_scale), int(w * target_scale)
-        result = cv2.resize(result, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
-
-    return result
+    return run_gan_upscale(
+        img,
+        model_name=model_name,
+        scale_override=scale_override,
+    )

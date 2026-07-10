@@ -12,7 +12,6 @@ import backend.resources as resources
 from modules.route_intent import resolve_route_intent
 from modules.util import (HWC3, resize_image, get_image_shape_ceil, set_image_shape_ceil, 
                           get_shape_ceil, resample_image, erode_or_dilate)
-from modules.upscaler import perform_upscale
 import modules.mask_processing as mask_proc
 
 _STRUCTURAL_PREPROCESS_CACHE: OrderedDict[tuple, np.ndarray] = OrderedDict()
@@ -304,24 +303,8 @@ def apply_upscale(task_state, progressbar_callback=None):
         task_state.current_progress += 1
         progressbar_callback(task_state, task_state.current_progress, f'Upscaling image from {str((W, H))} ...')
     
-    from backend import resources
-    from modules.pipeline.tiled_refinement import should_retain_sdxl_warm_state
-
-    # Calculate retention flag to check if the next stage (tiled refinement) can reuse active SDXL models
-    retain_warm = should_retain_sdxl_warm_state(task_state)
-
-    # Pre-upscale cleanup: central governor path before bringing the GAN model online.
-    resources.cleanup_memory(
-        'upscale_preflight',
-        unload_models=not retain_warm,
-        force_cache=True,
-        trim_host=True,
-        target_phase=resources.MemoryPhase.UPSCALE,
-        notes={'uov_method': uov_method},
-    )
-
-    # 1. GAN Upscale with new multi-model engine
-    from modules.upscaler import perform_upscale, clear_model_cache
+    # 1. GAN upscale in an assembly-preserving auxiliary execution window.
+    from backend.auxiliary_workers.gan_upscale_worker import run_gan_upscale
 
     # Super-Upscale should use the lightest default model (Nomos2) to save memory
     upscale_model_to_use = task_state.upscale_model
@@ -329,24 +312,12 @@ def apply_upscale(task_state, progressbar_callback=None):
         upscale_model_to_use = '4xNomos2_otf_esrgan.pth'
         print(f'Super-Upscale detected: Forcing light model {upscale_model_to_use} for initial pass.')
 
-    uov_input_image = perform_upscale(
-        uov_input_image, 
+    uov_input_image = run_gan_upscale(
+        uov_input_image,
         model_name=upscale_model_to_use if upscale_model_to_use != "None" else None,
         scale_override=task_state.upscale_scale_override if task_state.upscale_scale_override > 0 else None,
-        retain_warm=retain_warm
     )
     print(f'Image upscaled via GAN to {str(uov_input_image.shape[:2])}.')
-
-    # Post-upscale cleanup: Purge GAN model and route cleanup through the governor.
-    clear_model_cache()
-    resources.cleanup_memory(
-        'upscale_postflight',
-        unload_models=not retain_warm,
-        force_cache=True,
-        trim_host=False,
-        notes={'uov_method': uov_method},
-        target_phase=resources.MemoryPhase.FINALIZE
-    )
 
     # 2. Handle "Upscale" (Light) or "Super-Upscale" (Stage 1)
     if uov_method == 'upscale':

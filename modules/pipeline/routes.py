@@ -896,7 +896,7 @@ class UpscaleStage(PipelineStage):
             PipelineResourceRequirement(
                 resource_id='upscaler_model',
                 description='GAN upscaler model with optional tiled refinement follow-up.',
-                owner='modules.upscaler',
+                owner='backend.auxiliary_workers.gan_upscale_worker',
                 tags=('upscale',),
             ),
             PipelineResourceRequirement(

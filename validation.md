@@ -113,7 +113,7 @@ Covers:
 Covers:
 
 - runtime-native memory policy
-- hardware-tier mapping
+- explicit posture defaults/guardrails without automatic assembly rearrangement
 - Flux Fill route/session sanity (v3 greenfield and legacy compatibility)
 - disk-paged T5 adaptive GC cadence with critical-headroom fallback
 - runtime-surface preview and completed-image API ownership
@@ -133,6 +133,21 @@ Covers:
 - same-stack warm patched-CLIP reuse on prompt / `clip_skip` changes
 - queue-frozen route truth, slot continuity, and fail-closed admission
 - SDXL assembly callback interrupt preservation for running-task `Skip`
+
+### 5. W11 Auxiliary Worker Lifecycle And Upscale Routing
+
+```powershell
+.\venv\Scripts\python.exe -m pytest tracked_tests\test_w11_gan_upscale_worker.py tracked_tests\test_w11_upscale_route_contract.py -q
+```
+
+Covers:
+
+- worker-owned GAN load, infer, device detach, and teardown
+- generic auxiliary admission/failure/release telemetry
+- failure-path worker teardown and lease release
+- scalar-only UI scale metadata caching with no retained model object
+- absence of broad runtime/cache cleanup during GAN execution
+- direct light upscale and GAN-first `super-upscale` tiled-refinement handoff
 
 ## Manual Acceptance Replay
 
@@ -255,10 +270,8 @@ Notes:
   because of the pre-existing `args_manager` argparse incompatibility.
 - Treat this command as the broad regression sweep after the targeted matrix is
   already green.
-- Reserved W11 scaffold modules currently exist as intentionally skipped
-  placeholders until their slices land:
-  `tracked_tests/test_w11_gan_upscale_worker.py`,
-  `tracked_tests/test_w11_upscale_route_contract.py`,
+- Remaining W11 scaffold modules exist as intentionally skipped placeholders
+  until their slices land:
   `tracked_tests/test_w11_remove_workers.py`,
   `tracked_tests/test_w11_color_enhanced_upscale.py`,
   `tracked_tests/test_w11_auxiliary_queue_preview.py`, and
