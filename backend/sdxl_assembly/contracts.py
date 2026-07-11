@@ -292,6 +292,14 @@ class ContextualPayloadArtifact:
 
 
 @dataclass(frozen=True)
+class ColorExtractionSpec:
+    enabled: bool
+    restore_cfg: float = 4.0
+    restore_cfg_s_tmin: float = 0.0
+    wavelet_levels: int = 5
+
+
+@dataclass(frozen=True)
 class SDXLAssemblyRequest:
     # Queue and route identity: one request per concrete prompt/image task
     request_id: str
@@ -362,6 +370,7 @@ class SDXLAssemblyRequest:
     
     # Contextual Control descriptors added in W08
     contextual_controls: Tuple[SDXLContextualControlDescriptor, ...] = field(default_factory=tuple)
+    color_extraction: Optional[ColorExtractionSpec] = None
     
     def validate(self) -> None:
         """Enforces minimum parameter checks on an already-resolved snapshot."""

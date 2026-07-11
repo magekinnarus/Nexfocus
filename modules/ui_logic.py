@@ -58,10 +58,10 @@ def get_completed_queue_html():
             prompt_preview += '...'
         if not prompt_preview.strip():
             prompt_preview = "Image generation"
-            
+
         model_name = html.escape(str(task.model_name or ''))
         seed = html.escape(str(task.seed or ''))
-        
+
         thumbs_html = '<div class="task-thumbnails" style="display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;">'
         for img_path in task.images:
             file_url = html.escape(runtime_surface_state.build_file_url(str(img_path)))
@@ -306,7 +306,7 @@ def generate_clicked(task: worker.AsyncTask, image_number, disable_preview):
                     gr.update(visible=False), \
                     gr.update(visible=True)
                 finished = True
-                
+
                 # Auto-populate mask if BGR was run
                 if task.state.current_tab == 'remove' and 'remove_bg' in task.state.goals and len(product) > 1:
                     # product[0] = character, product[1] = mask
@@ -365,9 +365,9 @@ def expand_mask(outpaint_selections, inpaint_mask_image):
     if inpaint_mask_image is None:
         print("[Debug] Mask Image is None. Aborting.")
         return gr.update()
-    
+
     from modules.mask_processing import combine_image_and_mask, to_binary_mask, expand_mask_direction, extract_mask_from_layers
-    
+
     # Handle ImageEditor EditorValue
     if isinstance(inpaint_mask_image, dict) and 'background' in inpaint_mask_image:
         merged = combine_image_and_mask(inpaint_mask_image)
@@ -375,44 +375,48 @@ def expand_mask(outpaint_selections, inpaint_mask_image):
         merged = combine_image_and_mask(inpaint_mask_image)
     if merged is None:
         return gr.update()
-        
+
     print(f"[Debug Expand Mask] merged shape: {merged.shape}, max: {merged.max()}, min: {merged.min()}, mean: {merged.mean()}")
-    
+
     new_mask = to_binary_mask(merged)
     print(f"[Debug Expand Mask] binary_mask shape: {new_mask.shape}, sum (white pixels): {new_mask.sum() // 255} out of {new_mask.size}")
-    
+
     for direction in outpaint_selections:
         new_mask = expand_mask_direction(new_mask, direction, pixels=32)
 
     from PIL import Image
     import modules.util
     import os
-    
+
     result_rgb = np.stack([new_mask]*3, axis=-1)
     result_img = Image.fromarray(result_rgb)
-    
+
     _, temp_path, _ = modules.util.generate_temp_filename(folder=modules.config.path_temp_outputs, extension='png')
     os.makedirs(os.path.dirname(temp_path), exist_ok=True)
     result_img.save(temp_path)
-    
+
     return temp_path
 
 def uov_method_change(method):
     if method == 'Super-Upscale':
         # Force light model for Super-Upscale and disable dropdown
-        return gr.update(visible=True), gr.update(interactive=False, value='4xNomos2_otf_esrgan.pth'), gr.update(visible=True)
-    return gr.update(visible=False), gr.update(interactive=True), gr.update(visible=True)
+        return gr.update(visible=True), gr.update(interactive=False, value='4xNomos2_otf_esrgan.pth'), gr.update(visible=True), gr.update(visible=False), gr.update(visible=False), gr.update(visible=True)
+    if method in {'Color Enhancement', 'Color-Enhanced-Upscale'}:
+        # Color enhancement consumes a required existing GAN donor; it never
+        # admits an upscaler model. The main negative prompt remains shared.
+        return gr.update(visible=False), gr.update(interactive=False, visible=False), gr.update(visible=False), gr.update(visible=True), gr.update(visible=True), gr.update(visible=False)
+    return gr.update(visible=False), gr.update(interactive=True, visible=True), gr.update(visible=True), gr.update(visible=False), gr.update(visible=False), gr.update(visible=True)
 
 def update_upscale_scale_info(image_path, model_name, scale_override):
     if image_path is None:
         return gr.update(value="<b>Scale:</b> No image uploaded.")
-    
+
     if model_name == 'None' or model_name is None:
          return gr.update(value="<b>Scale:</b> No model selected.")
 
     if scale_override > 0:
         return gr.update(value=f"<b>Scale:</b> {scale_override}x (Overridden)")
-    
+
     import modules.upscaler as upscaler
     try:
         native_scale = upscaler.get_model_scale_for_name(model_name)
@@ -428,9 +432,9 @@ def refresh_upscale_models():
         default_model = '4xNomos2_otf_esrgan.pth'
     elif len(models) > 0:
         default_model = models[0]
-        
+
     return gr.update(choices=['None'] + models, value=default_model)
-    
+
 def stop_clicked(currentTask):
     worker.request_interrupt('stop', currentTask)
     return currentTask
@@ -839,12 +843,12 @@ def apply_model_browser_drop(apply_data_json, current_base_model, current_vae_mo
 def update_style_label(selections):
     if not selections or len(selections) == 0:
         return gr.update(label='Prompt Presets')
-    
+
     visible_styles = selections[:2]
     label = f"Presets: {', '.join(visible_styles)}"
     if len(selections) > 2:
         label += f" ... (+{len(selections) - 2} more)"
-    
+
     return gr.update(label=label)
 
 PRESET_SPEED_LORAS = {
@@ -1031,20 +1035,20 @@ def register_all_events(ctrls_dict, currentTask_component, ui_elements):
     # Unpack components for easy reference
     for name, component in ctrls_dict.items():
         globals()[name] = component
-    
+
     for name, component in ui_elements.items():
         globals()[name] = component
-    
+
     global currentTask
     currentTask = currentTask_component
-    
+
     global ctrls_keys, ctrls
     ctrls_keys = ['_currentTask'] + list(ctrls_dict.keys())
     ctrls = [currentTask_component] + list(ctrls_dict.values())
 
     # Global/Shared states and components that are needed by logic
     # (These are passed in via ctrls_dict or accessible via shared)
-    
+
     # Phase 3 UI Bindings
     global toggle_toolbar_js, switch_js, down_js
     toggle_toolbar_js = """
@@ -1074,7 +1078,7 @@ def register_all_events(ctrls_dict, currentTask_component, ui_elements):
         }
     }
     """
-    
+
     switch_js = "(x) => {if(x){if(window.viewer_to_bottom){viewer_to_bottom(100);viewer_to_bottom(500);}}else{if(window.viewer_to_top){viewer_to_top();}} return x;}"
     down_js = "() => {if(window.viewer_to_bottom){viewer_to_bottom();}}"
     resolve_generate_tab_js = """
@@ -1143,8 +1147,8 @@ def register_all_events(ctrls_dict, currentTask_component, ui_elements):
     ip_tab.select(lambda: 'ip', outputs=current_tab, queue=False, js=down_js, show_progress=False)
     metadata_tab.select(lambda: 'metadata', outputs=current_tab, queue=False, js=down_js, show_progress=False)
 
-    uov_method.change(uov_method_change, inputs=uov_method, outputs=[upscale_refinement_container, upscale_model, upscale_scale_override], queue=False, show_progress=False)
-    
+    uov_method.change(uov_method_change, inputs=uov_method, outputs=[upscale_refinement_container, upscale_model, upscale_scale_override, upscale_prompt, upscale_gan_output_container, upscale_scale_info], queue=False, show_progress=False)
+
     uov_input_image.change(update_upscale_scale_info, inputs=[uov_input_image, upscale_model, upscale_scale_override], outputs=upscale_scale_info, queue=False, show_progress=False)
     upscale_model.change(update_upscale_scale_info, inputs=[uov_input_image, upscale_model, upscale_scale_override], outputs=upscale_scale_info, queue=False, show_progress=False)
     upscale_scale_override.change(update_upscale_scale_info, inputs=[uov_input_image, upscale_model, upscale_scale_override], outputs=upscale_scale_info, queue=False, show_progress=False)
@@ -1336,11 +1340,11 @@ def register_all_events(ctrls_dict, currentTask_component, ui_elements):
 
     def handle_reconnect_click(task):
         worker.request_interrupt('stop', task)
-        
+
         results = getattr(task, 'results', []) if task else []
         cols = max(1, int(np.ceil(np.sqrt(len(results))))) if len(results) > 0 else 2
         res_val = results[0] if len(results) > 0 else None
-        
+
         return [
             worker.AsyncTask(args=[]),
             False,
@@ -1367,7 +1371,7 @@ def get_tasks(*args):
     global ctrls_keys
     named_args = dict(zip(ctrls_keys, args))
     named_args.pop('_currentTask', None)
-    
+
     validation_message = validate_outpaint_generate_request(named_args)
     if validation_message:
         invalid_task = worker.AsyncTask(args={})
@@ -1412,13 +1416,13 @@ def enqueue_tasks(tasks, *_legacy_route_inputs):
     import modules.async_worker as worker
     if not isinstance(tasks, list):
         tasks = [tasks]
-        
+
     first_task = tasks[0] if tasks else None
     if first_task and not first_task.is_valid:
         message = getattr(first_task, 'validation_message', 'The current request is not ready yet.')
         runtime_surface_state.set_progress_state(visible=True, number=0, text=message)
         return first_task
-        
+
     for task in tasks:
         worker.async_tasks.append(task)
     if worker.get_active_task() is None:
@@ -1549,10 +1553,10 @@ def poll_active_task_status(session_gallery, last_preview, active_id, disable_pr
     import modules.async_worker as worker
     import numpy as np
     import gradio as gr
-    
+
     active_task = worker.get_active_task()
     pending = worker.async_tasks
-    
+
     # Calculate queue length for tab label update
     queue_len = len(pending)
     if active_task:
@@ -1591,7 +1595,7 @@ def poll_active_task_status(session_gallery, last_preview, active_id, disable_pr
         pending_queue_update = pending_queue_html
     else:
         pending_queue_update = gr.skip()
-        
+
     if queue_len != _last_rendered_queue_len:
         _last_rendered_queue_len = queue_len
         if queue_len > 0:
@@ -1600,13 +1604,13 @@ def poll_active_task_status(session_gallery, last_preview, active_id, disable_pr
             queue_tab_update = gr.update(label="Queue")
     else:
         queue_tab_update = gr.skip()
-        
+
     progress_update = gr.skip()
     preview_update = gr.skip()
     gallery_update = gr.skip()
     preview_column_update = gr.skip()
     gallery_column_update = gr.skip()
-    
+
     new_active_id = active_id
     new_gallery = list(session_gallery)
     new_preview = last_preview
@@ -1625,19 +1629,19 @@ def poll_active_task_status(session_gallery, last_preview, active_id, disable_pr
         if previous_finished_images:
             new_preview = previous_finished_images[0]
             preview_update = gr.update(visible=True, value=previous_finished_images[0])
-    
+
     if active_task:
         new_active_id = active_task.task_id
         latest_preview_img, latest_progress_pct, latest_progress_msg, finished_images = (None, None, None, None)
         task_started = active_id != active_task.task_id
-        
+
         if task_started:
             preview_column_update = gr.update(visible=True)
             gallery_column_update = gr.update(visible=False)
             progress_update = _get_progress_html_update(visible=True, number=1, text='Waiting for task to start ...')
 
         latest_preview_img, latest_progress_pct, latest_progress_msg, finished_images = _drain_task_ui_events(active_task, new_gallery)
-                
+
         if finished_images:
             new_preview = finished_images[0]
             preview_update = gr.update(visible=True, value=finished_images[0])
@@ -1645,18 +1649,18 @@ def poll_active_task_status(session_gallery, last_preview, active_id, disable_pr
         if latest_preview_img is not None:
             new_preview = latest_preview_img
             preview_update = gr.update(visible=True, value=latest_preview_img)
-            
+
         if latest_progress_msg is not None:
             progress_update = _get_progress_html_update(
                 visible=True,
                 number=latest_progress_pct or 0,
                 text=latest_progress_msg,
             )
-            
+
         if new_gallery != list(session_gallery):
             cols = max(1, int(np.ceil(np.sqrt(len(new_gallery))))) if len(new_gallery) > 0 else 1
             gallery_update = gr.update(value=new_gallery, columns=cols)
-            
+
     else:
         # Check if active task just finished
         if active_id is not None:
@@ -1677,7 +1681,7 @@ def poll_active_task_status(session_gallery, last_preview, active_id, disable_pr
         completed_queue_update = completed_queue_html
     else:
         completed_queue_update = gr.skip()
-            
+
     return running_task_update, running_progress_update, running_status_update, running_skip_update, pending_queue_update, progress_update, preview_update, gallery_update, queue_tab_update, new_gallery, new_preview, new_active_id, preview_column_update, gallery_column_update, completed_queue_update
 
 

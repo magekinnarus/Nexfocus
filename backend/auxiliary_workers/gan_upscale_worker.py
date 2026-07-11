@@ -102,11 +102,13 @@ class GanUpscaleWorker:
         # Detect scale and color space via Spandrel (chaiNNer standard)
         native_scale = self.get_native_scale()
         is_bgr = True
+        architecture_id = None
         
         if hasattr(self.model, "architecture"):
             # Spandrel Unified Metadata
             native_scale = getattr(self.model, "scale", 4)
             arch_id = self.model.architecture.id
+            architecture_id = str(arch_id)
             
             # Check tags and architecture for color space
             if "RGB" in self.model.tags:
@@ -125,13 +127,37 @@ class GanUpscaleWorker:
         
         # Get the model's actual dtype for perfect precision matching in the engine
         m_dtype = next(self.model.model.parameters()).dtype if hasattr(self.model, "model") else torch.float32
-        
+        model_parameters = (
+            sum(parameter.numel() for parameter in self.model.model.parameters())
+            if hasattr(self.model, "model")
+            else sum(parameter.numel() for parameter in self.model.parameters())
+        )
+        log_auxiliary_telemetry(
+            "gan_upscale_worker_plan",
+            f"architecture={architecture_id or 'unknown'} native_scale={native_scale} "
+            f"target_scale={target_scale} dtype={m_dtype} parameters={model_parameters}",
+        )
+
         engine = NexUpscaleEngine()
         try:
-            result = engine.process(img, upscale_fn, native_scale, device, is_bgr=is_bgr, dtype=m_dtype)
+            result = engine.process(
+                img,
+                upscale_fn,
+                native_scale,
+                device,
+                is_bgr=is_bgr,
+                dtype=m_dtype,
+                model_params=model_parameters,
+                architecture_id=architecture_id,
+            )
         finally:
             # The worker, not the caller, owns device detachment on every path.
             self.model.cpu()
+
+        log_auxiliary_telemetry(
+            "gan_upscale_worker_native_complete",
+            f"native_scale={native_scale} native_shape={result.shape}",
+        )
 
         # Handle scale override via bicubic resize if needed
         if target_scale != native_scale:

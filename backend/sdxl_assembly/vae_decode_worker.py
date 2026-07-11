@@ -32,6 +32,9 @@ class TransientVaeDecodeWorker:
         
         Loads/attaches VAE transiently, then releases/ejects the VAE state from GPU.
         """
+        if not torch.isfinite(latent).all():
+            raise RuntimeError("VAE decode rejected a non-finite SDXL latent.")
+
         # 1. Acquire VAE from CPU-pinned components
         self.vae = acquire_vae_component(self.request)
         if self.vae is None:
@@ -52,6 +55,11 @@ class TransientVaeDecodeWorker:
         try:
             with torch.inference_mode():
                 decoded_patch = decode.decode_preloaded_vae(self.vae, latent, tiled=self.request.tiled)
+                if not torch.isfinite(decoded_patch).all():
+                    log_telemetry("vae_decode_nonfinite", f"route={self.request.route_id}")
+                    raise RuntimeError(
+                        "VAE decode produced non-finite pixels; the invalid image was not converted or saved."
+                    )
                 output_image = core.pytorch_to_numpy(decoded_patch)[0]
         finally:
             # 4. Release/eject under worker ownership

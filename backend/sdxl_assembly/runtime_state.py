@@ -28,7 +28,7 @@ class SDXLStreamingSpineKey:
     prefetch_depth: int
     prefetch_chunk_mb: int
     lora_stack_hash: str
-    scheduler: str
+    scheduler_signature: str
 
 
 @dataclass(frozen=True)
@@ -358,7 +358,9 @@ class SDXLStreamingRuntimeState:
             prefetch_depth=request.prefetch_depth,
             prefetch_chunk_mb=request.prefetch_chunk_mb,
             lora_stack_hash=request.lora_stack_hash,
-            scheduler=request.scheduler,
+            # Only the LCM patch changes UNet state. Ordinary scheduler changes
+            # affect sampling, not the already-loaded/patched UNet spine.
+            scheduler_signature="lcm" if request.scheduler == "lcm" else "standard",
         )
 
     def acquire(self, request: SDXLAssemblyRequest, *, lora_worker: Any | None = None) -> Tuple[Any, bool]:

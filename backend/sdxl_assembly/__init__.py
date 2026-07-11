@@ -10,7 +10,10 @@ from backend.sdxl_assembly.contracts import (
     LoraPatchPostureKind,
     SDXLAssemblyEligibilityError,
     SDXLAssemblyValidationError,
+    ColorExtractionSpec,
 )
+from backend.sdxl_assembly.color_extraction_worker import ColorExtractionWorker
+from backend.sdxl_assembly.wavelet_color import wavelet_reconstruction, wavelet_decomposition
 from backend.sdxl_assembly.director import SDXLAssemblyDirector
 from backend.sdxl_assembly.assembly import SDXLAssembly
 from backend.sdxl_assembly.gateway import is_eligible_for_sdxl_assembly, run_sdxl_assembly_task

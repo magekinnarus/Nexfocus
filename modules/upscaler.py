@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 
 from modules.config import path_upscale_models
@@ -43,7 +44,13 @@ def _resolve_model_path(model_name: str) -> Path:
 
 
 def get_model_scale_for_name(model_name: str) -> int:
-    """Probe scale through a temporary worker and retain scalar metadata only."""
+    """Return scalar scale metadata without loading or attaching the model.
+
+    This function is called by the live UI while another task may be sampling.
+    Loading a GAN only to render the scale label can borrow VRAM outside the
+    auxiliary lease and overlap Flux/SDXL execution, so unknown names use the
+    established scale-4 fallback.
+    """
     model_path = _resolve_model_path(model_name)
     stat = model_path.stat()
     cache_key = (str(model_path.resolve()), int(stat.st_size), int(stat.st_mtime_ns))
@@ -51,14 +58,9 @@ def get_model_scale_for_name(model_name: str) -> int:
     if cached_scale is not None:
         return cached_scale
 
-    from backend.auxiliary_workers.gan_upscale_worker import GanUpscaleWorker
-
-    worker = GanUpscaleWorker()
-    try:
-        worker.load(model_name)
-        native_scale = worker.get_native_scale()
-    finally:
-        worker.teardown()
+    match = re.search(r"(?<!\d)(\d+(?:\.\d+)?)x", model_path.name, flags=re.IGNORECASE)
+    native_scale = int(round(float(match.group(1)))) if match else 4
+    native_scale = max(1, native_scale)
 
     _MODEL_SCALE_METADATA_CACHE.clear()
     _MODEL_SCALE_METADATA_CACHE[cache_key] = int(native_scale)

@@ -256,7 +256,11 @@ def run_sdxl_assembly_task(
         preview_runtime_holder["assembly"] = assembly
 
     # 3. Create progress callback
-    progress_cb = SDXLAssemblyProgressCallback(request, progressbar_callback)
+    progress_cb = SDXLAssemblyProgressCallback(
+        request,
+        progressbar_callback,
+        progress_state=task_state,
+    )
 
     # 4. Execute
     try:

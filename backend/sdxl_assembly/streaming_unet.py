@@ -15,12 +15,14 @@ logger = logging.getLogger(__name__)
 
 class StreamingUnetSpine:
     """Worker representing StreamingUnetSpine (CPU-pinned weights streamed slice-by-slice)."""
-    
+
     def __init__(self, request: SDXLAssemblyRequest, lora_worker: CpuLoraWorker | None = None) -> None:
         self.request = request
         self.lora_worker = lora_worker or CpuLoraWorker(request)
         self.unet = None
         self.is_active = False
+        self.x_center = None
+        self._active_color_worker = None
 
     def start(self) -> None:
         """Acquires the base UNet, applies scheduler-specific patches and UNet-side LoRAs,
@@ -29,7 +31,7 @@ class StreamingUnetSpine:
         if self.unet is None:
             # 1. Acquire the owned UNet for this streaming spine.
             self.unet = acquire_unet_component(self.request)
-            
+
             # 2. Patch LCM scheduler if LCM.
             orig_scheduler = self.request.scheduler
             if orig_scheduler == 'lcm':
@@ -38,11 +40,11 @@ class StreamingUnetSpine:
 
             # 3. Apply LoRAs to UNet.
             self.lora_worker.apply_unet_patches(self.unet)
-            
+
             # 4. Compile the patcher on CPU.
             from backend.cpu_compiler import CpuArtifactCompiler
             pin_model_host = bool(self.request.metadata.get("pin_unet_host", False))
-                
+
             logger.debug("[SDXL Telemetry] Compiling UNet on CPU (pin_host=%s)...", pin_model_host)
             log_telemetry("unet_compile_begin", f"pin_host={pin_model_host}")
             CpuArtifactCompiler.compile_patcher(self.unet, pin_unet_host=pin_model_host)
@@ -51,7 +53,7 @@ class StreamingUnetSpine:
         else:
             logger.debug("[SDXL Telemetry] Reusing warm owned UNet in streaming spine.")
             log_telemetry("unet_spine_owned_reuse")
-        
+
         self.is_active = True
 
     def denoise(
@@ -62,29 +64,34 @@ class StreamingUnetSpine:
         denoise_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Runs the denoise loop with low VRAM prefetch and streaming posture."""
+        self.x_center = None
+        self._active_color_worker = None
+
         device = torch.device(self.request.device)
         budget_bytes = self.request.prefetch_chunk_mb * 1024 * 1024
-        
+
         model_size = int(self.unet.model_size())
         lowvram_model_memory = 0 if budget_bytes <= 0 or budget_bytes >= model_size else int(budget_bytes)
-        
+
         log_telemetry("spine_stream_begin", f"budget_mb={self.request.prefetch_chunk_mb}")
-        
-        # Attach the compiled UNet to device with Low VRAM budget
-        self.unet.patch_model(device_to=device, lowvram_model_memory=lowvram_model_memory)
-        
+
         try:
+            # Attach the compiled UNet to device with Low VRAM budget
+            self.unet.patch_model(device_to=device, lowvram_model_memory=lowvram_model_memory)
+
             dtype = self._infer_unet_dtype()
             latent = latent.to(device=device, dtype=dtype)
-            
+            if self.request.color_extraction and self.request.color_extraction.enabled:
+                self.x_center = latent.detach().clone()
+
             # Setup noise
             generator = torch.Generator(device=device).manual_seed(self.request.seed)
             noise = torch.randn(latent.shape, generator=generator, device=device, dtype=dtype)
-            
+
             # 1. Convert positive and negative conditions using _convert_sampler_cond
             import uuid
             from backend import cond_utils
-            
+
             def convert_sampler_cond(cond_list):
                 out = []
                 for cross_attn, payload in cond_list:
@@ -134,16 +141,16 @@ class StreamingUnetSpine:
                 model_options={"quality": {"sharpness": self.request.sharpness, "adaptive_cfg": self.request.adaptive_cfg}},
             )
             sigmas = sampler_instance.sigmas
-            
+
             if sigmas.shape[-1] == 0:
                 return latent
-                
+
             sampler_function = self._resolve_sampler_function()
             model_sampling = self.unet.model.model_sampling
             max_sigma = float(model_sampling.sigma_max)
             sigma = float(sigmas[0])
             max_denoise = math.isclose(max_sigma, sigma, rel_tol=1e-05) or sigma > max_sigma
-            
+
             scaled_noise = self._noise_scaling(
                 model_sampling,
                 sigmas[0],
@@ -151,12 +158,12 @@ class StreamingUnetSpine:
                 latent,
                 max_denoise=max_denoise,
             )
-            
+
             total_steps = len(sigmas) - 1
             k_callback = None
             if callback is not None:
                 k_callback = lambda x: callback(x["i"], x["denoised"], x["x"], total_steps, x.get("denoised", None))
-                
+
             from backend import precision
             with torch.inference_mode(), precision.autocast_context(device):
                 samples = sampler_function(
@@ -173,14 +180,41 @@ class StreamingUnetSpine:
                     callback=k_callback,
                     disable=True,
                 )
-                
+
             output_latent = model_sampling.inverse_noise_scaling(sigmas[-1], samples)
+            finite_mask = torch.isfinite(output_latent)
+            if not bool(finite_mask.all()):
+                nonfinite = int((~finite_mask).sum().item())
+                log_telemetry(
+                    "spine_stream_nonfinite",
+                    f"route={self.request.route_id} nonfinite={nonfinite} total={output_latent.numel()}",
+                )
+                raise RuntimeError(
+                    "SDXL sampling produced a non-finite latent; "
+                    "the invalid image was not decoded or saved."
+                )
+            log_telemetry(
+                "spine_stream_latent_finite",
+                f"route={self.request.route_id} min={float(output_latent.min().item()):.4f} "
+                f"max={float(output_latent.max().item()):.4f}",
+            )
         finally:
             # Park and release unet parameters from GPU
             self._park_compiled_unet_before_decode()
-            
+            self._close_color_extraction_state()
+
         log_telemetry("spine_stream_complete")
         return output_latent
+
+    def _close_color_extraction_state(self) -> None:
+        """Close the run-bound overlay and release its latent on every path."""
+        worker = self._active_color_worker
+        self._active_color_worker = None
+        try:
+            if worker is not None:
+                worker.close()
+        finally:
+            self.x_center = None
 
     def end(self) -> None:
         self._park_compiled_unet_before_decode()
@@ -216,7 +250,7 @@ class StreamingUnetSpine:
         func_name = f"sample_{sampler_name}"
         if sampler_name.endswith("_cfg_pp"):
             func_name = f"sample_{sampler_name[:-7]}"
-        
+
         sampler_function = getattr(k_diffusion, func_name, None)
         if sampler_function is None:
             raise ValueError(f"Sampler {sampler_name} not implemented in k_diffusion as {func_name}")
@@ -305,19 +339,19 @@ class StreamingUnetSpine:
                     latent_image,
                 ).to(dtype=x.dtype, device=x.device)
                 x_input = x * active_mask + preserved_latent * latent_mask
-            
+
             positive_conds = processed_conds.get("positive")
             negative_conds = processed_conds.get("negative")
             if math.isclose(self.request.cfg, 1.0) and not disable_cfg1_optimization:
                 negative_conds = None
-                
+
             cond_pred, uncond_pred = self._calc_fullframe_cond_batch(
                 execution_unet,
                 [positive_conds, negative_conds],
                 x_input,
                 sigma,
             )
-            
+
             diffusion_progress = self._diffusion_progress(model_sampling, sigma)
             cond_pred = self._apply_sharpness_quality(
                 x_input,
@@ -325,7 +359,7 @@ class StreamingUnetSpine:
                 sharpness=self.request.sharpness,
                 diffusion_progress=diffusion_progress,
             )
-            
+
             from backend import sampling
             out = sampling.cfg_function(
                 execution_unet.model,
@@ -343,6 +377,20 @@ class StreamingUnetSpine:
                 latent_ref = latent_image.to(device=out.device, dtype=out.dtype)
                 out = out * active_mask + latent_ref * latent_mask
             return out
+
+        # Wrap model_fn locally with ColorExtractionWorker if enabled
+        if self.request.color_extraction and self.request.color_extraction.enabled and getattr(self, "x_center", None) is not None:
+            from backend.sdxl_assembly.color_extraction_worker import ColorExtractionWorker
+            color_worker = ColorExtractionWorker(self.request.color_extraction)
+            color_worker.prepare(x_center=self.x_center, sigma_max=float(model_sampling.sigma_max))
+            self._active_color_worker = color_worker
+
+            original_model_fn = model_fn
+            def wrapped_model_fn(x: torch.Tensor, sigma: torch.Tensor, **kwargs: Any) -> torch.Tensor:
+                out = original_model_fn(x, sigma, **kwargs)
+                out = color_worker.correct_denoised(out, sigma)
+                return out
+            model_fn = wrapped_model_fn
 
         class _DirectModelInner:
             def __init__(self, inner_model: Any):

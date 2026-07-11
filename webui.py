@@ -112,23 +112,30 @@ with shared.gradio_root:
                 input_image_checkbox = gr.Checkbox(label='Input Image', value=modules.config.default_image_prompt_checkbox, container=False, elem_classes='min_check')
             with gr.Row(visible=modules.config.default_image_prompt_checkbox) as image_input_panel:
                 with gr.Tabs(selected=modules.config.default_selected_image_input_tab_id):
-                    with gr.Tab(label='Upscale/Superupscale', id='uov_tab') as uov_tab:
+                    with gr.Tab(label='Upscale / Super / Color', id='uov_tab') as uov_tab:
                         with gr.Row():
                             with gr.Column():
                                 gr.HTML(make_nex_image_slot('uov_input_slot', 'uov_input_image_bridge', 'Image', 'data-upload-mode="api" data-path-field-id="uov_input_image_path" data-workspace-field-id="uov_input_workspace_id"'))
                                 uov_input_image = gr.Image(label='Image', sources='upload', type='filepath', show_label=False, elem_id='uov_input_image_bridge', elem_classes=['nex-image-slot-bridge'])
                                 uov_input_image_path = gr.Textbox(value='', visible=True, elem_id='uov_input_image_path', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
                                 uov_input_workspace_id = gr.Textbox(value='', visible=True, elem_id='uov_input_workspace_id', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
+                                with gr.Group(visible=False) as upscale_gan_output_container:
+                                    gr.HTML(make_nex_image_slot('upscale_gan_output_slot', 'upscale_gan_output_bridge', 'Color Enhancement Target', 'data-upload-mode="api" data-path-field-id="upscale_gan_output_path" data-workspace-field-id="upscale_gan_output_workspace_id"'))
+                                    gr.HTML('<div class="nex-image-slot-guidance">Place your already upscaled image here in addition to the original image above.</div>')
+                                    upscale_gan_output_image = gr.Image(label='Color Enhancement Target', sources='upload', type='filepath', show_label=False, elem_id='upscale_gan_output_bridge', elem_classes=['nex-image-slot-bridge'])
+                                    upscale_gan_output_path = gr.Textbox(value='', visible=True, elem_id='upscale_gan_output_path', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
+                                    upscale_gan_output_workspace_id = gr.Textbox(value='', visible=True, elem_id='upscale_gan_output_workspace_id', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
                             with gr.Column():
-                                uov_method = gr.Radio(label='Method:', choices=['Upscale', 'Super-Upscale'], value='Upscale')
+                                uov_method = gr.Radio(label='Method:', choices=['Upscale', 'Super-Upscale', 'Color Enhancement'], value='Upscale')
                                 upscale_model = gr.Dropdown(label='Upscale Model', choices=['None'], value='None')
                                 upscale_scale_info = gr.HTML(value="<b>Scale:</b> Auto-detecting...", elem_id='upscale_scale_info')
                                 upscale_scale_override = gr.Slider(label='Scale Override', minimum=0.0, maximum=8.0, step=0.1, value=0.0, info='Set to 0.0 to use model default scale.')
-                                
+                                upscale_prompt = gr.Textbox(label='Color Enhancement Prompt (optional)', placeholder='Optional color/style prompt for Color Enhancement.', visible=False)
+
                                 with gr.Group(visible=False) as upscale_refinement_container:
                                     upscale_refinement_denoise = gr.Slider(label='Refinement Denoise', minimum=0.0, maximum=1.0, step=0.001, value=0.382)
                                     upscale_refinement_tile_overlap = gr.Slider(label='Refinement Tile Overlap', minimum=0, maximum=256, step=1, value=128)
-                                
+
                                 gr.HTML('<a href="https://github.com/lllyasviel/Fooocus/discussions/390" target="_blank">\U0001F4D4 Documentation</a>')
 
                     with gr.Tab(label='Remove', id='remove_tab') as remove_tab:
@@ -441,7 +448,7 @@ with shared.gradio_root:
                                 inpaint_mask_image = gr.Image(label='BB Mask', sources='upload', type='filepath', height=500, elem_id='inpaint_mask_image_bridge', elem_classes=['nex-image-slot-bridge'])
                                 inpaint_mask_image_path = gr.Textbox(value='', visible=True, elem_id='inpaint_mask_image_path', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
                                 inpaint_mask_workspace_id = gr.Textbox(value='', visible=True, elem_id='inpaint_mask_workspace_id', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
-                                
+
 
 
 
@@ -465,10 +472,10 @@ with shared.gradio_root:
             with gr.Row():
                 gr.HTML('<button id="staging-panel-launcher" class="lg secondary gradio-button" style="width:100%; margin-bottom:12px; font-weight:bold;">\U0001F5C2\uFE0F Open Staging Palette</button>')
                 gr.HTML('<button id="monitor-panel-launcher" class="lg secondary gradio-button" style="width:100%; margin-bottom:12px; font-weight:bold;">\U0001F4CA Monitor Dashboard</button>')
-            
+
             with gr.Tab(label='Queue', elem_id='nex-queue-tab-wrapper') as queue_tab:
                 gr.HTML('<div id="nex-runtime-queue-panel" class="nex-runtime-queue-panel"></div>')
-            
+
             with gr.Tab(label='Settings'):
                 settings_panel_result = settings_panel.build_settings_tab()
                 if not args_manager.args.disable_preset_selection:
@@ -495,7 +502,7 @@ with shared.gradio_root:
                 base_model = models_panel_result['base_model']
                 vae_model = models_panel_result['vae_model']
                 clip_model = models_panel_result['clip_model']
-                
+
                 style_search_bar = models_panel_result['style_search_bar']
                 style_selections = models_panel_result['style_selections']
                 style_selections_accordion = models_panel_result['style_selections_accordion']
@@ -530,7 +537,7 @@ with shared.gradio_root:
                 # Control settings moved to Image Prompt tab
                 # (Removed outpaint advanced tab)
                 # (Removed inpaint advanced tab)
-                
+
                 outpaint_ctrls = [outpaint_engine, outpaint_strength,
                                   inpaint_outpaint_expansion_size, outpaint_step2_checkbox]
                 inpaint_ctrls = [debugging_inpaint_preprocessor, inpaint_disable_initial_latent, inpaint_engine,
@@ -546,7 +553,7 @@ with shared.gradio_root:
                              steps, aspect_ratios_selection,
                              overwrite_width, overwrite_height, guidance_scale, sharpness, adm_scaler_positive,
                              adm_scaler_negative, adm_scaler_end, adaptive_cfg, clip_skip,
-                             base_model, vae_model, clip_model, sampler_name, scheduler_name, 
+                             base_model, vae_model, clip_model, sampler_name, scheduler_name,
                              seed_random, image_seed, outpaint_engine_state, inpaint_engine_state, inpaint_route,
                              generate_button,
                              load_parameter_button] + lora_ctrls
@@ -579,6 +586,8 @@ with shared.gradio_root:
             'uov_input_image': uov_input_image_path,
             'upscale_model': upscale_model,
             'upscale_scale_override': upscale_scale_override,
+            'upscale_prompt': upscale_prompt,
+            'upscale_gan_output_image': upscale_gan_output_path,
             'upscale_refinement_denoise': upscale_refinement_denoise,
             'upscale_refinement_tile_overlap': upscale_refinement_tile_overlap,
             'outpaint_selections': outpaint_selections,
@@ -615,7 +624,7 @@ with shared.gradio_root:
             'canny_low_threshold': canny_low_threshold,
             'canny_high_threshold': canny_high_threshold,
             'controlnet_softness': controlnet_softness,
-            
+
             # inpaint_ctrls
             'debugging_inpaint_preprocessor': debugging_inpaint_preprocessor,
             'inpaint_disable_initial_latent': inpaint_disable_initial_latent,
@@ -725,6 +734,7 @@ with shared.gradio_root:
             'outpaint_prepare_button': outpaint_prepare_button,
             'outpaint_prepare_notice': outpaint_prepare_notice,
             'upscale_refinement_container': upscale_refinement_container,
+            'upscale_gan_output_container': upscale_gan_output_container,
             'upscale_scale_info': upscale_scale_info,
             'gallery': gallery,
             'seed_random': seed_random,

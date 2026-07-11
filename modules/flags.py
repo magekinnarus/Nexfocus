@@ -5,7 +5,7 @@ from backend.schedulers import SCHEDULER_NAMES
 disabled = 'Disabled'
 enabled = 'Enabled'
 
-uov_list = [disabled, 'Upscale', 'Super-Upscale']
+uov_list = [disabled, 'Upscale', 'Super-Upscale', 'Color Enhancement']
 
 remove_bg = 'remove_bg'
 remove_obj = 'remove_obj'

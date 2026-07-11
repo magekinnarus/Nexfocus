@@ -60,7 +60,7 @@ def _normalize_flux_fill_disk_paged_t5_gc_interval_value(value: Any) -> str:
     return 'auto'
 
 # Ordered list - order is for documentation, not for correctness.
-# Special dynamic groups (LoRA, ControlNet) are handled explicitly in async_worker 
+# Special dynamic groups (LoRA, ControlNet) are handled explicitly in async_worker
 # and are NOT listed as static ParamDefs here.
 PARAM_REGISTRY: List[ParamDef] = [
     # --- Generation ---
@@ -86,6 +86,8 @@ PARAM_REGISTRY: List[ParamDef] = [
     ParamDef('uov_input_image', 'uov_input_image', None),
     ParamDef('upscale_model', 'upscale_model', 'None', str),
     ParamDef('upscale_scale_override', 'upscale_scale_override', 0, float),
+    ParamDef('upscale_prompt', 'upscale_prompt', '', str),
+    ParamDef('upscale_gan_output_image', 'upscale_gan_output_image', None),
     ParamDef('upscale_refinement_tile_overlap', 'upscale_refinement_tile_overlap', 128, int),
     ParamDef('upscale_refinement_denoise', 'upscale_refinement_denoise', 0.3, float),
 
@@ -123,7 +125,7 @@ PARAM_REGISTRY: List[ParamDef] = [
     ParamDef('outpaint_step2_checkbox', 'outpaint_step2_checkbox', False, bool),
     ParamDef('outpaint_engine', 'outpaint_engine', 'None', str),
     ParamDef('outpaint_strength', 'outpaint_strength', 1.0, float),
-    
+
     # --- Inpaint/Outpaint shared ---
     ParamDef('inpaint_outpaint_expansion_size', 'inpaint_outpaint_expansion_size', 384, int),
 
@@ -160,7 +162,7 @@ PARAM_REGISTRY: List[ParamDef] = [
     ParamDef('overwrite_width', 'overwrite_width', -1, int),
     ParamDef('overwrite_height', 'overwrite_height', -1, int),
     ParamDef('overwrite_upscale_strength', 'overwrite_upscale_strength', -1.0, float),
-    
+
     # --- Control / Image Prompts ---
     ParamDef('mixing_image_prompt_and_inpaint', 'mixing_image_prompt_and_inpaint', False, bool),
     ParamDef('mixing_image_prompt_and_outpaint', 'mixing_image_prompt_and_outpaint', False, bool),
@@ -169,7 +171,7 @@ PARAM_REGISTRY: List[ParamDef] = [
     ParamDef('canny_high_threshold', 'canny_high_threshold', 128, int),
     ParamDef('controlnet_softness', 'controlnet_softness', 0.25, float),
     # ControlNet arrays injected dynamically
-    
+
     # --- Metadata (Conditional) ---
     ParamDef('save_metadata_to_images', 'save_metadata_to_images', False, bool),
     ParamDef('metadata_scheme', 'metadata_scheme', 'fooocus_nex', str),
@@ -182,28 +184,28 @@ def validate_ctrls(ctrls_dict: dict):
     """
     import modules.config as config
     import args_manager
-    
+
     registered_keys = {p.name for p in PARAM_REGISTRY}
-    
+
     # Add dynamically generated keys that we know we expect
     for i in range(config.default_max_lora_number):
         registered_keys.update([f'lora_{i}_enabled', f'lora_{i}_model', f'lora_{i}_weight'])
-        
+
     for i in range(config.default_controlnet_image_count):
         registered_keys.update([f'cn_{i}_image', f'cn_{i}_stop', f'cn_{i}_weight', f'cn_{i}_type'])
-        
+
     # Exclude special internal keys
     provided_keys = set(ctrls_dict.keys()) - {'_currentTask'}
-    
+
     if args_manager.args.disable_metadata:
         # If disabled, we expect them to be missing
         registered_keys -= {'save_metadata_to_images', 'metadata_scheme'}
-        
+
     missing = registered_keys - provided_keys
     extra = provided_keys - registered_keys
-    
+
     if missing:
         raise ValueError(f"[Parameter Registry] Missing required parameters in ctrls_dict: {missing}")
-        
+
     if extra:
         print(f"[Parameter Registry] Warning: Unrecognized extra parameters in ctrls_dict: {extra}")

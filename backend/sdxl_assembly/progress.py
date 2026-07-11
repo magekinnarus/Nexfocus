@@ -1,4 +1,5 @@
 import logging
+import inspect
 import time
 import psutil
 import torch
@@ -12,6 +13,55 @@ logger = logging.getLogger(__name__)
 _TELEMETRY_SINKS: list[Callable[[dict[str, Any]], None]] = []
 _TELEMETRY_SINKS_LOCK = RLock()
 _STEP_MEMORY_TELEMETRY_INTERVAL = 5
+
+
+def _callback_accepts_positional_count(callback: Callable, count: int) -> Optional[bool]:
+    """Return whether *callback* can accept exactly ``count`` positional args.
+
+    Signature inspection lets the assembly boundary distinguish the sampler
+    callback shape from the legacy UI progressbar shape without invoking a
+    callback once with the wrong arguments.  Some extension callables do not
+    expose a signature; ``None`` keeps the historical five-argument behavior
+    for those callables.
+    """
+    try:
+        signature = inspect.signature(callback)
+    except (TypeError, ValueError):
+        return None
+
+    try:
+        signature.bind(*([object()] * count))
+    except TypeError:
+        return False
+    return True
+
+
+def _resolve_callback_progress_state(callback: Callable) -> Any:
+    """Resolve the live task state used by the legacy UI progress callback.
+
+    ``modules.async_worker.progressbar`` is an unbound three-argument
+    function, so the task state is not carried by the callback itself.  Its
+    module globals expose ``get_active_task`` while the worker is running;
+    use that seam lazily to avoid importing the worker from this module.
+    """
+    explicit_state = getattr(callback, "_sdxl_progress_state", None)
+    if explicit_state is not None:
+        return explicit_state
+
+    callback_globals = getattr(callback, "__globals__", None)
+    get_active_task = (
+        callback_globals.get("get_active_task")
+        if isinstance(callback_globals, dict)
+        else None
+    )
+    if not callable(get_active_task):
+        return None
+
+    try:
+        active_task = get_active_task()
+    except Exception:
+        return None
+    return getattr(active_task, "state", None) if active_task is not None else None
 
 
 def _should_forward_text_only_progress(raw_callback: Callable | None, completed_steps: int, total_steps: int) -> bool:
@@ -115,11 +165,66 @@ def log_telemetry(event: str, extra_msg: str = "") -> None:
 
 class SDXLAssemblyProgressCallback:
     """Progress callback wrapper that hooks into the sampling loop and logs telemetry."""
-    def __init__(self, request: SDXLAssemblyRequest, raw_callback: Optional[Callable] = None) -> None:
+    def __init__(
+        self,
+        request: SDXLAssemblyRequest,
+        raw_callback: Optional[Callable] = None,
+        *,
+        progress_state: Any = None,
+    ) -> None:
         self.request = request
         self.raw_callback = raw_callback
+        self.progress_state = progress_state
         self.start_time = time.perf_counter()
         self.last_step_time = self.start_time
+
+    def _forward_raw_callback(
+        self,
+        step: int,
+        x0: Any,
+        x: Any,
+        total_steps: int,
+        y: Any,
+    ) -> None:
+        if self.raw_callback is None:
+            return
+
+        accepts_sampler_shape = _callback_accepts_positional_count(self.raw_callback, 5)
+        if accepts_sampler_shape is not False:
+            self.raw_callback(step, x0, x, total_steps, y)
+            return
+
+        # The route layer historically supplies progressbar(task_state,
+        # number, text).  It is a valid callback at the route boundary, but
+        # it is not a sampler callback and must not receive five arguments.
+        accepts_progressbar_shape = _callback_accepts_positional_count(self.raw_callback, 3)
+        if accepts_progressbar_shape is True:
+            progress_state = self.progress_state
+            if progress_state is None:
+                progress_state = _resolve_callback_progress_state(self.raw_callback)
+            if progress_state is None:
+                logger.debug(
+                    "[SDXL Assembly] Skipping legacy progress callback step=%s "
+                    "because no live task state is available",
+                    step,
+                )
+                return
+
+            current_progress = int(getattr(progress_state, "current_progress", 0) or 0)
+            status_text = (
+                f"Sampling step {step + 1}/{total_steps}, "
+                f"image {int(getattr(self.request, 'image_index', 0)) + 1}/"
+                f"{int(getattr(self.request, 'image_count', 1) or 1)} ..."
+            )
+            # The surrounding route owns the global percentage for nested
+            # stages such as W11c.  Preserve that percentage and update only
+            # the status text while forwarding the legacy callback shape.
+            self.raw_callback(progress_state, current_progress, status_text)
+            return
+
+        # Preserve the historical invocation for opaque callables and report
+        # any genuine callback error through the existing error boundary.
+        self.raw_callback(step, x0, x, total_steps, y)
 
     def __call__(self, step: int, x0: Any, x: Any, total_steps: int, y: Any) -> None:
         now = time.perf_counter()
@@ -145,7 +250,7 @@ class SDXLAssemblyProgressCallback:
             resolved_total_steps,
         ):
             try:
-                self.raw_callback(step, x0, x, total_steps, y)
+                self._forward_raw_callback(step, x0, x, total_steps, y)
             except resources.InterruptProcessingException:
                 raise
             except Exception as e:

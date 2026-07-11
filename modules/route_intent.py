@@ -11,6 +11,7 @@ _KNOWN_ROUTE_FAMILIES = {
     "txt2img": "txt2img",
     "upscale": "upscale",
     "super_upscale": "upscale",
+    "color_enhanced_upscale": "upscale",
     "inpaint": "image_input",
     "outpaint": "image_input",
     "flux_inpaint": "flux_fill",
@@ -92,12 +93,13 @@ def resolve_route_intent(state, *, prefer_runtime_route: bool = False) -> RouteI
     wants_removal = input_image_active and current_tab == "remove" and (remove_bg_enabled or remove_obj_enabled)
 
     uov_method = str(getattr(state, "uov_method", "") or "").strip().lower()
+    wants_color_enhancement = uov_method in {"color enhancement", "color-enhanced-upscale"}
     wants_upscale = (
         input_image_active
         and current_tab == "uov"
         and getattr(state, "uov_input_image", None) is not None
         and uov_method not in {"", _DISABLED_VALUE.casefold()}
-        and "upscale" in uov_method
+        and ("upscale" in uov_method or wants_color_enhancement)
     )
 
     mixed_outpaint_request = (
@@ -146,7 +148,12 @@ def resolve_route_intent(state, *, prefer_runtime_route: bool = False) -> RouteI
         route_id = "removal"
         route_family = "removal"
     elif wants_upscale:
-        route_id = "super_upscale" if "super-upscale" in uov_method else "upscale"
+        if wants_color_enhancement:
+            route_id = "color_enhanced_upscale"
+        elif "super-upscale" in uov_method:
+            route_id = "super_upscale"
+        else:
+            route_id = "upscale"
         route_family = "upscale"
     elif wants_outpaint:
         route_id = "outpaint"
@@ -163,7 +170,7 @@ def resolve_route_intent(state, *, prefer_runtime_route: bool = False) -> RouteI
         route_id = requested_route_id
         route_family = requested_route_family
         wants_removal = route_id == "removal"
-        wants_upscale = route_id in {"upscale", "super_upscale"}
+        wants_upscale = route_id in {"upscale", "super_upscale", "color_enhanced_upscale"}
         wants_outpaint = route_id == "outpaint"
         wants_flux_inpaint = route_id == "flux_inpaint"
         wants_inpaint = route_id in {"inpaint", "flux_inpaint"}
@@ -175,7 +182,7 @@ def resolve_route_intent(state, *, prefer_runtime_route: bool = False) -> RouteI
             route_id = runtime_route_id
             route_family = runtime_route_family
             wants_removal = route_id == "removal"
-            wants_upscale = route_id in {"upscale", "super_upscale"}
+            wants_upscale = route_id in {"upscale", "super_upscale", "color_enhanced_upscale"}
             wants_outpaint = route_id == "outpaint"
             wants_flux_inpaint = route_id == "flux_inpaint"
             wants_inpaint = route_id in {"inpaint", "flux_inpaint"}

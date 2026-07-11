@@ -140,6 +140,9 @@ Covers:
 .\venv\Scripts\python.exe -m pytest tracked_tests\test_w11_gan_upscale_worker.py tracked_tests\test_w11_upscale_route_contract.py -q
 .\venv\Scripts\python.exe -m pytest tracked_tests\test_w11_remove_workers.py tests\test_internal_assets.py -q
 .\venv\Scripts\python.exe -m pytest tests\test_flux_fill_integration.py -k "remove_object_with_engine_dispatches_mat_and_flux or removal_stage_persists_background_and_object_outputs or flux_fill_removal_stage" -q
+.\venv\Scripts\python.exe -m pytest tracked_tests\test_w11_color_enhanced_upscale.py tracked_tests\test_w11_color_enhanced_upscale_smoke.py -q
+.\venv\Scripts\python.exe -m pytest tracked_tests\test_sdxl_progress_callback_compatibility.py -q
+.\venv\Scripts\python.exe -m pytest tests\test_sdxl_assembly_w06.py -k "vae_encode_worker_transient_lifecycle or vae_encode_cache_hit_preserves_blend_mask" -q
 ```
 
 Covers:
@@ -158,6 +161,12 @@ Covers:
 - MAT small-image and tiled-image behavior, including deterministic seed input
 - model-registry asset resolution without legacy module-global model caches
 - Flux removal remaining on the Flux Fill v3 adapter boundary
+- Color Enhancement target validation, strict original-source SDXL policy,
+  optional tab-local prompt semantics,
+  warm-UNet/Lora reuse, request-local overlay cleanup, deterministic bucket
+  selection, phase-stable undecimated color transplant, low-VRAM
+  transformer-tile caps, CPU-side tile accumulation, and final output
+  shape/range contracts
 
 ## Manual Acceptance Replay
 
@@ -263,7 +272,51 @@ Expected result:
 - `Skip` cleanly interrupts the current image without surfacing the prior callback error
 - if later queued work exists, execution advances to the next queued item instead of continuing the skipped image
 
-### 6. Tracked Route / Stage Smoke
+### 6. Color Enhancement Local Replay
+
+Run on local assets with an original image and its previously generated GAN
+upscale. Keep the selected base model and LoRA stack fixed across a normal SDXL
+run and color-enhanced-upscale run.
+
+Place the previously generated GAN result in `Color Enhancement Target`. It
+must be at least as large as the source in both dimensions and is used only as
+the wavelet high-frequency content donor.
+
+Expected result:
+
+- The route fails clearly when the color enhancement target is absent or smaller than
+  the original image.
+- No GAN admission/load/infer telemetry appears; `color_enhancement_target`
+  reports the target dimensions.
+- The color pass always reports `sampler=dpmpp_2m scheduler=beta steps=18
+  cfg=1.5`, independent of the ordinary sampler/scheduler UI selection.
+- Sampling progress produces no `progressbar() takes 3 positional arguments
+  but 5 were given` errors.
+- Empty `Upscale Prompt` produces empty positive conditioning; a supplied
+  tab-local prompt is used instead of the main prompt.
+- The main negative prompt is preserved.
+- The selected warm UNet and pre-patched LoRA stack are reused unless the
+  checkpoint or LoRA stack changes.
+- The SDXL color pass always VAE-encodes the original image resized to the
+  selected SDXL bucket. The color enhancement target is never a VAE source.
+- The final image is contiguous HWC RGB `uint8` at GAN output dimensions.
+- The result gallery receives only the newly generated
+  `Color Enhancement`; the provided target is not saved again.
+- `vae_encode_begin` reports the color route and exact bucket-shaped BB tensor;
+  `vae_encode_attached` reports the live device/dtype; and
+  `vae_encode_compute_complete` separates encode compute time from attach/eject
+  with CUDA allocated/reserved/peak values.
+- An already attached transient VAE uses the preloaded encode seam and does not
+  re-enter `prepare_models_for_stage stage=vae_encode` during the encode call.
+- The route enters the `diffusion` residency phase, not `upscale`; no
+  `upscaler_model` is pinned for Color Enhancement.
+- `spine_stream_latent_finite` appears before VAE decode. Any non-finite sampled
+  latent or decoded pixel tensor fails before conversion/saving, with no
+  `invalid value encountered in cast` warning and no edge-residual output.
+- The color-enhanced image has no regular 32-pixel block lattice; color transfer
+  remains smooth under a one-pixel source translation.
+
+### 7. Tracked Route / Stage Smoke
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tracked_tests\test_pipeline_routes.py tracked_tests\test_pipeline_stage_runtime.py tracked_tests\test_memory_residency.py -q
@@ -275,7 +328,7 @@ Covers:
 - stage runner execution contract
 - memory residency dispatch smoke
 
-### 7. Full Suite
+### 8. Full Suite
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tests\ --ignore=tests\test_bgr.py --ignore=tests\test_objr.py -q
@@ -289,9 +342,7 @@ Notes:
   already green.
 - Remaining W11 scaffold modules exist as intentionally skipped placeholders
   until their slices land:
-  `tracked_tests/test_w11_color_enhanced_upscale.py`,
-  `tracked_tests/test_w11_auxiliary_queue_preview.py`, and
-  `tracked_tests/test_w11_color_enhanced_upscale_smoke.py`.
+  `tracked_tests/test_w11_auxiliary_queue_preview.py`.
 
 ## Optional Benchmarks
 

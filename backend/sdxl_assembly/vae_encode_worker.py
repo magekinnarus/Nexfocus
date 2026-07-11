@@ -16,6 +16,13 @@ from backend.sdxl_assembly.runtime_state import acquire_vae_component
 
 logger = logging.getLogger(__name__)
 
+
+def _encode_attached_vae(vae: Any, pixels: torch.Tensor) -> Dict[str, torch.Tensor]:
+    """Encode through the no-admission seam after worker-owned attachment."""
+    from backend.encode import encode_preloaded_pixels
+
+    return encode_preloaded_pixels(vae, pixels)
+
 def _build_denoise_mask(mask: torch.Tensor, latent_shape: torch.Size | tuple[int, ...]) -> torch.Tensor:
     if mask.ndim != 3:
         raise ValueError(f"Expected a [B, H, W] mask when building the denoise mask, got shape {tuple(mask.shape)}.")
@@ -95,7 +102,12 @@ class VaeEncodeWorker:
             )
 
         log_telemetry("spatial_prepare_miss", f"key={cache_key[:12]}")
-        log_telemetry("vae_encode_begin")
+        log_telemetry(
+            "vae_encode_begin",
+            f"route={self.request.route_id} mode={prepared.mode} "
+            f"bb_shape={tuple(int(v) for v in prepared.bb_pixels.shape)} "
+            f"requested_device={self.request.device}",
+        )
         
         # 4. Acquire VAE
         self.vae = acquire_vae_component(self.request)
@@ -109,17 +121,40 @@ class VaeEncodeWorker:
         masked_latent = None
         bb_latent = None
         denoise_mask = None
+        encode_compute_wall = 0.0
+        encode_calls = 0
         
         try:
             # 5. Attach VAE
             self.vae.patcher.patch_model(device_to=device, lowvram_model_memory=0)
             if hasattr(self.vae, "first_stage_model"):
                 self.vae.first_stage_model.to(device=device)
+
+            live_param = next(self.vae.first_stage_model.parameters(), None)
+            live_device = live_param.device if isinstance(live_param, torch.Tensor) else device
+            live_dtype = live_param.dtype if isinstance(live_param, torch.Tensor) else torch.float32
+            log_telemetry(
+                "vae_encode_attached",
+                f"route={self.request.route_id} live_device={live_device} live_dtype={live_dtype} "
+                f"bb_shape={tuple(int(v) for v in prepared.bb_pixels.shape)}",
+            )
+
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+                torch.cuda.reset_peak_memory_stats(device)
                 
-            # Helper to encode pixels on device
+            # The worker already owns placement. Re-entering vae.encode() here
+            # would invoke general residency admission a second time and make
+            # configured CPU offload state compete with the live CUDA device.
             def _encode_pixels(pixels_cpu: torch.Tensor) -> torch.Tensor:
-                pixels_gpu = pixels_cpu.to(device=device)
-                return self.vae.encode(pixels_gpu)["samples"].detach().cpu()
+                nonlocal encode_compute_wall, encode_calls
+                compute_start = time.perf_counter()
+                result = _encode_attached_vae(self.vae, pixels_cpu)["samples"].detach().cpu()
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                encode_compute_wall += time.perf_counter() - compute_start
+                encode_calls += 1
+                return result
             
             with torch.inference_mode():
                 # Perform VAE encoding based on the mode
@@ -156,8 +191,20 @@ class VaeEncodeWorker:
         finally:
             # 6. Deterministic eject/release VAE
             from backend import resources
+            peak_mb = 0.0
+            allocated_mb = 0.0
+            reserved_mb = 0.0
+            if device.type == "cuda":
+                allocated_mb = torch.cuda.memory_allocated(device) / (1024 ** 2)
+                reserved_mb = torch.cuda.memory_reserved(device) / (1024 ** 2)
+                peak_mb = torch.cuda.max_memory_allocated(device) / (1024 ** 2)
+            log_telemetry(
+                "vae_encode_compute_complete",
+                f"route={self.request.route_id} calls={encode_calls} compute={encode_compute_wall:.3f}s "
+                f"allocated={allocated_mb:.1f}MB reserved={reserved_mb:.1f}MB peak={peak_mb:.1f}MB",
+            )
             resources.eject_model(getattr(self.vae, "patcher", None))
-            log_telemetry("vae_encode_eject")
+            log_telemetry("vae_encode_eject", f"route={self.request.route_id}")
             self.vae = None
             import gc
             gc.collect()
@@ -165,7 +212,11 @@ class VaeEncodeWorker:
                 torch.cuda.empty_cache()
                 
         encode_wall = time.perf_counter() - encode_start
-        log_telemetry("vae_encode_complete", f"duration={encode_wall:.3f}s")
+        log_telemetry(
+            "vae_encode_complete",
+            f"route={self.request.route_id} duration={encode_wall:.3f}s "
+            f"compute={encode_compute_wall:.3f}s calls={encode_calls}",
+        )
 
         # 7. Compute fingerprints
         import hashlib

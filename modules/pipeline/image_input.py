@@ -358,6 +358,11 @@ def prepare_upscale(task_state, progressbar_callback=None):
             skip_prompt_processing = True
             task_state.steps = 0
             # Note: bypass_alignment is implicit since skip_prompt_processing avoids SDXL specific steps
+        elif uov_method == 'color-enhanced-upscale':
+            # The composite color route owns its SDXL pass and optional
+            # tab-local prompt. It must not inherit super-upscale refinement
+            # preparation or generic prompt processing.
+            skip_prompt_processing = True
         else: # Super-Upscale
              # Use the current steps from state (user can still tweak them in Settings)
              # But for UoV it usually defaults to something reasonable.

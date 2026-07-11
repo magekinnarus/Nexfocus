@@ -303,7 +303,7 @@ def determine_eligibility(
         elif input_image_active and ("outpaint" in goals or current_tab == "outpaint"):
             target_route = "outpaint"
 
-    if target_route not in {"txt2img", "inpaint", "outpaint"}:
+    if target_route not in {"txt2img", "inpaint", "outpaint", "color_enhanced_upscale"}:
         return False, f"Route '{target_route}' is not eligible for SDXL Assembly"
 
     # 5.5. Fail-closed route-specific spatial asset checks
@@ -761,9 +761,18 @@ def build_assembly_request(
             )
             contextual_controls_list.append(desc)
 
+    # Build color extraction spec if route matches
+    color_extraction_spec = None
+    from modules.route_intent import resolve_route_intent
+    intent = resolve_route_intent(task_state)
+    if intent.route_id == "color_enhanced_upscale":
+        from backend.sdxl_assembly.contracts import ColorExtractionSpec
+        color_extraction_spec = ColorExtractionSpec(enabled=True)
+
+    assembly_route_id = "color_enhancement" if color_extraction_spec is not None else "txt2img_assembly"
     request = SDXLAssemblyRequest(
         request_id=f"req_{current_task_id}_{int(time.time())}",
-        route_id="txt2img_assembly",
+        route_id=assembly_route_id,
         image_index=current_task_id,
         image_count=total_count,
         checkpoint=checkpoint_identity,
@@ -803,6 +812,7 @@ def build_assembly_request(
         spatial_context=build_spatial_context_descriptor(task_state, image_input_result),
         structural_controls=tuple(structural_controls_list),
         contextual_controls=tuple(contextual_controls_list),
+        color_extraction=color_extraction_spec,
     )
     
     # Static validate

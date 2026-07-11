@@ -57,7 +57,7 @@ def test_gan_upscale_worker_lifecycle(monkeypatch) -> None:
 
     # Mock NexUpscaleEngine
     class MockNexUpscaleEngine:
-        def process(self, img, upscale_fn, native_scale, device, is_bgr=True, dtype=None):
+        def process(self, img, upscale_fn, native_scale, device, is_bgr=True, dtype=None, **kwargs):
             return dummy_output
 
     monkeypatch.setattr("backend.auxiliary_workers.gan_upscale_worker.NexUpscaleEngine", MockNexUpscaleEngine)
@@ -170,6 +170,81 @@ def test_upscaler_scale_probe_retains_metadata_only(monkeypatch, tmp_path) -> No
 
     assert upscaler.get_model_scale_for_name("mock_model.pth") == 4
     assert upscaler.get_model_scale_for_name("mock_model.pth") == 4
-    assert calls == [("load", "mock_model.pth"), "scale", "teardown"]
+    assert calls == []
     assert not hasattr(upscaler, "_cached_model")
     assert list(upscaler._MODEL_SCALE_METADATA_CACHE.values()) == [4]
+
+
+def test_upscaler_scale_probe_reads_common_filename_scale_without_loading(monkeypatch, tmp_path) -> None:
+    import modules.upscaler as upscaler
+
+    model_path = tmp_path / "2xNomos2_otf_esrgan.pth"
+    model_path.write_bytes(b"metadata-key")
+    calls = []
+
+    monkeypatch.setattr(upscaler, "_resolve_model_path", lambda _name: model_path)
+    monkeypatch.setattr(gan_worker_module, "GanUpscaleWorker", lambda: calls.append("loaded"))
+
+    upscaler.clear_model_cache()
+    assert upscaler.get_model_scale_for_name(model_path.name) == 2
+    assert calls == []
+
+
+def test_upscale_engine_tile_selector_uses_real_splitter_counts() -> None:
+    from modules.upscale_engine import select_best_tile_size, split_into_segments
+
+    tile_size, x_count, y_count = select_best_tile_size(1800, 1800, 512, overlap=32)
+
+    assert tile_size == 512
+    assert x_count == len(split_into_segments(1800, 512, 32)) == 4
+    assert y_count == len(split_into_segments(1800, 512, 32)) == 4
+
+
+def test_upscale_engine_caps_heavy_transformer_on_low_vram() -> None:
+    from modules.upscale_engine import cap_tile_for_hardware, split_into_segments
+
+    capped = cap_tile_for_hardware(
+        576,
+        total_vram=3 * 1024 ** 3,
+        model_params=40_846_575,
+        architecture_id="HAT",
+    )
+
+    assert capped == 256
+    assert len(split_into_segments(1024, capped, 32)) == 5
+
+
+def test_upscale_engine_does_not_cap_lightweight_model_on_low_vram() -> None:
+    from modules.upscale_engine import cap_tile_for_hardware
+
+    assert cap_tile_for_hardware(
+        512,
+        total_vram=3 * 1024 ** 3,
+        model_params=16_000_000,
+        architecture_id="ESRGAN",
+    ) == 512
+
+
+def test_upscale_engine_cpu_accumulator_preserves_shape_and_values(monkeypatch) -> None:
+    import torch
+    import torch.nn.functional as functional
+    from modules.upscale_engine import NexUpscaleEngine
+
+    monkeypatch.setattr("modules.upscale_engine.resources.soft_empty_cache", lambda *args, **kwargs: None)
+    source = torch.rand((1, 3, 96, 112), dtype=torch.float32)
+    expected = functional.interpolate(source, scale_factor=2, mode="nearest")
+
+    actual = NexUpscaleEngine()._process_tiled(
+        source,
+        lambda tile: functional.interpolate(tile, scale_factor=2, mode="nearest"),
+        scale=2,
+        tile_size=64,
+        overlap=16,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        output_width=224,
+        output_height=192,
+    )
+
+    assert actual.shape == expected.shape
+    assert torch.allclose(actual, expected, atol=1e-6)

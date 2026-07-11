@@ -35,6 +35,33 @@ def _estimated_megapixels(task_state) -> float:
     return float(width * height) / 1_000_000.0
 
 
+def has_color_gan_override(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True
+
+
+def select_nearest_sdxl_bucket(
+    width: int,
+    height: int,
+    inventory: Sequence[str] | None = None,
+) -> tuple[int, int]:
+    """Select the nearest SDXL bucket with stable inventory-order tie breaking."""
+    if int(width) <= 0 or int(height) <= 0:
+        raise ValueError(f"Source dimensions must be positive, got {width}x{height}.")
+    entries = inventory if inventory is not None else flags.sdxl_aspect_ratios
+    target_ratio = float(width) / float(height)
+    buckets = [(int(value.split('*')[0]), int(value.split('*')[1])) for value in entries]
+    if not buckets:
+        raise ValueError("No SDXL aspect-ratio buckets are configured.")
+    return min(
+        buckets,
+        key=lambda bucket: abs(bucket[0] / bucket[1] - target_ratio),
+    )
+
+
 def _shape_of_array(value) -> tuple[int, ...] | None:
     if isinstance(value, np.ndarray):
         return tuple(int(dim) for dim in value.shape)
@@ -976,6 +1003,222 @@ class UpscaleStage(PipelineStage):
         return PipelineStageResult(route_complete=True, notes={'completed': True})
 
 
+class ColorEnhancedUpscaleStage(PipelineStage):
+    stage_id = 'color_enhanced_upscale'
+    phase_name = 'diffusion'
+
+    def describe_resources(self, context: PipelineRouteContext):
+        requirements = (
+            PipelineResourceRequirement(
+                resource_id='sdxl_assembly',
+                description='SDXL assembly execution for color pass.',
+                owner='backend.sdxl_assembly',
+                tags=('diffusion',),
+            ),
+            PipelineResourceRequirement(
+                resource_id='color_extraction_overlay',
+                description='Run-bound SDXL color-extraction parameter overlay.',
+                owner='backend.sdxl_assembly.color_extraction_worker',
+                tags=('diffusion', 'overlay'),
+            ),
+            PipelineResourceRequirement(
+                resource_id='wavelet_color_utility',
+                description='Stateless GAN-detail/SDXL-color wavelet transplant.',
+                resource_type='utility',
+                owner='backend.sdxl_assembly.wavelet_color',
+                tags=('upscale', 'stateless'),
+            ),
+        )
+        return _describe_route_resources(*requirements)
+
+    def estimate_memory(self, context: PipelineRouteContext):
+        megapixels = _estimated_megapixels(context.task_state)
+        return StageMemoryEstimate(vram_mb=round(max(256.0, megapixels * 384.0), 1), notes={'basis': 'upscale-resolution'})
+
+    def execute(self, context: PipelineRouteContext):
+        from backend.sdxl_assembly.gateway import run_sdxl_assembly_task
+        from backend.sdxl_assembly.progress import log_telemetry
+        from backend.sdxl_assembly.wavelet_color import wavelet_reconstruction
+        from modules.pipeline.output import save_and_log
+        import modules.mask_processing as mask_proc
+        import modules.flags as flags
+        import copy
+        import numpy as np
+        import torch
+        import cv2
+
+        task_state = context.task_state
+        uov_input_image = task_state.uov_input_image
+        uov_input_image = mask_proc.ensure_numpy(uov_input_image)
+        if uov_input_image is None:
+            raise ValueError('Color Enhancement requires a readable source image.')
+        uov_input_image = np.ascontiguousarray(HWC3(uov_input_image), dtype=np.uint8)
+        orig_h, orig_w = uov_input_image.shape[:2]
+
+        # 1. The GAN detail donor is a required frozen neutral image artifact.
+        # This route never admits or executes a GAN model.
+        provided_gan_input = getattr(task_state, 'upscale_gan_output_image', None)
+        if isinstance(provided_gan_input, str):
+            provided_gan_input = provided_gan_input.strip()
+        if not has_color_gan_override(provided_gan_input):
+            raise ValueError(
+                'Color Enhancement requires a color enhancement target. '
+                'Generate it with Upscale first, then provide it in the target input.'
+            )
+
+        if len(task_state.goals) > 0:
+            task_state.current_progress += 1
+            if context.progressbar_callback is not None:
+                context.progressbar_callback(
+                    task_state,
+                    task_state.current_progress,
+                    'Color Enhancement: Using target image ...',
+                )
+
+        gan_output = mask_proc.ensure_numpy(provided_gan_input)
+        if gan_output is None:
+            raise ValueError('The color enhancement target could not be read.')
+        gan_output = np.ascontiguousarray(HWC3(gan_output), dtype=np.uint8)
+        gan_h, gan_w = gan_output.shape[:2]
+        if gan_h < orig_h or gan_w < orig_w:
+            raise ValueError(
+                'The color enhancement target must not be smaller than the source image '
+                f'(source={orig_w}x{orig_h}, provided={gan_w}x{gan_h}).'
+            )
+        log_telemetry('color_enhancement_target', f'provided_dims={gan_w}x{gan_h}')
+        print(f"[Color Enhancement] Using target image: {gan_w}x{gan_h}.")
+
+        # 2. SDXL always uses the original source. The GAN image is reserved
+        # exclusively for the final high-frequency detail donor.
+        source_branch = 'original'
+        log_telemetry(
+            "color_source_policy",
+            f"source_area={orig_w * orig_h} branch=original policy=strict_original",
+        )
+
+        # 3. Deterministic nearest-bucket selection
+        bucket_w, bucket_h = select_nearest_sdxl_bucket(orig_w, orig_h)
+
+        print(f"[Color Enhancement] Resizing original to SDXL bucket {bucket_w}x{bucket_h}.")
+
+        # Resize the original source to the SDXL bucket.
+        color_pass_source_resized = cv2.resize(uov_input_image, (bucket_w, bucket_h), interpolation=cv2.INTER_LANCZOS4)
+
+        # 4. Invoke the SDXL color pass on the resized chosen source image using derived task state
+        derived_state = copy.copy(task_state)
+        derived_state.width = bucket_w
+        derived_state.height = bucket_h
+        derived_state.steps = 18
+        derived_state.cfg_scale = 1.5
+        derived_state.sampler_name = 'dpmpp_2m'
+        derived_state.scheduler_name = 'beta'
+        # Color extraction does not need a prompt. When supplied, use only the
+        # tab-local upscale prompt; the main negative prompt remains shared with
+        # the task, matching the other image-input tabs' prompt ownership.
+        derived_state.prompt = str(getattr(task_state, 'upscale_prompt', '') or '').strip()
+        derived_state.negative_prompt = str(getattr(task_state, 'negative_prompt', '') or '')
+        derived_state.source_pixels = color_pass_source_resized
+        derived_state.uov_method = 'Color Enhancement'
+        derived_state.goals = []  # Empty goals to avoid recursive upscale loop
+        derived_state.loras = list(getattr(task_state, 'loras', []) or [])
+
+        if context.progressbar_callback is not None:
+            context.progressbar_callback(task_state, task_state.current_progress + 5, 'Color Enhancement: Running SDXL color pass ...')
+
+        log_telemetry(
+            "color_pass_begin",
+            f"branch={source_branch} bucket={bucket_w}*{bucket_h} sampler=dpmpp_2m scheduler=beta steps=18 cfg=1.5",
+        )
+        try:
+            sdxl_output = run_sdxl_assembly_task(
+                task_state=derived_state,
+                task_dict={'task_seed': task_state.seed},
+                current_task_id=0,
+                total_count=1,
+                all_steps=18,
+                preparation_steps=0,
+                denoising_strength=0.35,
+                final_scheduler_name="beta",
+                loras=list(getattr(derived_state, 'loras', []) or []),
+                controlnet_paths={},
+                contextual_assets={},
+                base_model_additional_loras=list(getattr(context, 'base_model_additional_loras', []) or []),
+                image_input_result=None,
+                progressbar_callback=context.progressbar_callback,
+            )
+        except BaseException as exc:
+            log_telemetry("color_pass_failure", f"error_type={type(exc).__name__}")
+            raise
+        else:
+            log_telemetry("color_pass_complete", f"bucket={bucket_w}*{bucket_h}")
+
+        if context.progressbar_callback is not None:
+            context.progressbar_callback(task_state, task_state.current_progress + 15, 'Color Enhancement: Transplanting color ...')
+
+        # 5. Resize SDXL output to match the GAN output dimensions
+        # And perform the wavelet transplant
+        gan_output_t = torch.from_numpy(gan_output).permute(2, 0, 1).unsqueeze(0).float() / 255.0
+        sdxl_output_t = torch.from_numpy(sdxl_output).permute(2, 0, 1).unsqueeze(0).float() / 255.0
+
+        # Perform wavelet color transplant using Content (GAN) and Color (SDXL)
+        log_telemetry("wavelet_transplant_begin", f"levels=5 target={gan_output.shape[1]}x{gan_output.shape[0]}")
+        transplanted_t = wavelet_reconstruction(gan_output_t, sdxl_output_t, levels=5)
+        log_telemetry("wavelet_transplant_complete", f"target={gan_output.shape[1]}x{gan_output.shape[0]}")
+
+        # Convert back to HWC uint8 numpy array
+        final_image = np.ascontiguousarray(
+            (transplanted_t.squeeze(0).permute(1, 2, 0).cpu().numpy() * 255.0)
+            .clip(0.0, 255.0)
+            .astype(np.uint8)
+        )
+
+        if context.progressbar_callback is not None:
+            context.progressbar_callback(task_state, 95, 'Saving image to system ...')
+
+        # Save and log output
+        task_state.uov_input_image = final_image
+        task_state.width = final_image.shape[1]
+        task_state.height = final_image.shape[0]
+
+        output_task_dict = {
+            'log_positive_prompt': task_state.prompt,
+            'log_negative_prompt': task_state.negative_prompt,
+            'positive': [],
+            'negative': [],
+            'styles': task_state.style_selections,
+            'task_seed': task_state.seed,
+        }
+        enhanced_paths = save_and_log(
+            task_state,
+            task_state.height,
+            task_state.width,
+            [final_image],
+            {**output_task_dict, 'description': 'Color Enhancement'},
+            task_state.use_expansion,
+            task_state.loras,
+        )
+        img_paths = list(enhanced_paths or [])
+        if context.yield_result_callback is not None:
+            context.yield_result_callback(task_state, img_paths, 100, do_not_show_finished_images=True)
+
+        return PipelineStageResult(
+            route_complete=True,
+            notes={
+                'completed': True,
+                'source_area': orig_w * orig_h,
+                'source_branch': source_branch,
+                'gan_source': 'provided',
+                'bucket': f"{bucket_w}*{bucket_h}",
+                'sampler': 'dpmpp_2m',
+                'scheduler': 'beta',
+                'gan_dims': f"{gan_output.shape[1]}x{gan_output.shape[0]}",
+                'final_dims': f"{final_image.shape[1]}x{final_image.shape[0]}",
+                'final_output_dimensions': (int(final_image.shape[1]), int(final_image.shape[0])),
+                'output_labels': ('Color Enhancement',),
+            }
+        )
+
+
 class RemovalStage(PipelineStage):
     stage_id = 'removal'
     phase_name = 'removal'
@@ -1140,13 +1383,21 @@ def build_generation_route(task_state) -> PipelineRoute:
         )
 
     if intent.wants_upscale:
-        route_id = 'super_upscale' if 'super-upscale' in str(task_state.uov_method).lower() else 'upscale'
-        return PipelineRoute(
-            route_id=route_id,
-            family='upscale',
-            display_name='Upscale',
-            stages=[ImageInputPreparationStage(), PromptEncodingStage(), UpscaleStage()],
-        )
+        route_id = intent.route_id
+        if route_id == 'color_enhanced_upscale':
+            return PipelineRoute(
+                route_id='color_enhanced_upscale',
+                family='upscale',
+                display_name='Color Enhancement',
+                stages=[ImageInputPreparationStage(), ColorEnhancedUpscaleStage()],
+            )
+        else:
+            return PipelineRoute(
+                route_id=route_id,
+                family='upscale',
+                display_name='Upscale',
+                stages=[ImageInputPreparationStage(), PromptEncodingStage(), UpscaleStage()],
+            )
 
     if intent.wants_outpaint:
         stages: list[PipelineStage] = [ImageInputPreparationStage(), ControlNetSupportLoadStage(), OutpaintPreparationStage(), PromptEncodingStage()]
