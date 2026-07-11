@@ -149,7 +149,14 @@ def _resolve_task_display_fields(state) -> dict:
         method = _normalize_text(getattr(state, "uov_method", "")).lower()
         upscale_model_name = _normalize_text(getattr(state, "upscale_model", ""))
         model_label = "Engine"
-        if "super-upscale" in method:
+        if "color enhancement" in method or "color-enhanced-upscale" in method:
+            workflow_name = "Color Enhancement"
+            prompt_text = _normalize_text(getattr(state, "upscale_prompt", ""))
+            prompt_label = "Upscale Prompt"
+            model_label = "Model"
+            show_prompt = bool(prompt_text)
+            model_name = base_model_name or "Selected SDXL Model"
+        elif "super-upscale" in method:
             workflow_name = "Super Upscale"
             show_prompt = bool(prompt_text)
             prompt_label = "Prompt"

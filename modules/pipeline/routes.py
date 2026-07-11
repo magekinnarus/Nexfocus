@@ -1040,6 +1040,7 @@ class ColorEnhancedUpscaleStage(PipelineStage):
         from backend.sdxl_assembly.progress import log_telemetry
         from backend.sdxl_assembly.wavelet_color import wavelet_reconstruction
         from modules.pipeline.output import save_and_log
+        import modules.pipeline.preprocessing as preprocessing
         import modules.mask_processing as mask_proc
         import modules.flags as flags
         import copy
@@ -1108,10 +1109,9 @@ class ColorEnhancedUpscaleStage(PipelineStage):
         derived_state = copy.copy(task_state)
         derived_state.width = bucket_w
         derived_state.height = bucket_h
-        derived_state.steps = 18
         derived_state.cfg_scale = 1.5
         derived_state.sampler_name = 'dpmpp_2m'
-        derived_state.scheduler_name = 'beta'
+        derived_state.scheduler_name = str(getattr(task_state, 'scheduler_name', '') or '')
         # Color extraction does not need a prompt. When supplied, use only the
         # tab-local upscale prompt; the main negative prompt remains shared with
         # the task, matching the other image-input tabs' prompt ownership.
@@ -1121,13 +1121,31 @@ class ColorEnhancedUpscaleStage(PipelineStage):
         derived_state.uov_method = 'Color Enhancement'
         derived_state.goals = []  # Empty goals to avoid recursive upscale loop
         derived_state.loras = list(getattr(task_state, 'loras', []) or [])
+        color_final_scheduler_name = preprocessing.patch_samplers(derived_state)
+        color_all_steps = max(1, int(getattr(derived_state, 'steps', 1) or 1))
+        color_workflow_contract = {
+            'workflow_id': 'color_enhanced_upscale',
+            'workflow_name': 'Color Enhancement',
+            'workflow_family': 'upscale',
+            'assembly_route_id': 'color_enhancement',
+            'assembly_variant': 'sdxl_color_enhancement',
+            'source_policy': 'strict_original',
+            'donor_policy': 'provided_gan_detail',
+            'sampler_policy': 'forced_dpmpp_2m',
+            'scheduler_policy': 'inherit_user_selection',
+            'steps_policy': 'inherit_user_selection',
+            'cfg_policy': 'fixed_1_5',
+        }
 
         if context.progressbar_callback is not None:
             context.progressbar_callback(task_state, task_state.current_progress + 5, 'Color Enhancement: Running SDXL color pass ...')
 
         log_telemetry(
             "color_pass_begin",
-            f"branch={source_branch} bucket={bucket_w}*{bucket_h} sampler=dpmpp_2m scheduler=beta steps=18 cfg=1.5",
+            f"workflow={color_workflow_contract['assembly_variant']} "
+            f"branch={source_branch} bucket={bucket_w}*{bucket_h} "
+            f"sampler=dpmpp_2m scheduler={derived_state.scheduler_name} "
+            f"final_scheduler={color_final_scheduler_name} steps={color_all_steps} cfg=1.5",
         )
         try:
             sdxl_output = run_sdxl_assembly_task(
@@ -1135,10 +1153,10 @@ class ColorEnhancedUpscaleStage(PipelineStage):
                 task_dict={'task_seed': task_state.seed},
                 current_task_id=0,
                 total_count=1,
-                all_steps=18,
+                all_steps=color_all_steps,
                 preparation_steps=0,
                 denoising_strength=0.35,
-                final_scheduler_name="beta",
+                final_scheduler_name=color_final_scheduler_name,
                 loras=list(getattr(derived_state, 'loras', []) or []),
                 controlnet_paths={},
                 contextual_assets={},
@@ -1209,8 +1227,22 @@ class ColorEnhancedUpscaleStage(PipelineStage):
                 'source_branch': source_branch,
                 'gan_source': 'provided',
                 'bucket': f"{bucket_w}*{bucket_h}",
+                'workflow_id': color_workflow_contract['workflow_id'],
+                'workflow_name': color_workflow_contract['workflow_name'],
+                'workflow_family': color_workflow_contract['workflow_family'],
+                'assembly_route_id': color_workflow_contract['assembly_route_id'],
+                'assembly_variant': color_workflow_contract['assembly_variant'],
+                'source_policy': color_workflow_contract['source_policy'],
+                'donor_policy': color_workflow_contract['donor_policy'],
+                'sampler_policy': color_workflow_contract['sampler_policy'],
+                'scheduler_policy': color_workflow_contract['scheduler_policy'],
+                'steps_policy': color_workflow_contract['steps_policy'],
+                'cfg_policy': color_workflow_contract['cfg_policy'],
                 'sampler': 'dpmpp_2m',
-                'scheduler': 'beta',
+                'scheduler': str(getattr(derived_state, 'scheduler_name', '') or ''),
+                'final_scheduler': color_final_scheduler_name,
+                'steps': color_all_steps,
+                'cfg': float(derived_state.cfg_scale),
                 'gan_dims': f"{gan_output.shape[1]}x{gan_output.shape[0]}",
                 'final_dims': f"{final_image.shape[1]}x{final_image.shape[0]}",
                 'final_output_dimensions': (int(final_image.shape[1]), int(final_image.shape[0])),

@@ -236,10 +236,13 @@ def acquire_vae_component(request: SDXLAssemblyRequest) -> Any:
                 f"in checkpoint {request.checkpoint.path}."
             )
 
+    # Keep the SDXL assembly VAE contract explicit. The project-wide stability
+    # policy is fp32 VAE residency to avoid the known half-precision NaN path.
     return loader.load_vae(
         source_path,
         load_device=cpu_device,
         offload_device=cpu_device,
+        dtype=torch.float32,
         latent_format=latent_formats.SDXL(),
         prefixes=prefixes,
     )

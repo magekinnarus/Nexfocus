@@ -210,7 +210,7 @@ Expected result for the W11b direct MAT path:
   teardown runs for the BGR/MAT pair
 
 Flux Fill object removal remains a separate main-family adapter path. Its
-transition/preflight reconciliation is carried into W11d and is not inferred
+transition/preflight reconciliation is carried into W11e and is not inferred
 from the BGR/MAT evidence above.
 
 ### 3. Colab Free Disk-Paged T5 Replay
@@ -288,8 +288,9 @@ Expected result:
   the original image.
 - No GAN admission/load/infer telemetry appears; `color_enhancement_target`
   reports the target dimensions.
-- The color pass always reports `sampler=dpmpp_2m scheduler=beta steps=18
-  cfg=1.5`, independent of the ordinary sampler/scheduler UI selection.
+- The color pass always reports `sampler=dpmpp_2m` and keeps `cfg=1.5`, but it
+  inherits the user-selected scheduler and steps instead of hardcoding
+  `beta/18`.
 - Sampling progress produces no `progressbar() takes 3 positional arguments
   but 5 were given` errors.
 - Empty `Upscale Prompt` produces empty positive conditioning; a supplied

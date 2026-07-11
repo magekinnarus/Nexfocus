@@ -128,7 +128,10 @@ class VaeEncodeWorker:
             # 5. Attach VAE
             self.vae.patcher.patch_model(device_to=device, lowvram_model_memory=0)
             if hasattr(self.vae, "first_stage_model"):
-                self.vae.first_stage_model.to(device=device)
+                # Reassert the assembly-wide fp32 VAE policy at attach time so
+                # the encode seam does not silently inherit a future loader or
+                # reload regression.
+                self.vae.first_stage_model.to(device=device, dtype=torch.float32)
 
             live_param = next(self.vae.first_stage_model.parameters(), None)
             live_device = live_param.device if isinstance(live_param, torch.Tensor) else device

@@ -10,8 +10,10 @@ from types import SimpleNamespace
 # Setup sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+import modules.model_taxonomy as model_taxonomy
 from backend.sdxl_assembly.contracts import ColorExtractionSpec, SDXLAssemblyRequest, ResolvedFileIdentity
 from backend.sdxl_assembly.color_extraction_worker import ColorExtractionWorker
+from backend.sdxl_assembly.request_builder import build_assembly_request
 from backend.sdxl_assembly.wavelet_color import wavelet_decomposition, wavelet_reconstruction
 from modules.route_intent import resolve_route_intent
 import modules.flags as flags
@@ -120,6 +122,163 @@ def test_transient_vae_worker_uses_preloaded_encode_seam() -> None:
     assert result["samples"].shape == (1, 4, 2, 2)
 
 
+def test_vae_encode_worker_attaches_vae_in_fp32(monkeypatch) -> None:
+    from backend.sdxl_assembly.vae_encode_worker import VaeEncodeWorker
+
+    class DummyFirstStage:
+        def __init__(self) -> None:
+            self.param = torch.nn.Parameter(torch.zeros(1, dtype=torch.float16), requires_grad=False)
+            self.last_to_dtype = None
+
+        def parameters(self):
+            return iter([self.param])
+
+        def to(self, *, device=None, dtype=None):
+            if dtype is not None:
+                self.param = torch.nn.Parameter(self.param.detach().to(dtype=dtype), requires_grad=False)
+                self.last_to_dtype = dtype
+            return self
+
+    class DummyPatcher:
+        def patch_model(self, *, device_to, lowvram_model_memory=0):
+            _ = device_to
+            _ = lowvram_model_memory
+
+    dummy_vae = SimpleNamespace(
+        first_stage_model=DummyFirstStage(),
+        patcher=DummyPatcher(),
+    )
+
+    monkeypatch.setattr(
+        "backend.sdxl_assembly.vae_encode_worker.acquire_vae_component",
+        lambda _request: dummy_vae,
+    )
+    monkeypatch.setattr(
+        "backend.sdxl_assembly.vae_encode_worker._encode_attached_vae",
+        lambda _vae, pixels: {
+            "samples": torch.zeros(
+                (pixels.shape[0], 4, pixels.shape[1] // 8, pixels.shape[2] // 8),
+                dtype=torch.float32,
+            )
+        },
+    )
+    monkeypatch.setattr("backend.resources.eject_model", lambda _patcher: None)
+
+    VaeEncodeWorker._ENCODE_CACHE.clear()
+    request = SimpleNamespace(
+        route_id="color_enhancement",
+        device="cpu",
+        vae=SimpleNamespace(sha256="vae_sha"),
+        checkpoint=SimpleNamespace(sha256="ckpt_sha"),
+    )
+    pixels = torch.zeros((1, 16, 16, 3), dtype=torch.float32)
+    prepared = SimpleNamespace(
+        mode="image",
+        original_pixels=pixels,
+        original_mask=None,
+        bb_pixels=pixels,
+        bb_mask=None,
+        blend_mask=None,
+        bbox=(0, 16, 0, 16),
+        bbox_area_ratio=1.0,
+        mask_coverage=0.0,
+        image_fingerprint="img_fp",
+        mask_fingerprint=None,
+        bb_pixels_fingerprint="bb_fp",
+        bb_mask_fingerprint=None,
+        get_cache_key=lambda _vae_identity: "w11c_fp32_encode_attach",
+    )
+
+    try:
+        worker = VaeEncodeWorker(request)
+        result = worker.encode(prepared)
+        assert dummy_vae.first_stage_model.last_to_dtype == torch.float32
+        assert result.route_latent.dtype == torch.float32
+    finally:
+        VaeEncodeWorker._ENCODE_CACHE.clear()
+
+
+def test_vae_encode_worker_does_not_reenter_shared_residency(monkeypatch) -> None:
+    from backend.sdxl_assembly.vae_encode_worker import VaeEncodeWorker
+
+    class DummyFirstStage(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.anchor = torch.nn.Parameter(torch.zeros(1, dtype=torch.float32), requires_grad=False)
+
+        def to(self, *, device=None, dtype=None):
+            if dtype is not None:
+                self.anchor = torch.nn.Parameter(self.anchor.detach().to(dtype=dtype), requires_grad=False)
+            return self
+
+        def encode(self, batch):
+            return torch.zeros(
+                (batch.shape[0], 4, batch.shape[-2] // 8, batch.shape[-1] // 8),
+                dtype=batch.dtype,
+                device=batch.device,
+            )
+
+    class DummyLatentFormat:
+        @staticmethod
+        def process_in(latent):
+            return latent
+
+    class DummyPatcher:
+        def patch_model(self, *, device_to, lowvram_model_memory=0):
+            _ = device_to
+            _ = lowvram_model_memory
+
+    dummy_vae = SimpleNamespace(
+        first_stage_model=DummyFirstStage(),
+        patcher=DummyPatcher(),
+        latent_format=DummyLatentFormat(),
+        runtime_policy=SimpleNamespace(vae_encode_mode="transient_gpu", prefer_gpu_vae_encode=True),
+    )
+
+    monkeypatch.setattr(
+        "backend.sdxl_assembly.vae_encode_worker.acquire_vae_component",
+        lambda _request: dummy_vae,
+    )
+    monkeypatch.setattr(
+        "backend.encode.resources.prepare_models_for_stage",
+        lambda *_args, **_kwargs: pytest.fail("worker encode must not re-enter shared residency admission"),
+    )
+    monkeypatch.setattr("backend.encode.resources.get_free_memory", lambda _device: 1024 * 1024 * 1024)
+    monkeypatch.setattr("backend.resources.eject_model", lambda _patcher: None)
+
+    VaeEncodeWorker._ENCODE_CACHE.clear()
+    request = SimpleNamespace(
+        route_id="color_enhancement",
+        device="cpu",
+        vae=SimpleNamespace(sha256="vae_sha"),
+        checkpoint=SimpleNamespace(sha256="ckpt_sha"),
+    )
+    pixels = torch.zeros((1, 16, 16, 3), dtype=torch.float32)
+    prepared = SimpleNamespace(
+        mode="image",
+        original_pixels=pixels,
+        original_mask=None,
+        bb_pixels=pixels,
+        bb_mask=None,
+        blend_mask=None,
+        bbox=(0, 16, 0, 16),
+        bbox_area_ratio=1.0,
+        mask_coverage=0.0,
+        image_fingerprint="img_fp",
+        mask_fingerprint=None,
+        bb_pixels_fingerprint="bb_fp",
+        bb_mask_fingerprint=None,
+        get_cache_key=lambda _vae_identity: "w11c_no_residency_encode",
+    )
+
+    try:
+        worker = VaeEncodeWorker(request)
+        result = worker.encode(prepared)
+        assert result.route_latent.shape == (1, 4, 2, 2)
+    finally:
+        VaeEncodeWorker._ENCODE_CACHE.clear()
+
+
 def test_vae_decode_rejects_nonfinite_latent_before_model_acquisition(monkeypatch) -> None:
     from backend.sdxl_assembly.vae_decode_worker import TransientVaeDecodeWorker
 
@@ -135,6 +294,126 @@ def test_vae_decode_rejects_nonfinite_latent_before_model_acquisition(monkeypatc
     with pytest.raises(RuntimeError, match="rejected a non-finite"):
         worker.decode(latent, torch.device("cpu"))
     assert acquired == []
+
+
+def test_vae_decode_worker_attaches_vae_in_fp32(monkeypatch) -> None:
+    from backend.sdxl_assembly.vae_decode_worker import TransientVaeDecodeWorker
+
+    class DummyFirstStage:
+        def __init__(self) -> None:
+            self.param = torch.nn.Parameter(torch.zeros(1, dtype=torch.float16), requires_grad=False)
+            self.last_to_dtype = None
+
+        def parameters(self):
+            return iter([self.param])
+
+        def to(self, *, device=None, dtype=None):
+            if dtype is not None:
+                self.param = torch.nn.Parameter(self.param.detach().to(dtype=dtype), requires_grad=False)
+                self.last_to_dtype = dtype
+            return self
+
+    class DummyPatcher:
+        def patch_model(self, *, device_to, lowvram_model_memory=0):
+            _ = device_to
+            _ = lowvram_model_memory
+
+    dummy_vae = SimpleNamespace(
+        first_stage_model=DummyFirstStage(),
+        patcher=DummyPatcher(),
+    )
+
+    monkeypatch.setattr(
+        "backend.sdxl_assembly.vae_decode_worker.acquire_vae_component",
+        lambda _request: dummy_vae,
+    )
+    monkeypatch.setattr(
+        "backend.decode.decode_preloaded_vae",
+        lambda _vae, latent, tiled=False: torch.zeros(
+            (latent.shape[0], latent.shape[2], latent.shape[3], 3),
+            dtype=torch.float32,
+        ),
+    )
+    monkeypatch.setattr(
+        "modules.core.pytorch_to_numpy",
+        lambda tensor: [tensor[0].detach().cpu().numpy()],
+    )
+    monkeypatch.setattr("backend.resources.eject_model", lambda _patcher: None)
+
+    worker = TransientVaeDecodeWorker(SimpleNamespace(tiled=False, route_id="color_enhancement"))
+    output, _attach_time, _decode_time = worker.decode(
+        torch.zeros((1, 4, 8, 8), dtype=torch.float32),
+        torch.device("cpu"),
+    )
+
+    assert dummy_vae.first_stage_model.last_to_dtype == torch.float32
+    assert output.shape == (8, 8, 3)
+
+
+def test_vae_decode_worker_does_not_reenter_shared_residency(monkeypatch) -> None:
+    from backend.sdxl_assembly.vae_decode_worker import TransientVaeDecodeWorker
+
+    class DummyFirstStage(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.anchor = torch.nn.Parameter(torch.zeros(1, dtype=torch.float32), requires_grad=False)
+
+        def to(self, *, device=None, dtype=None):
+            if dtype is not None:
+                self.anchor = torch.nn.Parameter(self.anchor.detach().to(dtype=dtype), requires_grad=False)
+            return self
+
+        def decode(self, batch):
+            return torch.zeros(
+                (batch.shape[0], 3, batch.shape[-2], batch.shape[-1]),
+                dtype=torch.float32,
+                device=batch.device,
+            )
+
+    class DummyLatentFormat:
+        @staticmethod
+        def process_out(latent):
+            return latent
+
+    class DummyPatcher:
+        def patch_model(self, *, device_to, lowvram_model_memory=0):
+            _ = device_to
+            _ = lowvram_model_memory
+
+        def current_loaded_device(self):
+            return torch.device("cpu")
+
+        load_device = torch.device("cpu")
+
+    dummy_vae = SimpleNamespace(
+        first_stage_model=DummyFirstStage(),
+        patcher=DummyPatcher(),
+        latent_format=DummyLatentFormat(),
+        runtime_policy=SimpleNamespace(vae_encode_mode="transient_gpu", prefer_gpu_vae_encode=True),
+    )
+
+    monkeypatch.setattr(
+        "backend.sdxl_assembly.vae_decode_worker.acquire_vae_component",
+        lambda _request: dummy_vae,
+    )
+    monkeypatch.setattr(
+        "backend.decode.resources.prepare_models_for_stage",
+        lambda *_args, **_kwargs: pytest.fail("worker decode must not re-enter shared residency admission"),
+    )
+    monkeypatch.setattr("backend.decode.resources.get_free_memory", lambda _device: 1024 * 1024 * 1024)
+    monkeypatch.setattr(
+        "modules.core.pytorch_to_numpy",
+        lambda tensor: [tensor[0].detach().cpu().numpy()],
+    )
+    monkeypatch.setattr("backend.resources.eject_model", lambda _patcher: None)
+
+    worker = TransientVaeDecodeWorker(SimpleNamespace(tiled=False, route_id="color_enhancement"))
+    output, _attach_time, _decode_time = worker.decode(
+        torch.zeros((1, 4, 8, 8), dtype=torch.float32),
+        torch.device("cpu"),
+    )
+
+    assert output.shape == (8, 8, 3)
 
 
 def test_streaming_spine_color_state_close_releases_latent() -> None:
@@ -304,6 +583,96 @@ def test_color_method_exposes_prompt_and_existing_gan_input() -> None:
     assert normal_updates[4]["visible"] is False
 
 
+def test_color_enhancement_request_freezes_workflow_contract(monkeypatch, tmp_path) -> None:
+    checkpoint_path = tmp_path / "checkpoint.safetensors"
+    checkpoint_path.write_bytes(b"checkpoint")
+
+    monkeypatch.setattr(
+        "backend.sdxl_assembly.request_builder.get_file_from_folder_list",
+        lambda _name, _folders: str(checkpoint_path),
+    )
+    monkeypatch.setattr(
+        "backend.sdxl_assembly.request_builder.config.resolve_model_taxonomy",
+        lambda _path: SimpleNamespace(architecture=model_taxonomy.ARCHITECTURE_SDXL),
+    )
+
+    source_pixels = np.zeros((64, 64, 3), dtype=np.uint8)
+    state = SimpleNamespace(
+        last_stop=False,
+        base_model_name="checkpoint.safetensors",
+        vae_name="Default (model)",
+        goals=["upscale"],
+        tiled=False,
+        prepared_structural_cn_tasks={},
+        prepared_contextual_cn_tasks={},
+        initial_latent=None,
+        prompt="unused main prompt",
+        negative_prompt="negative",
+        width=64,
+        height=64,
+        steps=23,
+        cfg_scale=1.5,
+        sampler_name="dpmpp_2m",
+        scheduler_name="lcm",
+        clip_skip=1,
+        style_selections=[],
+        sdxl_execution_policy=None,
+        sharpness=2.0,
+        adaptive_cfg=7.0,
+        adm_scaler_positive=1.5,
+        adm_scaler_negative=0.8,
+        adm_scaler_end=0.3,
+        prefetch_depth=1,
+        prefetch_chunk_mb=64,
+        use_expansion=False,
+        disable_intermediate_results=True,
+        input_image_checkbox=True,
+        current_tab="uov",
+        uov_method="Color Enhancement",
+        uov_input_image=source_pixels,
+        source_pixels=source_pixels,
+    )
+
+    request = build_assembly_request(
+        task_state=state,
+        task_dict={
+            "task_seed": 123,
+            "task_prompt": "unused main prompt",
+            "task_negative_prompt": "negative",
+            "positive": ["unused main prompt"],
+            "negative": ["negative"],
+        },
+        current_task_id=0,
+        total_count=1,
+        all_steps=23,
+        preparation_steps=0,
+        denoising_strength=0.35,
+        final_scheduler_name="sgm_uniform",
+        loras=[],
+        image_input_result={},
+        force_eligible=True,
+    )
+
+    assert request.route_id == "color_enhancement"
+    assert request.color_extraction is not None
+    assert request.color_extraction.enabled is True
+    assert request.spatial_context is not None
+    assert request.spatial_context.mode == "image"
+    assert request.metadata["workflow_contract"] == {
+        "workflow_id": "color_enhanced_upscale",
+        "workflow_name": "Color Enhancement",
+        "workflow_family": "upscale",
+        "assembly_route_id": "color_enhancement",
+        "assembly_variant": "sdxl_color_enhancement",
+        "source_policy": "strict_original",
+        "donor_policy": "provided_gan_detail",
+        "sampler_policy": "forced_dpmpp_2m",
+        "scheduler_policy": "inherit_user_selection",
+        "steps_policy": "inherit_user_selection",
+        "cfg_policy": "fixed_1_5",
+    }
+
+
 def test_color_enhanced_upscale_stage_execution(monkeypatch) -> None:
     """Verify strict original-source SDXL execution and donor-only GAN use."""
     from modules.pipeline.routes import ColorEnhancedUpscaleStage, PipelineRouteContext, PipelineStageResult
@@ -367,6 +736,9 @@ def test_color_enhanced_upscale_stage_execution(monkeypatch) -> None:
         seed=123,
         prompt="must not be used by the color pass",
         negative_prompt="low quality",
+        scheduler_name="karras",
+        steps=24,
+        cfg_scale=7.0,
         style_selections=[],
         use_expansion=False,
         loras=["frozen-lora"],
@@ -396,9 +768,9 @@ def test_color_enhanced_upscale_stage_execution(monkeypatch) -> None:
         "negative_prompt": "low quality",
         "loras": ["frozen-lora"],
         "sampler": "dpmpp_2m",
-        "scheduler": "beta",
-        "all_steps": 18,
-        "final_scheduler": "beta",
+        "scheduler": "karras",
+        "all_steps": 24,
+        "final_scheduler": "karras",
         "denoising_strength": 0.35,
         "source_shape": (1024, 1024, 3),
         "source_mean": 50,
@@ -424,6 +796,9 @@ def test_color_enhanced_upscale_stage_execution(monkeypatch) -> None:
         seed=123,
         prompt="scenic",
         negative_prompt="",
+        scheduler_name="karras",
+        steps=24,
+        cfg_scale=7.0,
         style_selections=[],
         use_expansion=False,
         loras=[],
@@ -460,6 +835,9 @@ def test_color_enhanced_upscale_stage_execution(monkeypatch) -> None:
         seed=123,
         prompt="unused main prompt",
         negative_prompt="",
+        scheduler_name="karras",
+        steps=24,
+        cfg_scale=7.0,
         style_selections=[],
         use_expansion=False,
         loras=[],
@@ -480,8 +858,15 @@ def test_color_enhanced_upscale_stage_execution(monkeypatch) -> None:
 
     assert result_bypass.route_complete is True
     assert result_bypass.notes["gan_source"] == "provided"
+    assert result_bypass.notes["workflow_id"] == "color_enhanced_upscale"
+    assert result_bypass.notes["assembly_route_id"] == "color_enhancement"
+    assert result_bypass.notes["assembly_variant"] == "sdxl_color_enhancement"
+    assert result_bypass.notes["source_policy"] == "strict_original"
+    assert result_bypass.notes["donor_policy"] == "provided_gan_detail"
     assert result_bypass.notes["sampler"] == "dpmpp_2m"
-    assert result_bypass.notes["scheduler"] == "beta"
+    assert result_bypass.notes["scheduler"] == "karras"
+    assert result_bypass.notes["final_scheduler"] == "karras"
+    assert result_bypass.notes["steps"] == 24
     assert not any(event.startswith("gan_") for event in execution_order)
     assert task_state_bypass.uov_input_image.shape == (100, 100, 3)
     assert [description for description, _images in saved_outputs] == ["Color Enhancement"]

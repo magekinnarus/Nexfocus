@@ -116,6 +116,7 @@ def test_component_acquisition_loads_only_requested_component(monkeypatch):
     assert clip.clone_count == 1
     assert unet.clone_count == 0
     assert [call[0] for call in load_calls] == ['clip', 'vae']
+    assert load_calls[-1][2]["dtype"] == torch.float32
 
     unet_component = acquire_unet_component(request)
     assert unet_component is unet

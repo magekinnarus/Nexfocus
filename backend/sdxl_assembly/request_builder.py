@@ -554,6 +554,22 @@ def build_assembly_request(
             )
         ),
     }
+    from modules.route_intent import resolve_route_intent
+    intent = resolve_route_intent(task_state)
+    if intent.route_id == "color_enhanced_upscale":
+        execution_metadata["workflow_contract"] = {
+            "workflow_id": "color_enhanced_upscale",
+            "workflow_name": "Color Enhancement",
+            "workflow_family": str(intent.route_family or ""),
+            "assembly_route_id": "color_enhancement",
+            "assembly_variant": "sdxl_color_enhancement",
+            "source_policy": "strict_original",
+            "donor_policy": "provided_gan_detail",
+            "sampler_policy": "forced_dpmpp_2m",
+            "scheduler_policy": "inherit_user_selection",
+            "steps_policy": "inherit_user_selection",
+            "cfg_policy": "fixed_1_5",
+        }
 
     if policy is not None and getattr(policy, 'execution_mode', None) == 'resident':
         logger.debug(
@@ -763,8 +779,6 @@ def build_assembly_request(
 
     # Build color extraction spec if route matches
     color_extraction_spec = None
-    from modules.route_intent import resolve_route_intent
-    intent = resolve_route_intent(task_state)
     if intent.route_id == "color_enhanced_upscale":
         from backend.sdxl_assembly.contracts import ColorExtractionSpec
         color_extraction_spec = ColorExtractionSpec(enabled=True)

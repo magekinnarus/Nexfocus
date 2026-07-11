@@ -54,6 +54,9 @@ class SDXLAssembly:
         structural_control_session_active = False
         contextual_session_active = False
         prepared_context = None
+        workflow_contract = request.metadata.get("workflow_contract")
+        if isinstance(workflow_contract, dict):
+            result_metadata["workflow_contract"] = dict(workflow_contract)
 
         try:
             # 2. Materialize LoRA patches first

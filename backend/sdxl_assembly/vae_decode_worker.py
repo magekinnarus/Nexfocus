@@ -45,8 +45,20 @@ class TransientVaeDecodeWorker:
         # 2. Attach VAE to execution device
         attach_start = time.perf_counter()
         self.vae.patcher.patch_model(device_to=device, lowvram_model_memory=0)
+        if hasattr(self.vae, "first_stage_model"):
+            # Decode already has a downstream fp32 safeguard, but making the
+            # attach contract explicit keeps the live dtype truthful in logs
+            # and avoids ambiguous mixed-precision regressions.
+            self.vae.first_stage_model.to(device=device, dtype=torch.float32)
+        live_param = next(self.vae.first_stage_model.parameters(), None)
+        live_device = live_param.device if isinstance(live_param, torch.Tensor) else device
+        live_dtype = live_param.dtype if isinstance(live_param, torch.Tensor) else torch.float32
         attach_time = time.perf_counter() - attach_start
-        
+        log_telemetry(
+            "vae_decode_attached",
+            f"route={self.request.route_id} live_device={live_device} live_dtype={live_dtype}",
+        )
+
         from backend import decode
         import modules.core as core
         
