@@ -980,6 +980,7 @@ class UpscaleStage(PipelineStage):
 
         direct_return = apply_upscale(task_state, context.progressbar_callback)
         if not direct_return:
+            from modules.pipeline.tiled_refinement import apply_tiled_diffusion_refinement
             prompt_task = context.prompt_tasks[0] if len(context.prompt_tasks) > 0 else None
             task_state.uov_input_image = apply_tiled_diffusion_refinement(
                 task_state,

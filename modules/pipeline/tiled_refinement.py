@@ -165,183 +165,61 @@ def _register_active_unified_sdxl_process(task_state) -> None:
         )
 
 
+# Classified: Compatibility Bridge.
+# Retained for backward-compatible routing of tiled refinement requests to the backend-owned SDXL assembly pipeline,
+# while preserving stateless helpers (select_tile_resolution, split_into_tiles, stitch_tiles) as utility functions.
+
 def apply_tiled_diffusion_refinement(task_state, upscaled_image: np.ndarray, progressbar_callback=None, prompt_task=None):
+    from backend.sdxl_assembly.gateway import run_sdxl_assembly_task
+    import copy
     from backend import resources
-    from backend.sdxl_unified_runtime import UnifiedSDXLRuntime, UnifiedSDXLRuntimeConfig
-    from backend.sdxl_streaming_runtime import SDXLStreamingRuntime
-    from backend.staging_manager import ExecutionClass, SDXL_RESIDENT_EXECUTION_CLASSES
-    from modules.pipeline.inference import _resolve_unified_checkpoint_path, _resolve_unified_vae_path
-    import modules.pipeline.preprocessing as preprocessing
 
-    H, W, C = upscaled_image.shape
+    # Early stop/skip checks
+    if resources.processing_interrupted():
+        if getattr(task_state, 'last_stop', None) == 'skip':
+            print("[Tiled Refinement (Assembly)] User skipped tiled refinement. Stitching partially completed tiles...")
+            resources.interrupt_current_processing(False)
+            task_state.last_stop = False
+            return np.array(upscaled_image, copy=True)
 
-    with resources.memory_phase_scope(
-        resources.MemoryPhase.TILED_REFINE,
-        task=task_state,
-        notes={'image_size': [W, H]},
-        end_notes={'completed': True},
-    ):
-        # Calculate retention flag
-        retain_warm = should_retain_sdxl_warm_state(task_state)
+        print("[Tiled Refinement] Stop request detected before execution starts; raising InterruptProcessingException.")
+        resources.throw_exception_if_processing_interrupted()
 
-        # Pre-flight cleanup: Clear everything to maximize tile headroom if we shouldn't retain.
-        if not retain_warm:
-            resources.teardown_active_runtime("upscale_preflight")
-        else:
-            resources.cleanup_memory('tiled_refine_preflight', unload_models=False, force_cache=True, trim_host=True, target_phase=resources.MemoryPhase.TILED_REFINE)
-        
-        min_overlap = getattr(task_state, 'upscale_refinement_tile_overlap', 128)
-        bucket, nx, ny, overlap_w, overlap_h = select_tile_resolution(W, H, min_overlap)
-        bucket_w, bucket_h = bucket
-        
-        denoise = getattr(task_state, 'upscale_refinement_denoise', 0.382)
-        tiles = split_into_tiles(upscaled_image, bucket_w, bucket_h, nx, ny, overlap_w, overlap_h)
+    task_dict = {
+        'task_seed': task_state.seed,
+        'task_prompt': task_state.prompt,
+        'task_negative_prompt': task_state.negative_prompt,
+    }
+    if prompt_task:
+        def _get_val(obj, key, default):
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+        task_dict.update({
+            'task_seed': _get_val(prompt_task, 'task_seed', task_state.seed),
+            'task_prompt': _get_val(prompt_task, 'task_prompt', task_state.prompt),
+            'task_negative_prompt': _get_val(prompt_task, 'task_negative_prompt', task_state.negative_prompt),
+            'positive': _get_val(prompt_task, 'positive', None),
+            'negative': _get_val(prompt_task, 'negative', None),
+        })
 
-        print(f'[Tiled Refinement] Processing {len(tiles)} tiles...')
+    # Prepare derived/temporary task state so we don't mutate main state in a confusing way
+    derived_state = copy.copy(task_state)
+    derived_state.upscale_gan_output_image = upscaled_image
 
-        final_scheduler_name = preprocessing.patch_samplers(task_state)
-        prompt_blueprint = _resolve_tiled_prompt_blueprint(task_state, prompt_task=prompt_task)
-
-        # Merge active LoRAs
-        from modules.pipeline.inference import _resolve_unified_sdxl_lora_specs
-
-        checkpoint_path = _resolve_unified_checkpoint_path(task_state)
-        merged_loras = _resolve_unified_sdxl_lora_specs(
-            task_state,
-            checkpoint_path=checkpoint_path,
-            strict=True,
-        )
-
-        quality = {
-            "sharpness": float(getattr(task_state, 'sharpness', 2.0)),
-            "adaptive_cfg": float(getattr(task_state, 'adaptive_cfg', 7.0)),
-            "adm_scaler_positive": float(getattr(task_state, 'adm_scaler_positive', 1.5)),
-            "adm_scaler_negative": float(getattr(task_state, 'adm_scaler_negative', 0.8)),
-            "adm_scaler_end": float(getattr(task_state, 'adm_scaler_end', 0.3)),
-            "controlnet_softness": float(getattr(task_state, 'controlnet_softness', 0.25)),
-        }
-
-        policy = getattr(task_state, 'sdxl_execution_policy', None)
-        stream_budget = float(getattr(policy, 'stream_budget_mb', 256.0))
-
-        config_kwargs = dict(
-            model_variant='sdxl',
-            execution_class=(
-                getattr(policy, 'execution_class', None)
-                or getattr(task_state, 'sdxl_execution_family', None)
-                or getattr(policy, 'execution_family', None)
-                or 'standard_sdxl'
-            ),
-            streamlike_budget_mb=stream_budget,
-            quality=quality,
-            checkpoint_path=checkpoint_path,
-            vae_path=_resolve_unified_vae_path(task_state),
-            prompt=prompt_blueprint['prompt'],
-            negative_prompt=prompt_blueprint['negative_prompt'],
-            positive_texts=prompt_blueprint['positive_texts'],
-            negative_texts=prompt_blueprint['negative_texts'],
-            positive_top_k=prompt_blueprint['positive_top_k'],
-            negative_top_k=prompt_blueprint['negative_top_k'],
-            width=int(bucket_w),
-            height=int(bucket_h),
-            steps=int(task_state.steps),
-            cfg=float(task_state.cfg_scale),
-            sampler=str(task_state.sampler_name),
-            scheduler=str(final_scheduler_name),
-            seed=prompt_blueprint['seed'],
-            clip_layer=-abs(int(getattr(task_state, 'clip_skip', 1) or 1)),
-            batch_size=1,
-            lora_specs=merged_loras,
-            denoise_strength=denoise,
-            runtime_policy=policy,
-        )
-
-        exec_class = config_kwargs.get("execution_class")
-        if isinstance(exec_class, str):
-            normalized = exec_class.rsplit(".", 1)[-1]
-            try:
-                exec_class = ExecutionClass[normalized]
-            except KeyError:
-                pass
-
-        is_resident = exec_class in SDXL_RESIDENT_EXECUTION_CLASSES
-
-        if is_resident:
-            runtime = UnifiedSDXLRuntime(UnifiedSDXLRuntimeConfig(**config_kwargs))
-        else:
-            runtime = SDXLStreamingRuntime(UnifiedSDXLRuntimeConfig(**config_kwargs))
-        refined_tiles = []
-        try:
-            prepared_inputs, _ = runtime.prepare_inputs()
-            _register_active_unified_sdxl_process(task_state)
-            
-            for i, t in enumerate(tiles):
-                if progressbar_callback:
-                    progressbar_callback(task_state, int(task_state.current_progress + (i/len(tiles))*10), f'Refining tile {i+1}/{len(tiles)} ...')
-                
-                # Check for interrupt before starting the tile
-                resources.throw_exception_if_processing_interrupted()
-
-                # VAE encode tile in VAE_ENCODE memory phase scope
-                pixels = core.numpy_to_pytorch(t.tile_image)
-                with resources.memory_phase_scope(
-                    resources.MemoryPhase.VAE_ENCODE,
-                    task=task_state,
-                    notes={'route': 'tiled_refine', 'tile_size': [t.w, t.h], 'denoise': float(denoise)},
-                    end_notes={'completed': True},
-                ):
-                    encode_spatial_pixels = getattr(runtime, "encode_spatial_pixels", None)
-                    if callable(encode_spatial_pixels):
-                        latent_samples = encode_spatial_pixels(pixels)
-                    else:
-                        resources.load_models_gpu([runtime.vae.patcher])
-                        latent_samples = core.encode_vae(vae=runtime.vae, pixels=pixels)["samples"]
-                
-                # Update prepared inputs with current tile's latent samples
-                prepared_inputs.payload["initial_latent"] = latent_samples
-                
-                # Setup tile step callback to catch interrupts mid-denoising
-                def tile_callback(step, temp_latent, x, total_steps, denoised=None):
-                    resources.throw_exception_if_processing_interrupted()
-
-                # Run denoise using unified runtime
-                denoise_result = runtime.denoise_prepared_inputs(
-                    prepared_inputs,
-                    callback=tile_callback,
-                    disable_pbar=True,
-                )
-                
-                # Decode refined latent (non-tiled)
-                decoded_images, _, _ = runtime.decode_latent(denoise_result.samples, tiled=False)
-                
-                refined_img = core.pytorch_to_numpy(decoded_images)[0]
-                refined_tiles.append(t._replace(tile_image=refined_img))
-                
-                # Post-tile cleanup
-                resources.cleanup_memory('tiled_refine_tile_complete', notes={'tile_index': i}, trim_host=False, target_phase=resources.MemoryPhase.TILED_REFINE)
-        except resources.InterruptProcessingException:
-            # Handle Skip vs Stop semantics explicitly
-            if getattr(task_state, 'last_stop', False) == 'skip':
-                print('[Tiled Refinement] User skipped tiled refinement. Stitching partially completed tiles...')
-                task_state.last_stop = False
-                # Fill the remaining tiles with their original upscaled counterparts
-                for j in range(len(refined_tiles), len(tiles)):
-                    refined_tiles.append(tiles[j])
-            else:
-                # Re-raise the exception for Stop to completely abort
-                raise
-        finally:
-            runtime.close()
-        
-        if progressbar_callback:
-            progressbar_callback(task_state, task_state.current_progress + 10, 'Stitching tiles ...')
-            
-        result = stitch_tiles(refined_tiles, (H, W, C), bucket_w, bucket_h)
-        
-        # Final sweep: Leave the GPU clean if not retaining warm state
-        if not retain_warm:
-            resources.teardown_active_runtime("upscale_finalization")
-        else:
-            resources.cleanup_memory('tiled_refine_finalize', unload_models=False, force_cache=True, target_phase=resources.MemoryPhase.FINALIZE)
-        
-        return result
+    return run_sdxl_assembly_task(
+        task_state=derived_state,
+        task_dict=task_dict,
+        current_task_id=0,
+        total_count=1,
+        all_steps=int(getattr(task_state, 'steps', 3)),
+        preparation_steps=0,
+        denoising_strength=float(getattr(task_state, 'upscale_refinement_denoise', 0.382)),
+        final_scheduler_name=getattr(task_state, 'scheduler_name', 'karras'),
+        loras=list(getattr(task_state, 'loras', []) or []),
+        controlnet_paths={},
+        contextual_assets={},
+        base_model_additional_loras=list(getattr(task_state, 'base_model_additional_loras', None) or []),
+        image_input_result=None,
+        progressbar_callback=progressbar_callback,
+    )

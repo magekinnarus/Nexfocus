@@ -259,22 +259,6 @@ def determine_eligibility(
         if name in resolved_controlnet_paths or name in prepared_structural or name in cn_tasks:
             return False, "MLSD is explicitly retired on the active ControlNet path."
 
-    # 1. Check for resident SDXL or resident ControlNet
-    policy = getattr(task_state, 'sdxl_execution_policy', None)
-    if policy is not None and getattr(policy, 'execution_mode', None) == 'resident':
-        return False, "Resident SDXL posture is not supported on the new assembly lane"
-
-    if force_eligible:
-        return True, None
-
-    # 2. Check for tiled refinement
-    if bool(getattr(task_state, 'tiled', False)):
-        return False, "Tiled refinement is active"
-
-    # 3. Check for spatial latent requests / initial latent (direct/probe override, not inpaint/outpaint VAE latents)
-    if getattr(task_state, 'initial_latent', None) is not None:
-        return False, "Spatial latent / initial_latent is active"
-
     # 4. Resolve Route Intent
     from modules.route_intent import (
         normalize_current_tab,
@@ -282,9 +266,26 @@ def determine_eligibility(
         route_family_for_route_id,
     )
     intent = resolve_route_intent(task_state)
-    
-    # 5. Route check
     target_route = intent.route_id
+
+    # 1. Check for resident SDXL or resident ControlNet
+    if target_route not in {"color_enhanced_upscale", "super_upscale"}:
+        policy = getattr(task_state, 'sdxl_execution_policy', None)
+        if policy is not None and getattr(policy, 'execution_mode', None) == 'resident':
+            return False, "Resident SDXL posture is not supported on the new assembly lane"
+
+    if force_eligible:
+        return True, None
+
+    # 2. Check for tiled refinement (except for super_upscale route itself)
+    if bool(getattr(task_state, 'tiled', False)) and target_route != "super_upscale":
+        return False, "Tiled refinement is active"
+
+    # 3. Check for spatial latent requests / initial latent (direct/probe override, not inpaint/outpaint VAE latents)
+    if getattr(task_state, 'initial_latent', None) is not None:
+        return False, "Spatial latent / initial_latent is active"
+
+    # 5. Route check
     if target_route == "txt2img":
         requested_route_id = str(getattr(task_state, "requested_route_id", "") or "").strip().lower()
         requested_route_family = str(getattr(task_state, "requested_route_family", "") or "").strip().lower()
@@ -303,7 +304,12 @@ def determine_eligibility(
         elif input_image_active and ("outpaint" in goals or current_tab == "outpaint"):
             target_route = "outpaint"
 
-    if target_route not in {"txt2img", "inpaint", "outpaint", "color_enhanced_upscale"}:
+    if target_route == "super_upscale":
+        provided_target = getattr(task_state, 'upscale_gan_output_image', None)
+        if provided_target is None:
+            return False, "Super-Upscale requires a provided upscaled target image"
+
+    if target_route not in {"txt2img", "inpaint", "outpaint", "color_enhanced_upscale", "super_upscale"}:
         return False, f"Route '{target_route}' is not eligible for SDXL Assembly"
 
     # 5.5. Fail-closed route-specific spatial asset checks
@@ -570,6 +576,17 @@ def build_assembly_request(
             "steps_policy": "inherit_user_selection",
             "cfg_policy": "fixed_1_5",
         }
+    elif intent.route_id == "super_upscale":
+        execution_metadata["workflow_contract"] = {
+            "workflow_id": "super_upscale",
+            "workflow_name": "Super Upscale",
+            "workflow_family": str(intent.route_family or ""),
+            "assembly_route_id": "super_upscale",
+            "assembly_variant": "sdxl_super_upscale_tiled_refine",
+            "target_policy": "strict_provided_upscaled_target",
+            "gan_policy": "disabled",
+            "tile_policy": "target_geometry_driven",
+        }
 
     if policy is not None and getattr(policy, 'execution_mode', None) == 'resident':
         logger.debug(
@@ -783,7 +800,35 @@ def build_assembly_request(
         from backend.sdxl_assembly.contracts import ColorExtractionSpec
         color_extraction_spec = ColorExtractionSpec(enabled=True)
 
-    assembly_route_id = "color_enhancement" if color_extraction_spec is not None else "txt2img_assembly"
+    tiled_refinement_spec = None
+    if intent.route_id == "super_upscale":
+        from backend.sdxl_assembly.contracts import TiledRefinementSpec, make_spatial_image_descriptor
+        target_img = getattr(task_state, 'upscale_gan_output_image', None)
+        if target_img is None:
+            raise SDXLAssemblyEligibilityError("Super-Upscale requires a provided upscaled target image.")
+        candidate = str(target_img) if isinstance(target_img, os.PathLike) else target_img
+        if not isinstance(candidate, (torch.Tensor, np.ndarray, list, tuple)):
+            unpacked = mask_processing.unpack_gradio_data(candidate)
+            if unpacked is None:
+                raise SDXLAssemblyEligibilityError("Super-Upscale target could not be resolved into pixels.")
+            candidate = HWC3(unpacked)
+        image_desc = make_spatial_image_descriptor(candidate)
+        tiled_refinement_spec = TiledRefinementSpec(
+            enabled=True,
+            target_image=image_desc,
+            overlap=int(getattr(task_state, 'upscale_refinement_tile_overlap', 128)),
+            denoise_strength=float(getattr(task_state, 'upscale_refinement_denoise', 0.382)),
+            bucket_policy="sdxl_aspect_ratios",
+            tiled_decode_encode_policy="fp32_safe",
+            stitch_policy="sin_blend",
+        )
+
+    assembly_route_id = "txt2img_assembly"
+    if color_extraction_spec is not None:
+        assembly_route_id = "color_enhancement"
+    elif tiled_refinement_spec is not None:
+        assembly_route_id = "super_upscale"
+
     request = SDXLAssemblyRequest(
         request_id=f"req_{current_task_id}_{int(time.time())}",
         route_id=assembly_route_id,
@@ -827,6 +872,7 @@ def build_assembly_request(
         structural_controls=tuple(structural_controls_list),
         contextual_controls=tuple(contextual_controls_list),
         color_extraction=color_extraction_spec,
+        tiled_refinement=tiled_refinement_spec,
     )
     
     # Static validate

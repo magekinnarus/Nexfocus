@@ -16,6 +16,49 @@ import backend.resources as resources
 import modules.pipeline.tiled_refinement as tiled_refinement
 import modules.pipeline.output as pipeline_output
 
+@pytest.fixture(autouse=True)
+def _stub_model_file_existence(monkeypatch):
+    from pathlib import Path
+    original_path_exists = Path.exists
+    def smart_path_exists(self):
+        p = str(self)
+        if 'auth.json' in p:
+            return False
+        if 'model.safetensors' in p or 'boost.safetensors' in p:
+            return True
+        return original_path_exists(self)
+    monkeypatch.setattr(Path, 'exists', smart_path_exists)
+    
+    import os
+    original_exists = os.path.exists
+    def smart_exists(path):
+        p = str(path)
+        if 'auth.json' in p:
+            return False
+        if 'model.safetensors' in p or 'boost.safetensors' in p:
+            return True
+        return original_exists(path)
+    monkeypatch.setattr(os.path, 'exists', smart_exists)
+    
+    import backend.sdxl_assembly.request_builder as rb
+    monkeypatch.setattr(rb, 'get_file_from_folder_list', lambda model_name, folders: 'D:/resolved/model.safetensors')
+    monkeypatch.setattr(rb, 'get_file_identity', lambda path: SimpleNamespace(path=Path(path), sha256='123'))
+    
+    import modules.config as modules_config
+    def smart_resolve_model_taxonomy(path):
+        p = str(path).lower()
+        if 'sd15' in p or 'sd1.5' in p or 'sd1_5' in p:
+            class DummySD15:
+                architecture = 'sd15'
+            return DummySD15()
+        class DummySDXL:
+            architecture = 'sdxl'
+        return DummySDXL()
+    monkeypatch.setattr(modules_config, 'resolve_model_taxonomy', smart_resolve_model_taxonomy)
+    
+    yield
+
+
 
 def test_upscale_route_light_vs_super(monkeypatch) -> None:
     """Verify light upscale uses GAN and Super-Upscale consumes a provided target truthfully."""

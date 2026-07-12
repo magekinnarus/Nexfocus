@@ -292,6 +292,17 @@ class ContextualPayloadArtifact:
 
 
 @dataclass(frozen=True)
+class TiledRefinementSpec:
+    enabled: bool
+    target_image: SpatialImageDescriptor
+    bucket_policy: str = "sdxl_aspect_ratios"
+    overlap: int = 128
+    denoise_strength: float = 0.382
+    tiled_decode_encode_policy: str = "fp32_safe"
+    stitch_policy: str = "sin_blend"
+
+
+@dataclass(frozen=True)
 class ColorExtractionSpec:
     enabled: bool
     restore_cfg: float = 4.0
@@ -371,6 +382,7 @@ class SDXLAssemblyRequest:
     # Contextual Control descriptors added in W08
     contextual_controls: Tuple[SDXLContextualControlDescriptor, ...] = field(default_factory=tuple)
     color_extraction: Optional[ColorExtractionSpec] = None
+    tiled_refinement: Optional[TiledRefinementSpec] = None
     
     def validate(self) -> None:
         """Enforces minimum parameter checks on an already-resolved snapshot."""

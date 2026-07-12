@@ -46,6 +46,9 @@ class SDXLAssembly:
         """Executes the pipeline steps in strict chronological order."""
         # 1. Static and posture validation
         request.validate()
+
+        if request.tiled_refinement is not None and request.tiled_refinement.enabled:
+            return self._execute_tiled_refinement(request, callback)
         
         timings: Dict[str, float] = {}
         result_metadata: Dict[str, Any] = {}
@@ -413,3 +416,172 @@ class SDXLAssembly:
                 logger.warning(f"Error closing unet_spine: {e}")
             
         log_telemetry("cleanup_complete", "reason=assembly_close")
+
+    def _execute_tiled_refinement(self, request: SDXLAssemblyRequest, callback: Optional[Any] = None) -> SDXLAssemblyResult:
+        """Runs the tiled refinement loop under backend assembly ownership."""
+        from backend.sdxl_assembly.contracts import PreparedSpatialContext
+        from modules.pipeline.tiled_refinement import select_tile_resolution, split_into_tiles, stitch_tiles
+        import modules.core as core
+
+        target_tensor = request.tiled_refinement.target_image.pixels[0]  # shape [H, W, C], float32 [0.0, 1.0]
+        target_img_np = (target_tensor.numpy() * 255.0).clip(0, 255).astype(np.uint8)
+        H, W, C = target_img_np.shape
+
+        timings: Dict[str, float] = {}
+        device = torch.device(request.device)
+        unet_started = False
+
+        # Pre-flight warm-state handling matching W11c residency contract
+        progress_state = callback.progress_state if callback is not None else None
+        retain_warm = True
+        if progress_state is not None:
+            from modules.pipeline.tiled_refinement import should_retain_sdxl_warm_state
+            retain_warm = should_retain_sdxl_warm_state(progress_state)
+
+        if not retain_warm:
+            resources.teardown_active_runtime("upscale_preflight")
+        else:
+            resources.cleanup_memory('tiled_refine_preflight', unload_models=False, force_cache=True, trim_host=True, target_phase=resources.MemoryPhase.TILED_REFINE)
+
+        # Build prompt conditioning once (it is frozen for the request)
+        lora_start = time.perf_counter()
+        patches = self.lora_worker.materialize_patches()
+        timings["lora_patch"] = time.perf_counter() - lora_start
+
+        text_start = time.perf_counter()
+        conditioning = self.text_encode_worker.get_conditioning()
+        timings["text_encode"] = time.perf_counter() - text_start
+
+        if bool(request.metadata.get("release_text_encoder_after_task", False)):
+            text_release_start = time.perf_counter()
+            if hasattr(self.text_encode_worker, "teardown_assembly_order"):
+                self.text_encode_worker.teardown_assembly_order()
+            timings["text_release"] = time.perf_counter() - text_release_start
+
+        # Tile resolution setup
+        min_overlap = request.tiled_refinement.overlap
+        bucket, nx, ny, overlap_w, overlap_h = select_tile_resolution(W, H, min_overlap)
+        bucket_w, bucket_h = bucket
+
+        tiles = split_into_tiles(target_img_np, bucket_w, bucket_h, nx, ny, overlap_w, overlap_h)
+        print(f'[Tiled Refinement (Assembly)] Processing {len(tiles)} tiles...')
+
+        # Start UNet spine
+        unet_start = time.perf_counter()
+        self.unet_spine.start()
+        unet_started = True
+        timings["unet_start"] = time.perf_counter() - unet_start
+
+        refined_tiles = []
+        denose_start = time.perf_counter()
+        try:
+            for i, t in enumerate(tiles):
+                # Check for interrupts
+                resources.throw_exception_if_processing_interrupted()
+
+                # Report progress if callback is available
+                if callback is not None and callback.raw_callback is not None:
+                    progress_state = callback.progress_state
+                    if progress_state is not None:
+                        current_progress = int(getattr(progress_state, "current_progress", 0) or 0)
+                        percent = int(current_progress + (i / len(tiles)) * 10)
+                        callback.raw_callback(progress_state, percent, f'Refining tile {i+1}/{len(tiles)} ...')
+
+                # VAE encode tile in VAE_ENCODE memory phase scope
+                with resources.memory_phase_scope(
+                    resources.MemoryPhase.VAE_ENCODE,
+                    task=None,
+                    notes={'route': 'tiled_refine', 'tile_size': [t.w, t.h], 'denoise': float(request.tiled_refinement.denoise_strength)},
+                    end_notes={'completed': True},
+                ):
+                    pixels_cpu = torch.from_numpy(t.tile_image).unsqueeze(0).float() / 255.0
+                    prepared = PreparedSpatialContext(
+                        mode="image",
+                        original_pixels=pixels_cpu,
+                        bb_pixels=pixels_cpu,
+                        image_fingerprint=f"tile_{i}",
+                        bb_pixels_fingerprint=f"tile_{i}",
+                    )
+                    artifacts = self.vae_encode_worker.encode(prepared)
+                    latent_samples = artifacts.route_latent
+
+                # Update callback in progress_state or use dummy callback
+                def tile_callback(step, temp_latent, x, total_steps, denoised=None):
+                    resources.throw_exception_if_processing_interrupted()
+
+                latent_samples_gpu = latent_samples.to(device, dtype=torch.float16)
+
+                # Denoise tile
+                denoise_result = self.unet_spine.denoise(
+                    latent_samples_gpu,
+                    conditioning,
+                    callback=tile_callback,
+                )
+
+                # Decode tile (non-tiled) using transient VAE decode worker
+                decoded_img, _, _ = self.vae_decode_worker.decode(denoise_result, device)
+
+                refined_tiles.append(t._replace(tile_image=decoded_img))
+
+                # Post-tile cleanup
+                resources.cleanup_memory('tiled_refine_tile_complete', notes={'tile_index': i}, trim_host=False, target_phase=resources.MemoryPhase.TILED_REFINE)
+
+        except resources.InterruptProcessingException:
+            # Handle Skip vs Stop semantics
+            progress_state = callback.progress_state if callback is not None else None
+            if progress_state is not None and getattr(progress_state, 'last_stop', False) == 'skip':
+                print('[Tiled Refinement (Assembly)] User skipped tiled refinement. Stitching partially completed tiles...')
+                progress_state.last_stop = False
+                for j in range(len(refined_tiles), len(tiles)):
+                    refined_tiles.append(tiles[j])
+            else:
+                raise
+        finally:
+            if unet_started:
+                self.unet_spine.end()
+
+        timings["unet_denoise"] = time.perf_counter() - denose_start
+
+        # Stitch
+        if callback is not None and callback.raw_callback is not None:
+            progress_state = callback.progress_state
+            if progress_state is not None:
+                current_progress = int(getattr(progress_state, "current_progress", 0) or 0)
+                callback.raw_callback(progress_state, current_progress + 10, 'Stitching tiles ...')
+
+        stitch_start = time.perf_counter()
+        result = stitch_tiles(refined_tiles, (H, W, C), bucket_w, bucket_h)
+        timings["stitch"] = time.perf_counter() - stitch_start
+
+        # Final sweep matching W11c residency contract
+        if not retain_warm:
+            resources.teardown_active_runtime("upscale_finalization")
+        else:
+            resources.cleanup_memory('tiled_refine_finalize', unload_models=False, force_cache=True, target_phase=resources.MemoryPhase.FINALIZE)
+
+        runtime_identity = SDXLRuntimeIdentity(
+            checkpoint=request.checkpoint,
+            vae=request.vae,
+            unet_posture=request.unet_posture,
+            clip_posture=request.clip_posture,
+            vae_posture=request.vae_posture,
+            lora_posture=request.lora_posture,
+        )
+
+        result_metadata = {}
+        workflow_contract = request.metadata.get("workflow_contract")
+        if isinstance(workflow_contract, dict):
+            result_metadata["workflow_contract"] = dict(workflow_contract)
+
+        return SDXLAssemblyResult(
+            output_image=result,
+            seed=request.seed,
+            width=result.shape[1],
+            height=result.shape[0],
+            runtime_identity=runtime_identity,
+            timings=timings,
+            metadata={
+                "runtime_identity": runtime_identity.as_dict(),
+                **result_metadata,
+            },
+        )

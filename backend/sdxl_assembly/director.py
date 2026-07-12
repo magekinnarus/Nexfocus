@@ -51,6 +51,8 @@ class SDXLAssemblyDirector:
         if request.spatial_context is not None:
             spatial_context_worker = SDXLAssemblyAssembler.acquire_spatial_context_worker(request)
             vae_encode_worker = SDXLAssemblyAssembler.acquire_vae_encode_worker(request)
+        elif request.tiled_refinement is not None and request.tiled_refinement.enabled:
+            vae_encode_worker = SDXLAssemblyAssembler.acquire_vae_encode_worker(request)
 
         # Acquire structural preprocessor and control workers
         st_preprocess_worker = SDXLAssemblyAssembler.acquire_st_preprocess_worker(request)
