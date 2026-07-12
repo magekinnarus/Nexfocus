@@ -940,9 +940,18 @@ class UpscaleStage(PipelineStage):
         return _describe_route_resources(
             PipelineResourceRequirement(
                 resource_id='upscaler_model',
-                description='GAN upscaler model with optional tiled refinement follow-up.',
+                description='GAN upscaler model for light upscale only; Super-Upscale now consumes a provided refinement target.',
                 owner='backend.auxiliary_workers.gan_upscale_worker',
                 tags=('upscale',),
+                optional=True,
+            ),
+            PipelineResourceRequirement(
+                resource_id='upscale_target_image',
+                description='Provided pre-upscaled target image for Color Enhancement donor use or Super-Upscale tiled refinement.',
+                resource_type='artifact',
+                owner='modules.task_state',
+                tags=('upscale', 'artifact'),
+                optional=True,
             ),
             PipelineResourceRequirement(
                 resource_id='retained_conditions',

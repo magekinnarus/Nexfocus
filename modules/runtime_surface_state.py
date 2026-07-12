@@ -160,9 +160,9 @@ def _resolve_task_display_fields(state) -> dict:
             workflow_name = "Super Upscale"
             show_prompt = bool(prompt_text)
             prompt_label = "Prompt"
-            initial_upscaler = "4xNomos2_otf_esrgan.pth"
             model_label = "Pipeline"
-            model_name = initial_upscaler if base_model_name == "" else f"{initial_upscaler} + {base_model_name}"
+            target_label = "Provided Upscale Target"
+            model_name = target_label if base_model_name == "" else f"{target_label} + {base_model_name}"
         else:
             workflow_name = "Upscale"
             prompt_text = ""

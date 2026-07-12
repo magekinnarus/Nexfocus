@@ -152,7 +152,7 @@ Covers:
 - failure-path worker teardown and lease release
 - scalar-only UI scale metadata caching with no retained model object
 - absence of broad runtime/cache cleanup during GAN execution
-- direct light upscale and GAN-first `super-upscale` tiled-refinement handoff
+- direct light upscale and target-first `super-upscale` tiled-refinement handoff
 - auxiliary-only route boundaries preserving an already-active SDXL/Flux major
   family without publishing a synthetic route-owned SDXL identity for plain
   `upscale`

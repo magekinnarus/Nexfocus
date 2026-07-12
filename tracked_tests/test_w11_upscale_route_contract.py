@@ -18,7 +18,7 @@ import modules.pipeline.output as pipeline_output
 
 
 def test_upscale_route_light_vs_super(monkeypatch) -> None:
-    """Verify that light upscale and super-upscale execute through GanUpscaleWorker truthfully."""
+    """Verify light upscale uses GAN and Super-Upscale consumes a provided target truthfully."""
 
     # 1. Track worker lifecycle calls
     worker_calls = []
@@ -94,13 +94,14 @@ def test_upscale_route_light_vs_super(monkeypatch) -> None:
     assert len(tiled_refine_calls) == 0  # Should NOT proceed to tiled refinement
     assert task_state_light.uov_input_image.shape == (512, 512, 3)
 
-    # 3. Test Super Upscale Route Contract (Stage 1 GAN -> Stage 2 Tiled Refinement handoff)
+    # 3. Test Super Upscale Route Contract (provided target -> tiled refinement)
     task_state_super = SimpleNamespace(
         goals=["upscale"],
         current_progress=0,
         uov_method="super-upscale",
         uov_input_image=np.zeros((128, 128, 3), dtype=np.uint8),
-        upscale_model="DAT-4x.pth",  # Should be forced to 4xNomos2 for initial GAN stage
+        upscale_gan_output_image=np.ones((640, 768, 3), dtype=np.uint8),
+        upscale_model="DAT-4x.pth",
         upscale_scale_override=0,
         height=128,
         width=128,
@@ -128,14 +129,41 @@ def test_upscale_route_light_vs_super(monkeypatch) -> None:
 
     # Assertions for Super Upscale
     assert result_super.route_complete is True
-    assert "init" in worker_calls
-    assert ("load", "4xNomos2_otf_esrgan.pth") in worker_calls  # Forced Nomos2
-    assert ("infer", None) in worker_calls
-    assert "teardown" in worker_calls
-    # Should proceed to tiled refinement using GAN output
+    assert worker_calls == []
+    # Should proceed to tiled refinement using the provided target image
     assert len(tiled_refine_calls) == 1
-    assert tiled_refine_calls[0] == ("apply", (512, 512, 3))
+    assert tiled_refine_calls[0] == ("apply", (640, 768, 3))
     assert task_state_super.uov_input_image.shape == (1024, 1024, 3)
+
+
+def test_super_upscale_requires_provided_target(monkeypatch) -> None:
+    from modules.pipeline.image_input import apply_upscale
+
+    task_state = SimpleNamespace(
+        current_progress=0,
+        uov_method="super-upscale",
+        uov_input_image=np.zeros((128, 128, 3), dtype=np.uint8),
+        upscale_gan_output_image=None,
+        width=128,
+        height=128,
+    )
+
+    with pytest.raises(ValueError, match="provided upscaled target image"):
+        apply_upscale(task_state)
+
+
+def test_super_upscale_ui_exposes_target_and_hides_gan_controls() -> None:
+    from modules.ui_logic import uov_method_change
+
+    updates = uov_method_change("Super-Upscale")
+
+    assert len(updates) == 6
+    assert updates[0]["visible"] is True
+    assert updates[1]["visible"] is False
+    assert updates[2]["visible"] is False
+    assert updates[3]["visible"] is False
+    assert updates[4]["visible"] is True
+    assert updates[5]["visible"] is False
 
 
 def test_plain_upscale_preserves_active_major_family_without_publishing_synthetic_sdxl_identity(monkeypatch) -> None:

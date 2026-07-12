@@ -399,8 +399,8 @@ def expand_mask(outpaint_selections, inpaint_mask_image):
 
 def uov_method_change(method):
     if method == 'Super-Upscale':
-        # Force light model for Super-Upscale and disable dropdown
-        return gr.update(visible=True), gr.update(interactive=False, value='4xNomos2_otf_esrgan.pth'), gr.update(visible=True), gr.update(visible=False), gr.update(visible=False), gr.update(visible=True)
+        # Super-Upscale now refines a provided pre-upscaled target directly.
+        return gr.update(visible=True), gr.update(interactive=False, visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=True), gr.update(visible=False)
     if method in {'Color Enhancement', 'Color-Enhanced-Upscale'}:
         # Color enhancement consumes a required existing GAN donor; it never
         # admits an upscaler model. The main negative prompt remains shared.

@@ -298,23 +298,42 @@ def apply_upscale(task_state, progressbar_callback=None):
     uov_method = task_state.uov_method.lower()
     uov_input_image = mask_proc.ensure_numpy(uov_input_image)
     H, W, C = uov_input_image.shape
-    
+
+    if uov_method == 'super-upscale':
+        provided_target = mask_proc.ensure_numpy(getattr(task_state, 'upscale_gan_output_image', None))
+        if provided_target is None:
+            raise ValueError(
+                'Super-Upscale requires a provided upscaled target image. '
+                'Upload it in the target slot before tiled refinement.'
+            )
+
+        provided_target = np.ascontiguousarray(HWC3(provided_target), dtype=np.uint8)
+        target_h, target_w = provided_target.shape[:2]
+
+        if progressbar_callback:
+            task_state.current_progress += 1
+            progressbar_callback(
+                task_state,
+                task_state.current_progress,
+                f'Preparing tiled refinement target {str((target_w, target_h))} ...',
+            )
+
+        task_state.uov_input_image = provided_target
+        task_state.width = target_w
+        task_state.height = target_h
+        print(f'Super-Upscale: Using provided target image {target_w}x{target_h}.')
+        return False
+
     if progressbar_callback:
         task_state.current_progress += 1
         progressbar_callback(task_state, task_state.current_progress, f'Upscaling image from {str((W, H))} ...')
-    
+
     # 1. GAN upscale in an assembly-preserving auxiliary execution window.
     from backend.auxiliary_workers.gan_upscale_worker import run_gan_upscale
 
-    # Super-Upscale should use the lightest default model (Nomos2) to save memory
-    upscale_model_to_use = task_state.upscale_model
-    if uov_method == 'super-upscale':
-        upscale_model_to_use = '4xNomos2_otf_esrgan.pth'
-        print(f'Super-Upscale detected: Forcing light model {upscale_model_to_use} for initial pass.')
-
     uov_input_image = run_gan_upscale(
         uov_input_image,
-        model_name=upscale_model_to_use if upscale_model_to_use != "None" else None,
+        model_name=task_state.upscale_model if task_state.upscale_model != "None" else None,
         scale_override=task_state.upscale_scale_override if task_state.upscale_scale_override > 0 else None,
     )
     print(f'Image upscaled via GAN to {str(uov_input_image.shape[:2])}.')
@@ -328,11 +347,11 @@ def apply_upscale(task_state, progressbar_callback=None):
         return True
 
     if uov_method == 'super-upscale':
-        # Prepare for sequential tiled refinement. NO VAE encode here to save VRAM.
+        # Super-Upscale now refines a provided target image directly.
         task_state.uov_input_image = uov_input_image
         task_state.width = uov_input_image.shape[1]
         task_state.height = uov_input_image.shape[0]
-        print('Super-Upscale Stage 1 (GAN) completed. Passing to Tiled Refinement.')
+        print('Super-Upscale target prepared. Passing to Tiled Refinement.')
         return False # False triggers refinement in worker
 
 
@@ -348,7 +367,7 @@ def prepare_upscale(task_state, progressbar_callback=None):
         task_state.goals.append('upscale')
         
         # Validate selected model exists (if not "None")
-        if task_state.upscale_model != "None":
+        if uov_method != 'super-upscale' and task_state.upscale_model != "None":
             from modules.upscaler import list_available_models
             available = list_available_models()
             if task_state.upscale_model not in available:

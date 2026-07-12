@@ -120,9 +120,9 @@ with shared.gradio_root:
                                 uov_input_image_path = gr.Textbox(value='', visible=True, elem_id='uov_input_image_path', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
                                 uov_input_workspace_id = gr.Textbox(value='', visible=True, elem_id='uov_input_workspace_id', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
                                 with gr.Group(visible=False) as upscale_gan_output_container:
-                                    gr.HTML(make_nex_image_slot('upscale_gan_output_slot', 'upscale_gan_output_bridge', 'Color Enhancement Target', 'data-upload-mode="api" data-path-field-id="upscale_gan_output_path" data-workspace-field-id="upscale_gan_output_workspace_id"'))
-                                    gr.HTML('<div class="nex-image-slot-guidance">Place your already upscaled image here in addition to the original image above.</div>')
-                                    upscale_gan_output_image = gr.Image(label='Color Enhancement Target', sources='upload', type='filepath', show_label=False, elem_id='upscale_gan_output_bridge', elem_classes=['nex-image-slot-bridge'])
+                                    gr.HTML(make_nex_image_slot('upscale_gan_output_slot', 'upscale_gan_output_bridge', 'Upscale Target', 'data-upload-mode="api" data-path-field-id="upscale_gan_output_path" data-workspace-field-id="upscale_gan_output_workspace_id"'))
+                                    gr.HTML('<div class="nex-image-slot-guidance">Place your already upscaled image here. Color Enhancement uses it as the donor target, and Super-Upscale uses it as the tiled refinement target.</div>')
+                                    upscale_gan_output_image = gr.Image(label='Upscale Target', sources='upload', type='filepath', show_label=False, elem_id='upscale_gan_output_bridge', elem_classes=['nex-image-slot-bridge'])
                                     upscale_gan_output_path = gr.Textbox(value='', visible=True, elem_id='upscale_gan_output_path', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
                                     upscale_gan_output_workspace_id = gr.Textbox(value='', visible=True, elem_id='upscale_gan_output_workspace_id', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
                             with gr.Column():
