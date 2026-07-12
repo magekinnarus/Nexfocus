@@ -11,6 +11,7 @@ sys.argv = [sys.argv[0]]
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from modules.pipeline.routes import UpscaleStage, PipelineRouteContext
+from backend import process_transition
 import backend.resources as resources
 import modules.pipeline.tiled_refinement as tiled_refinement
 import modules.pipeline.output as pipeline_output
@@ -135,3 +136,47 @@ def test_upscale_route_light_vs_super(monkeypatch) -> None:
     assert len(tiled_refine_calls) == 1
     assert tiled_refine_calls[0] == ("apply", (512, 512, 3))
     assert task_state_super.uov_input_image.shape == (1024, 1024, 3)
+
+
+def test_plain_upscale_preserves_active_major_family_without_publishing_synthetic_sdxl_identity(monkeypatch) -> None:
+    sentinel = object()
+    monkeypatch.setattr(process_transition, "resolve_sdxl_process_key", lambda *_args, **_kwargs: sentinel)
+
+    task_state = SimpleNamespace(
+        objr_engine=None,
+        sdxl_execution_policy=SimpleNamespace(enabled=True),
+    )
+
+    active_key = process_transition.build_process_key(
+        family=process_transition.PROCESS_FAMILY_SDXL,
+        process_class=process_transition.PROCESS_CLASS_STANDARD_SDXL,
+        authoritative_identity=("model-a.safetensors", "vae-a.safetensors", "clip-a.safetensors"),
+    )
+
+    process_transition.clear_active_runtime()
+    try:
+        assert process_transition.resolve_requested_process_key(
+            task_state,
+            SimpleNamespace(family="upscale", route_id="upscale"),
+        ) is None
+
+        process_transition.set_active_runtime(
+            family=process_transition.PROCESS_FAMILY_SDXL,
+            key=active_key,
+            route_owner="txt2img",
+            safe_to_retain=False,
+        )
+        assert process_transition.resolve_requested_process_key(
+            task_state,
+            SimpleNamespace(family="upscale", route_id="upscale"),
+        ) == active_key.normalized()
+        assert process_transition.resolve_requested_process_key(
+            task_state,
+            SimpleNamespace(family="upscale", route_id="super_upscale"),
+        ) is sentinel
+        assert process_transition.resolve_requested_process_key(
+            task_state,
+            SimpleNamespace(family="upscale", route_id="color_enhanced_upscale"),
+        ) is sentinel
+    finally:
+        process_transition.clear_active_runtime()

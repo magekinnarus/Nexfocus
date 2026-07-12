@@ -225,6 +225,24 @@ def test_upscale_engine_does_not_cap_lightweight_model_on_low_vram() -> None:
     ) == 512
 
 
+def test_temporary_cudnn_benchmark_restores_global_flag() -> None:
+    from modules.upscale_engine import temporary_cudnn_benchmark
+
+    original = bool(torch.backends.cudnn.benchmark)
+    torch.backends.cudnn.benchmark = False
+    try:
+        with temporary_cudnn_benchmark(enable=True):
+            assert torch.backends.cudnn.benchmark is True
+        assert torch.backends.cudnn.benchmark is False
+
+        torch.backends.cudnn.benchmark = True
+        with temporary_cudnn_benchmark(enable=False):
+            assert torch.backends.cudnn.benchmark is True
+        assert torch.backends.cudnn.benchmark is True
+    finally:
+        torch.backends.cudnn.benchmark = original
+
+
 def test_upscale_engine_cpu_accumulator_preserves_shape_and_values(monkeypatch) -> None:
     import torch
     import torch.nn.functional as functional

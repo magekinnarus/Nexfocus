@@ -153,6 +153,9 @@ Covers:
 - scalar-only UI scale metadata caching with no retained model object
 - absence of broad runtime/cache cleanup during GAN execution
 - direct light upscale and GAN-first `super-upscale` tiled-refinement handoff
+- auxiliary-only route boundaries preserving an already-active SDXL/Flux major
+  family without publishing a synthetic route-owned SDXL identity for plain
+  `upscale`
 - backend-owned BGR/MAT load, infer, detach, teardown, and failure cleanup
 - sequential BGR-then-MAT auxiliary leases with no model overlap
 - direct BGR/MAT route dispatch and neutral RGBA/mask/image output contracts

@@ -508,6 +508,17 @@ def resolve_flux_fill_process_key(
     return resolve_greenfield(task_state, route_family=route_family, selected_engine=selected_engine)
 
 
+def _is_auxiliary_only_route(route, task_state) -> bool:
+    route_id = str(getattr(route, 'route_id', '') or '').strip().lower()
+    selected_engine = normalize_objr_engine(getattr(task_state, 'objr_engine', None))
+
+    if route_id == 'upscale':
+        return True
+    if route_id == 'removal' and selected_engine != OBJR_ENGINE_FLUX_FILL:
+        return True
+    return False
+
+
 def resolve_requested_process_key(task_state, route) -> ProcessKey | None:
     selected_engine = normalize_objr_engine(getattr(task_state, 'objr_engine', None))
     expects_flux_process = route.family == 'flux_fill' or selected_engine == OBJR_ENGINE_FLUX_FILL
@@ -517,6 +528,11 @@ def resolve_requested_process_key(task_state, route) -> ProcessKey | None:
             route_family=route.family,
             selected_engine=selected_engine,
         )
+    if _is_auxiliary_only_route(route, task_state):
+        # Auxiliary-only routes do not own a major-family process. Preserve an
+        # already-active SDXL/Flux family if one exists, otherwise publish no
+        # process identity at all.
+        return get_active_process_key()
     if getattr(task_state.sdxl_execution_policy, 'enabled', False):
         return resolve_sdxl_process_key(task_state)
     return None
@@ -633,6 +649,12 @@ def apply_process_transition_gate(requested_key: ProcessKey | None) -> ProcessTr
 
 
 def sync_route_process_activation(route, task_state, requested_process_key: ProcessKey | None) -> Any:
+    if _is_auxiliary_only_route(route, task_state):
+        # Auxiliary-only routes borrow the currently active major-family
+        # posture if one exists, but they never replace the registry with their
+        # own route-owned identity.
+        return None
+
     if route.family == "flux_fill":
         from backend.flux_fill_v3 import sync_flux_fill_process_activation
         return sync_flux_fill_process_activation(route, task_state, requested_process_key)

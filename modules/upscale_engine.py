@@ -2,6 +2,7 @@ import torch
 import numpy as np
 from typing import Callable, List, Tuple
 from dataclasses import dataclass
+from contextlib import contextmanager
 import modules.core as core
 import gc
 import time
@@ -84,6 +85,23 @@ def cap_tile_for_hardware(
         practical_cap = 512
     return min(int(max_safe_tile), practical_cap)
 
+
+@contextmanager
+def temporary_cudnn_benchmark(enable: bool):
+    """Temporarily borrow cudnn benchmark mode without leaking it globally."""
+    cudnn_backend = getattr(torch.backends, "cudnn", None)
+    if cudnn_backend is None or not hasattr(cudnn_backend, "benchmark"):
+        yield
+        return
+
+    previous = bool(cudnn_backend.benchmark)
+    if enable:
+        cudnn_backend.benchmark = True
+    try:
+        yield
+    finally:
+        cudnn_backend.benchmark = previous
+
 class NexUpscaleEngine:
     def __init__(self):
         pass
@@ -138,92 +156,90 @@ class NexUpscaleEngine:
         resources.begin_memory_phase('upscale', notes={'scale': scale, 'device': str(device)})
 
         try:
-            # Ensure correct CUDA device context
-            if device.type == 'cuda' and device.index is not None:
-                if torch.cuda.current_device() != device.index:
-                    torch.cuda.set_device(device)
+            with temporary_cudnn_benchmark(enable=('cuda' in device.type)):
+                # Ensure correct CUDA device context
+                if device.type == 'cuda' and device.index is not None:
+                    if torch.cuda.current_device() != device.index:
+                        torch.cuda.set_device(device)
 
-            # Input to Tensor
-            in_img = core.numpy_to_pytorch(img).movedim(-1, -3).to(device, dtype=m_dtype)
-            if is_bgr:
-                in_img = in_img[:, [2, 1, 0], :, :]
+                # Input to Tensor
+                in_img = core.numpy_to_pytorch(img).movedim(-1, -3).to(device, dtype=m_dtype)
+                if is_bgr:
+                    in_img = in_img[:, [2, 1, 0], :, :]
 
-            h, w = in_img.shape[2:]
-            oh, ow = h * scale, w * scale
+                h, w = in_img.shape[2:]
+                oh, ow = h * scale, w * scale
 
-            # Optimized Hardware-Aware Tiling
-            tile_size = 512
-            overlap = 32
+                # Optimized Hardware-Aware Tiling
+                tile_size = 512
+                overlap = 32
 
-            if 'cuda' in device.type:
-                try:
-                    # Enable CuDNN benchmark for consistent tiled shapes
-                    torch.backends.cudnn.benchmark = True
-
-                    free, total = torch.cuda.mem_get_info(device)
-                    usable_vram = free * 0.45
-
-                    # Heavy models need larger safety margins than ESRGAN-lite style models.
-                    resolved_model_params = int(model_params or (16 * 1024 * 1024))
-
-                    safety_multiplier = max(800, int(resolved_model_params / 53248))
-                    pixel_size = 2 if m_dtype == torch.float16 else 4
-                    est_pixels = usable_vram / (pixel_size * safety_multiplier)
-                    max_safe_tile = int(est_pixels ** 0.5)
-                    max_safe_tile = cap_tile_for_hardware(
-                        max_safe_tile,
-                        total_vram=total,
-                        model_params=resolved_model_params,
-                        architecture_id=architecture_id,
-                    )
-
-                    tile_size, x_count, y_count = select_best_tile_size(w, h, max_safe_tile, overlap)
-                    arch_label = architecture_id or 'unknown'
-                    print(
-                        f'[Nex-Engine] VRAM: {free//1024**2}MB | Best-Fit Tile: {tile_size} '
-                        f'| Grid: {x_count}x{y_count} ({x_count * y_count} calls) '
-                        f'| Precision: {m_dtype} | Architecture: {arch_label} '
-                        f'| Parameters: {resolved_model_params}'
-                    )
-                except Exception:
-                    pass
-
-            if h <= tile_size and w <= tile_size:
-                start_t = time.time()
-                out_img = upscale_fn(in_img)
-                print(f'[Nex-Engine] Full image processed in {time.time() - start_t:.2f}s')
-            else:
-                attempted_tile = tile_size
-                while True:
+                if 'cuda' in device.type:
                     try:
-                        out_img = self._process_tiled(
-                            in_img,
-                            upscale_fn,
-                            scale,
-                            attempted_tile,
-                            overlap,
-                            device,
-                            m_dtype,
-                            ow,
-                            oh,
+                        free, total = torch.cuda.mem_get_info(device)
+                        usable_vram = free * 0.45
+
+                        # Heavy models need larger safety margins than ESRGAN-lite style models.
+                        resolved_model_params = int(model_params or (16 * 1024 * 1024))
+
+                        safety_multiplier = max(800, int(resolved_model_params / 53248))
+                        pixel_size = 2 if m_dtype == torch.float16 else 4
+                        est_pixels = usable_vram / (pixel_size * safety_multiplier)
+                        max_safe_tile = int(est_pixels ** 0.5)
+                        max_safe_tile = cap_tile_for_hardware(
+                            max_safe_tile,
+                            total_vram=total,
+                            model_params=resolved_model_params,
+                            architecture_id=architecture_id,
                         )
-                        break
-                    except torch.cuda.OutOfMemoryError:
-                        if device.type != 'cuda' or attempted_tile <= 256:
-                            raise
-                        next_tile = max(256, attempted_tile - 64)
+
+                        tile_size, x_count, y_count = select_best_tile_size(w, h, max_safe_tile, overlap)
+                        arch_label = architecture_id or 'unknown'
                         print(
-                            f'[Nex-Engine] CUDA OOM at tile {attempted_tile}; '
-                            f'retrying with tile {next_tile}.'
+                            f'[Nex-Engine] VRAM: {free//1024**2}MB | Best-Fit Tile: {tile_size} '
+                            f'| Grid: {x_count}x{y_count} ({x_count * y_count} calls) '
+                            f'| Precision: {m_dtype} | Architecture: {arch_label} '
+                            f'| Parameters: {resolved_model_params}'
                         )
-                        attempted_tile = next_tile
-                        resources.soft_empty_cache(force=True)
-                        gc.collect()
+                    except Exception:
+                        pass
 
-            if is_bgr:
-                out_img = out_img[:, [2, 1, 0], :, :]
+                if h <= tile_size and w <= tile_size:
+                    start_t = time.time()
+                    out_img = upscale_fn(in_img)
+                    print(f'[Nex-Engine] Full image processed in {time.time() - start_t:.2f}s')
+                else:
+                    attempted_tile = tile_size
+                    while True:
+                        try:
+                            out_img = self._process_tiled(
+                                in_img,
+                                upscale_fn,
+                                scale,
+                                attempted_tile,
+                                overlap,
+                                device,
+                                m_dtype,
+                                ow,
+                                oh,
+                            )
+                            break
+                        except torch.cuda.OutOfMemoryError:
+                            if device.type != 'cuda' or attempted_tile <= 256:
+                                raise
+                            next_tile = max(256, attempted_tile - 64)
+                            print(
+                                f'[Nex-Engine] CUDA OOM at tile {attempted_tile}; '
+                                f'retrying with tile {next_tile}.'
+                            )
+                            attempted_tile = next_tile
+                            resources.soft_empty_cache(force=True)
+                            gc.collect()
 
-            out_img = torch.clamp(out_img.movedim(-3, -1), 0, 1)
-            return core.pytorch_to_numpy(out_img)[0]
+                if is_bgr:
+                    out_img = out_img[:, [2, 1, 0], :, :]
+
+                out_img = torch.clamp(out_img.movedim(-3, -1), 0, 1)
+                return core.pytorch_to_numpy(out_img)[0]
         finally:
             resources.end_memory_phase('upscale', notes={'completed': True, 'scale': scale})
