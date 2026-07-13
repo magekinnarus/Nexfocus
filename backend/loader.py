@@ -141,6 +141,7 @@ def _load_prefixed_safetensors_into_module(
                     target_dtype=dtype,
                     realize_cpu_targets=realize_cpu_targets,
                     realize_pinned_targets=realize_pinned_targets,
+                    realize_device=target_device,
                 )
                 if target_tensor is None:
                     unexpected_keys.append(target_key)
@@ -181,6 +182,7 @@ def _load_prefixed_safetensors_into_module(
                     target_dtype=dtype,
                     realize_cpu_targets=realize_cpu_targets,
                     realize_pinned_targets=realize_pinned_targets,
+                    realize_device=target_device,
                 )
                 if target_tensor is None:
                     unexpected_keys.append(target_key)
@@ -374,6 +376,7 @@ def _resolve_streaming_target_tensor(
     target_dtype=None,
     realize_cpu_targets=False,
     realize_pinned_targets=False,
+    realize_device=None,
 ):
     fallback_tensor = state_entries.get(target_key)
     owner = state_owners.get(target_key)
@@ -402,10 +405,11 @@ def _resolve_streaming_target_tensor(
     if device_type == "cpu" and not should_pin:
         return live_tensor, 0
 
-    empty_kwargs = {"device": "cpu"}
+    empty_device = realize_device if realize_device is not None else "cpu"
+    empty_kwargs = {"device": empty_device}
     if target_dtype is not None and torch.is_floating_point(live_tensor):
         empty_kwargs["dtype"] = target_dtype
-    if should_pin:
+    if should_pin and empty_device == "cpu":
         empty_kwargs["pin_memory"] = True
     realized_target = torch.empty_like(live_tensor, **empty_kwargs)
     realized_bytes = int(realized_target.numel() * realized_target.element_size())
@@ -898,7 +902,7 @@ def _stream_load_sdxl_unet_from_checkpoint(
     offload_device = torch.device(offload_device or resources.unet_offload_device())
     effective_dtype = dtype or torch.float16
     use_raw_stream = bool(raw_byte_stream and str(ckpt_path).lower().endswith(".safetensors"))
-    use_meta_construction = bool(use_raw_stream and load_device.type == "cpu")
+    use_meta_construction = bool(use_raw_stream)
 
     runtime_reload = _build_unet_runtime_reload(
         reload_source if reload_source is not None else ckpt_path,

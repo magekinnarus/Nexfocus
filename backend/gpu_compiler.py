@@ -70,68 +70,70 @@ class GpuArtifactCompiler:
             "sequentially (single-threaded)."
         )
 
-        for key in list(patcher.patches.keys()):
-            weight, set_func, convert_func = get_key_weight(patcher.model, key)
-            preserved_dtype = weight.dtype
+        try:
+            for key in list(patcher.patches.keys()):
+                weight, set_func, convert_func = get_key_weight(patcher.model, key)
+                preserved_dtype = weight.dtype
 
-            clean_weight = clean_source.get(key, weight)
-            temp_weight = clean_weight.to(device=target_device, dtype=intermediate_dtype, copy=True)
-            if convert_func is not None:
-                temp_weight = convert_func(temp_weight, inplace=True)
+                clean_weight = clean_source.get(key, weight)
+                temp_weight = clean_weight.to(device=target_device, dtype=intermediate_dtype, copy=True)
+                if convert_func is not None:
+                    temp_weight = convert_func(temp_weight, inplace=True)
 
-            patches = patcher.patches[key]
-            out_weight = cls._patch_single_layer_worker(
-                key,
-                temp_weight,
-                patches,
-                intermediate_dtype,
-                target_device,
-            )
-
-            if set_func is None:
-                out_weight = backend_float_ops.stochastic_rounding(
-                    out_weight,
-                    preserved_dtype,
-                    seed=string_to_seed(key),
+                patches = patcher.patches[key]
+                out_weight = cls._patch_single_layer_worker(
+                    key,
+                    temp_weight,
+                    patches,
+                    intermediate_dtype,
+                    target_device,
                 )
-                backend_utils.set_attr_param(patcher.model, key, out_weight)
-            else:
-                set_func(out_weight, inplace_update=False, seed=string_to_seed(key))
 
-            del temp_weight, out_weight
+                if set_func is None:
+                    out_weight = backend_float_ops.stochastic_rounding(
+                        out_weight,
+                        preserved_dtype,
+                        seed=string_to_seed(key),
+                    )
+                    backend_utils.set_attr_param(patcher.model, key, out_weight)
+                else:
+                    set_func(out_weight, inplace_update=False, seed=string_to_seed(key))
 
-        for _, patches in list(patcher.patches.items()):
-            for patch in patches:
-                patch_payload = patch[1]
-                if isinstance(
-                    patch_payload,
-                    (
-                        weight_adapter.LoRAAdapter,
-                        weight_adapter.LoHaAdapter,
-                        weight_adapter.LoKrAdapter,
-                        weight_adapter.GLoRAAdapter,
-                    ),
-                ):
-                    for weight_entry in getattr(patch_payload, "weights", ()):
-                        if weight_entry is not None:
-                            _clear_cached_adapter_tensor(weight_entry)
-                elif isinstance(patch_payload, tuple):
-                    for item in patch_payload:
-                        _clear_cached_adapter_tensor(item)
+                del temp_weight, out_weight
+        finally:
+            for _, patches in list(getattr(patcher, "patches", {}).items()):
+                for patch in patches:
+                    if len(patch) > 1:
+                        patch_payload = patch[1]
+                        if isinstance(
+                            patch_payload,
+                            (
+                                weight_adapter.LoRAAdapter,
+                                weight_adapter.LoHaAdapter,
+                                weight_adapter.LoKrAdapter,
+                                weight_adapter.GLoRAAdapter,
+                            ),
+                        ):
+                            for weight_entry in getattr(patch_payload, "weights", ()):
+                                if weight_entry is not None:
+                                    _clear_cached_adapter_tensor(weight_entry)
+                        elif isinstance(patch_payload, tuple):
+                            for item in patch_payload:
+                                _clear_cached_adapter_tensor(item)
 
-        patcher.patches = {}
-        patcher.weight_wrapper_patches = {}
-        patcher.backup.clear()
-        patcher.object_patches_backup.clear()
-        patcher.model.current_weight_patches_uuid = None
-        patcher.model.model_loaded_weight_memory = patcher.model_size()
-        patcher.model.model_lowvram = False
-        patcher.model.lowvram_patch_counter = 0
-        patcher.model.device = target_device
+            patcher.patches = {}
+            patcher.weight_wrapper_patches = {}
+            patcher.backup.clear()
+            patcher.object_patches_backup.clear()
+            patcher.model.current_weight_patches_uuid = None
+            patcher.model.model_loaded_weight_memory = patcher.model_size()
+            patcher.model.model_lowvram = False
+            patcher.model.lowvram_patch_counter = 0
+            patcher.model.device = target_device
 
-        gc.collect()
-        if target_device.type == "cuda":
-            torch.cuda.empty_cache()
+            gc.collect()
+            if target_device.type == "cuda":
+                torch.cuda.empty_cache()
 
         return {
             "status": "compiled",

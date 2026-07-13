@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from backend.sdxl_assembly.contracts import SDXLAssemblyRequest
-from backend.sdxl_assembly.runtime_state import acquire_active_sdxl_streaming_spine
+from backend.sdxl_assembly.contracts import SDXLAssemblyRequest, UNetPostureKind
+from backend.sdxl_assembly.runtime_state import acquire_active_sdxl_streaming_spine, acquire_active_sdxl_resident_spine
 from backend.sdxl_assembly.streaming_unet import StreamingUnetSpine
+from backend.sdxl_assembly.resident_unet import ResidentUnetSpine
 from backend.sdxl_assembly.cpu_text_encode_worker import CpuTextEncodeWorker
 from backend.sdxl_assembly.vae_decode_worker import TransientVaeDecodeWorker
 from backend.sdxl_assembly.cpu_lora_worker import CpuLoraWorker
+from backend.sdxl_assembly.gpu_lora_worker import GpuLoraWorker
 from backend.sdxl_assembly.vae_encode_worker import VaeEncodeWorker
 from backend.sdxl_assembly.spatial_context_worker import SpatialContextWorker
 from backend.sdxl_assembly.stream_st_preprocess_worker import StreamingStructuralPreprocessWorker
@@ -18,15 +20,19 @@ class SDXLAssemblyAssembler:
     @staticmethod
     def acquire_unet_spine(
         request: SDXLAssemblyRequest,
-        lora_worker: CpuLoraWorker | None = None,
-    ) -> StreamingUnetSpine:
-        spine, _reused = acquire_active_sdxl_streaming_spine(request, lora_worker=lora_worker)
-        return spine
+        lora_worker: CpuLoraWorker | GpuLoraWorker | None = None,
+    ) -> StreamingUnetSpine | ResidentUnetSpine:
+        if request.unet_posture == UNetPostureKind.RESIDENT:
+            spine, _reused = acquire_active_sdxl_resident_spine(request, lora_worker=lora_worker)
+            return spine
+        else:
+            spine, _reused = acquire_active_sdxl_streaming_spine(request, lora_worker=lora_worker)
+            return spine
 
     @staticmethod
     def acquire_text_encode_worker(
         request: SDXLAssemblyRequest,
-        lora_worker: CpuLoraWorker | None = None,
+        lora_worker: CpuLoraWorker | GpuLoraWorker | None = None,
     ) -> CpuTextEncodeWorker:
         return CpuTextEncodeWorker(request, lora_worker=lora_worker)
 
@@ -37,6 +43,10 @@ class SDXLAssemblyAssembler:
     @staticmethod
     def acquire_cpu_lora_worker(request: SDXLAssemblyRequest) -> CpuLoraWorker:
         return CpuLoraWorker(request)
+
+    @staticmethod
+    def acquire_gpu_lora_worker(request: SDXLAssemblyRequest) -> GpuLoraWorker:
+        return GpuLoraWorker(request)
 
     @staticmethod
     def acquire_vae_encode_worker(request: SDXLAssemblyRequest) -> VaeEncodeWorker:

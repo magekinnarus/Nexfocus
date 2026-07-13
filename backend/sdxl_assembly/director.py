@@ -18,32 +18,38 @@ class SDXLAssemblyDirector:
 
     @staticmethod
     def select_assembly(request: SDXLAssemblyRequest) -> SDXLAssembly:
-        # Enforce validation of the only supported posture combination in W02
-        if request.unet_posture != UNetPostureKind.STREAMING:
+        # Enforce validation of the only supported posture combinations in W02 and W12a
+        is_w02_streaming = (
+            request.unet_posture == UNetPostureKind.STREAMING
+            and request.clip_posture == TextEncoderPostureKind.CPU_PINNED
+            and request.vae_posture == VAEPostureKind.TRANSIENT
+            and request.lora_posture == LoraPatchPostureKind.STREAMING
+        )
+        is_w12a_resident = (
+            request.unet_posture == UNetPostureKind.RESIDENT
+            and request.clip_posture == TextEncoderPostureKind.CPU_PINNED
+            and request.vae_posture == VAEPostureKind.TRANSIENT
+            and request.lora_posture == LoraPatchPostureKind.RESIDENT
+        )
+
+        if not is_w02_streaming and not is_w12a_resident:
             raise NotImplementedError(
-                f"UNet posture '{request.unet_posture}' is not supported in W02. "
-                f"Only '{UNetPostureKind.STREAMING}' is supported."
-            )
-        if request.clip_posture != TextEncoderPostureKind.CPU_PINNED:
-            raise NotImplementedError(
-                f"CLIP posture '{request.clip_posture}' is not supported in W02. "
-                f"Only '{TextEncoderPostureKind.CPU_PINNED}' is supported."
-            )
-        if request.vae_posture != VAEPostureKind.TRANSIENT:
-            raise NotImplementedError(
-                f"VAE posture '{request.vae_posture}' is not supported in W02. "
-                f"Only '{VAEPostureKind.TRANSIENT}' is supported."
-            )
-        if request.lora_posture != LoraPatchPostureKind.STREAMING:
-            raise NotImplementedError(
-                f"LoRA posture '{request.lora_posture}' is not supported in W02. "
-                f"Only '{LoraPatchPostureKind.STREAMING}' is supported."
+                f"Posture combination (unet={request.unet_posture}, clip={request.clip_posture}, "
+                f"vae={request.vae_posture}, lora={request.lora_posture}) is not supported in W12a."
             )
 
-        # Retrieve/instantiate posture-specific workers via Assembler.
-        cpu_lora_worker = SDXLAssemblyAssembler.acquire_cpu_lora_worker(request)
-        unet_spine = SDXLAssemblyAssembler.acquire_unet_spine(request, lora_worker=cpu_lora_worker)
-        text_encode_worker = SDXLAssemblyAssembler.acquire_text_encode_worker(request, lora_worker=cpu_lora_worker)
+        # Retrieve/instantiate posture-specific workers via Assembler.  The
+        # resident W12a composition is side-specific: UNet LoRAs compile on GPU,
+        # while CPU text keeps CPU CLIP LoRA ownership.
+        if request.lora_posture == LoraPatchPostureKind.RESIDENT:
+            lora_worker = SDXLAssemblyAssembler.acquire_gpu_lora_worker(request)
+            text_lora_worker = SDXLAssemblyAssembler.acquire_cpu_lora_worker(request)
+        else:
+            lora_worker = SDXLAssemblyAssembler.acquire_cpu_lora_worker(request)
+            text_lora_worker = lora_worker
+
+        unet_spine = SDXLAssemblyAssembler.acquire_unet_spine(request, lora_worker=lora_worker)
+        text_encode_worker = SDXLAssemblyAssembler.acquire_text_encode_worker(request, lora_worker=text_lora_worker)
         vae_decode_worker = SDXLAssemblyAssembler.acquire_vae_decode_worker(request)
 
         spatial_context_worker = None
@@ -74,11 +80,10 @@ class SDXLAssemblyDirector:
             unet_spine=unet_spine,
             text_encode_worker=text_encode_worker,
             vae_decode_worker=vae_decode_worker,
-            lora_worker=cpu_lora_worker,
+            lora_worker=lora_worker,
             spatial_context_worker=spatial_context_worker,
             vae_encode_worker=vae_encode_worker,
             st_preprocess_worker=st_preprocess_worker,
             st_control_worker=st_control_worker,
             ctx_control_worker=ctx_control_worker,
         )
-

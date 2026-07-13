@@ -32,6 +32,16 @@ class SDXLStreamingSpineKey:
 
 
 @dataclass(frozen=True)
+class SDXLResidentSpineKey:
+    checkpoint_sha256: str
+    unet_posture: str
+    device: str
+    dtype: str
+    scheduler_signature: str
+    unet_lora_signature: Tuple[Tuple[str, float], ...]
+
+
+@dataclass(frozen=True)
 class SDXLPatchedTextEncoderKey:
     checkpoint_sha256: str
     clip_posture: str
@@ -57,6 +67,14 @@ def _clip_lora_signature(request: SDXLAssemblyRequest) -> Tuple[Tuple[str, float
         (spec.file_identity.sha256, spec.clip_weight)
         for spec in request.lora_specs
         if spec.enabled and spec.clip_weight != 0.0
+    )
+
+
+def _unet_lora_signature(request: SDXLAssemblyRequest) -> Tuple[Tuple[str, float], ...]:
+    return tuple(
+        (spec.file_identity.sha256, spec.unet_weight)
+        for spec in request.lora_specs
+        if spec.enabled and spec.unet_weight != 0.0
     )
 
 
@@ -117,6 +135,36 @@ def acquire_unet_component(request: SDXLAssemblyRequest) -> Any:
         reload_prefixes=sdxl_def.PREFIXES["unet"],
         stream_chunk_bytes=int(request.prefetch_chunk_mb) * 1024 * 1024 if int(request.prefetch_chunk_mb) > 0 else None,
         raw_byte_stream=True,
+    )
+
+
+def acquire_resident_unet_component(request: SDXLAssemblyRequest) -> Any:
+    """Load a resident UNet component directly to GPU (CUDA)."""
+    checkpoint_path = str(request.checkpoint.path)
+    if not checkpoint_path.lower().endswith(".safetensors"):
+        raise RuntimeError(
+            "Resident SDXL UNet admission requires a safetensors checkpoint "
+            f"for bounded direct-GPU loading; got {request.checkpoint.path}."
+        )
+    logger.debug("[SDXL Telemetry] Loading owned resident UNet component for checkpoint=%s", request.checkpoint.sha256)
+    log_telemetry("unet_component_load", f"checkpoint={request.checkpoint.path.name}")
+
+    from backend import loader
+    from backend.defs import sdxl as sdxl_def
+    import torch
+
+    cuda_device = torch.device(request.device)
+    # The resident UNet model resides on GPU, and load/offload are CUDA.
+    # No full CPU shadow survives; meta construction realizes it directly on CUDA.
+    return loader._stream_load_sdxl_unet_from_checkpoint(
+        checkpoint_path,
+        load_device=cuda_device,
+        offload_device=cuda_device,
+        dtype=torch.float16,
+        reload_source=checkpoint_path,
+        reload_prefixes=sdxl_def.PREFIXES["unet"],
+        stream_chunk_bytes=None,  # Bounded, direct-GPU safetensors load
+        raw_byte_stream=True,     # Activates sequential reader meta realization
     )
 
 
@@ -447,8 +495,238 @@ def release_active_sdxl_streaming_spine(reason: str | None = None) -> bool:
     return _STREAMING_RUNTIME_STATE.release(reason=reason)
 
 
+class SDXLResidentRuntimeState:
+    def __init__(self) -> None:
+        self._lock = RLock()
+        self._key: SDXLResidentSpineKey | None = None
+        self._spine: Any | None = None
+
+    @staticmethod
+    def _build_key(request: SDXLAssemblyRequest) -> SDXLResidentSpineKey:
+        return SDXLResidentSpineKey(
+            checkpoint_sha256=request.checkpoint.sha256,
+            unet_posture=request.unet_posture.value,
+            device=request.device,
+            dtype="float16",  # resident UNet is fp16
+            scheduler_signature="lcm" if request.scheduler == "lcm" else "standard",
+            unet_lora_signature=_unet_lora_signature(request),
+        )
+
+    def acquire(self, request: SDXLAssemblyRequest, *, lora_worker: Any | None = None) -> Tuple[Any, bool]:
+        requested_key = self._build_key(request)
+        stale_spine: Any | None = None
+
+        with self._lock:
+            # Case 1: Exact key match -> Reuse warm resident spine immediately!
+            if self._spine is not None and self._key == requested_key:
+                self._spine.request = request
+                if lora_worker is not None:
+                    self._spine.lora_worker = lora_worker
+                logger.debug(
+                    "[SDXL Telemetry] Reusing warm resident UNet spine for key=%s",
+                    requested_key,
+                )
+                log_telemetry("resident_spine_warm_reuse", f"checkpoint={request.checkpoint.path.name}")
+                return self._spine, True
+
+            # Case 2: Spine is warm, but there is a key mismatch.
+            # We check if it is ONLY a change in the UNet-side LoRA signature.
+            if self._spine is not None and self._key is not None:
+                structural_match = (
+                    self._key.checkpoint_sha256 == requested_key.checkpoint_sha256
+                    and self._key.unet_posture == requested_key.unet_posture
+                    and self._key.device == requested_key.device
+                    and self._key.dtype == requested_key.dtype
+                    and self._key.scheduler_signature == requested_key.scheduler_signature
+                )
+                if structural_match:
+                    # In-place clean reload and GPU prepatch!
+                    logger.debug(
+                        "[SDXL Telemetry] In-place resident reload/prepatch for LoRA signature change. "
+                        "Old key: %s, New key: %s",
+                        self._key, requested_key
+                    )
+                    log_telemetry("resident_spine_clean_reload_begin", f"checkpoint={request.checkpoint.path.name}")
+                    
+                    try:
+                        # 1. Update requests and workers
+                        self._spine.request = request
+                        from backend.sdxl_assembly.gpu_lora_worker import GpuLoraWorker
+                        if lora_worker is not None:
+                            self._spine.lora_worker = lora_worker
+                        else:
+                            self._spine.lora_worker = GpuLoraWorker(request)
+                        
+                        # 2. Reload clean weights from checkpoint source (restores clean state)
+                        import torch
+                        model = self._spine.unet.model
+                        runtime_reload = getattr(self._spine.unet, "runtime_reload", None)
+                        if callable(runtime_reload):
+                            target_device = torch.device(request.device)
+                            runtime_reload(model, target_device)
+                            model.device = target_device
+                        else:
+                            raise RuntimeError("Resident UNet spine component missing runtime_reload callable.")
+                        
+                        # Clear GpuArtifactCompiler's patcher artifacts
+                        self._spine.unet.patches = {}
+                        self._spine.unet.weight_wrapper_patches = {}
+                        self._spine.unet.backup.clear()
+                        self._spine.unet.object_patches_backup.clear()
+                        self._spine.unet.model.current_weight_patches_uuid = None
+                        
+                        # 3. Patch LCM scheduler if LCM
+                        orig_scheduler = request.scheduler
+                        if orig_scheduler == 'lcm':
+                            from modules import core as modules_core
+                            self._spine.unet = modules_core.opModelSamplingDiscrete.patch(self._spine.unet, orig_scheduler, False)[0]
+                            self._spine.unet.model._nex_resident_scheduler = "lcm"
+                        else:
+                            self._spine.unet.model._nex_resident_scheduler = ""
+
+                        # 4. Materialize and apply new LoRAs to UNet on GPU
+                        self._spine.lora_worker.apply_unet_patches(self._spine.unet)
+                        
+                        # 5. Compile new patches on GPU
+                        self._spine.lora_worker.compile_unet_patches(self._spine.unet)
+                        
+                        # 6. Publish the new key atomically
+                        self._key = requested_key
+                        log_telemetry("resident_spine_clean_reload_complete", f"checkpoint={request.checkpoint.path.name}")
+                        return self._spine, False
+                        
+                    except Exception as exc:
+                        # Reconfiguration failed -> Release spine completely.
+                        logger.error(
+                            "[SDXL Telemetry] Resident in-place reconfiguration failed! "
+                            "Releasing spine completely. Error: %s", exc
+                        )
+                        log_telemetry("resident_spine_load_failure_cleanup", f"error={exc.__class__.__name__}")
+                        stale_spine = self._spine
+                        self._spine = None
+                        self._key = None
+                        if stale_spine is not None:
+                            _release_spine_owned_resources(stale_spine)
+                        raise
+
+            # Case 3: Structural key mismatch (checkpoint, posture, device/dtype, or scheduler).
+            # Release the old owner before loading the new one.
+            stale_spine = self._spine
+            self._spine = None
+            self._key = None
+
+        if stale_spine is not None:
+            logger.debug("[SDXL Telemetry] Releasing stale resident UNet spine before replacement.")
+            _release_spine_owned_resources(stale_spine)
+
+        # Build the new resident spine
+        from backend.sdxl_assembly.resident_unet import ResidentUnetSpine
+        logger.debug(
+            "[SDXL Telemetry] Creating new cached resident UNet spine for key=%s",
+            requested_key,
+        )
+        log_telemetry("resident_spine_load_begin", f"checkpoint={request.checkpoint.path.name}")
+
+        spine = None
+        try:
+            spine = ResidentUnetSpine(request, lora_worker=lora_worker)
+            # This loads and compiles model directly to CUDA
+            spine.start()
+            
+            with self._lock:
+                self._spine = spine
+                self._key = requested_key
+            log_telemetry("resident_spine_load_complete", f"checkpoint={request.checkpoint.path.name}")
+            return spine, False
+        except Exception as exc:
+            log_telemetry("resident_spine_load_failure_cleanup", f"error={exc.__class__.__name__}")
+            if spine is not None:
+                _release_spine_owned_resources(spine)
+            raise
+
+    def release(self, *, reason: str | None = None) -> bool:
+        with self._lock:
+            spine = self._spine
+            key = self._key
+            self._spine = None
+            self._key = None
+
+        if spine is None:
+            return False
+
+        logger.debug(
+            "[SDXL Telemetry] Releasing active resident UNet spine reason=%s key=%s",
+            reason,
+            key,
+        )
+        log_telemetry("resident_spine_release_begin", f"reason={reason or 'unspecified'}")
+        _release_spine_owned_resources(spine)
+        log_telemetry("resident_spine_release_complete", f"reason={reason or 'unspecified'}")
+        return True
+
+    def get_active_key(self) -> SDXLResidentSpineKey | None:
+        with self._lock:
+            return self._key
+
+
+_RESIDENT_RUNTIME_STATE = SDXLResidentRuntimeState()
+
+
+def acquire_active_sdxl_resident_spine(
+    request: SDXLAssemblyRequest,
+    *,
+    lora_worker: Any | None = None,
+) -> Tuple[Any, bool]:
+    return _RESIDENT_RUNTIME_STATE.acquire(request, lora_worker=lora_worker)
+
+
+def release_active_sdxl_resident_spine(reason: str | None = None) -> bool:
+    return _RESIDENT_RUNTIME_STATE.release(reason=reason)
+
+
+def _module_tensor_inventory(module: Any) -> dict[str, Any]:
+    inventory: dict[str, Any] = {
+        "parameter_devices": {},
+        "buffer_devices": {},
+        "parameter_bytes": 0,
+        "buffer_bytes": 0,
+    }
+
+    def add_tensor(bucket: dict[str, int], tensor: Any) -> int:
+        if not hasattr(tensor, "device") or not hasattr(tensor, "numel"):
+            return 0
+        device_key = str(tensor.device)
+        bucket[device_key] = int(bucket.get(device_key, 0)) + 1
+        try:
+            return int(tensor.numel() * tensor.element_size())
+        except Exception:
+            return 0
+
+    named_parameters = getattr(module, "named_parameters", None)
+    if callable(named_parameters):
+        try:
+            for _, tensor in named_parameters(recurse=True):
+                inventory["parameter_bytes"] += add_tensor(inventory["parameter_devices"], tensor)
+        except TypeError:
+            for _, tensor in named_parameters():
+                inventory["parameter_bytes"] += add_tensor(inventory["parameter_devices"], tensor)
+
+    named_buffers = getattr(module, "named_buffers", None)
+    if callable(named_buffers):
+        try:
+            for _, tensor in named_buffers(recurse=True):
+                inventory["buffer_bytes"] += add_tensor(inventory["buffer_devices"], tensor)
+        except TypeError:
+            for _, tensor in named_buffers():
+                inventory["buffer_bytes"] += add_tensor(inventory["buffer_devices"], tensor)
+
+    inventory["model_bytes"] = int(inventory["parameter_bytes"] + inventory["buffer_bytes"])
+    return inventory
+
+
 def debug_component_cache_report() -> Dict[str, Any]:
     """Return coarse component ownership sizes for probe/debug output."""
+    import torch
     report: Dict[str, Any] = {
         "active_spine": False,
         "active_unet_mb": 0.0,
@@ -461,10 +739,20 @@ def debug_component_cache_report() -> Dict[str, Any]:
         "text_cache_mb": 0.0,
         "patched_text_cache_active": False,
         "patched_text_cache_mb": 0.0,
+        "active_resident_spine": False,
+        "clean_shadow_bytes": 0.0,
+        "resident_parameter_devices": {},
+        "resident_buffer_devices": {},
+        "resident_unet_parameter_bytes": 0,
+        "resident_unet_buffer_bytes": 0,
+        "resident_unet_model_bytes": 0,
     }
 
     with _STREAMING_RUNTIME_STATE._lock:
         spine = _STREAMING_RUNTIME_STATE._spine
+
+    with _RESIDENT_RUNTIME_STATE._lock:
+        res_spine = _RESIDENT_RUNTIME_STATE._spine
 
     if spine is not None:
         report["active_spine"] = True
@@ -483,6 +771,38 @@ def debug_component_cache_report() -> Dict[str, Any]:
                 report["active_unet_meta_construction"] = loader_info.get("meta_construction")
                 report["active_unet_stream_chunk_bytes"] = loader_info.get("stream_chunk_bytes")
                 report["active_unet_realized_cpu_mb"] = float(loader_info.get("realized_cpu_bytes", 0)) / (1024 * 1024)
+
+    elif res_spine is not None:
+        report["active_spine"] = True
+        report["active_resident_spine"] = True
+        unet = getattr(res_spine, "unet", None)
+        if unet is not None:
+            model_size = getattr(unet, "model_size", None)
+            if callable(model_size):
+                try:
+                    report["active_unet_mb"] = float(model_size()) / (1024 * 1024)
+                except Exception:
+                    pass
+            report["active_unet_model_id"] = id(getattr(unet, "model", unet))
+            loader_info = getattr(unet, "model_options", {}).get("sdxl_assembly_loader", {})
+            if isinstance(loader_info, dict):
+                report["active_unet_raw_sequential_stream"] = loader_info.get("raw_sequential_stream")
+                report["active_unet_meta_construction"] = loader_info.get("meta_construction")
+                report["active_unet_stream_chunk_bytes"] = loader_info.get("stream_chunk_bytes")
+                report["active_unet_realized_cpu_mb"] = float(loader_info.get("realized_cpu_bytes", 0)) / (1024 * 1024)
+            if hasattr(unet, "model"):
+                inventory = _module_tensor_inventory(unet.model)
+                report["resident_parameter_devices"] = inventory["parameter_devices"]
+                report["resident_buffer_devices"] = inventory["buffer_devices"]
+                report["resident_unet_parameter_bytes"] = inventory["parameter_bytes"]
+                report["resident_unet_buffer_bytes"] = inventory["buffer_bytes"]
+                report["resident_unet_model_bytes"] = inventory["model_bytes"]
+                clean_source = getattr(unet.model, "_nex_clean_unet_source", None)
+                if clean_source is not None:
+                    if isinstance(clean_source, dict):
+                        report["clean_shadow_bytes"] = float(sum(t.numel() * t.element_size() for t in clean_source.values() if isinstance(t, torch.Tensor)))
+                    elif isinstance(clean_source, torch.Tensor):
+                        report["clean_shadow_bytes"] = float(clean_source.numel() * clean_source.element_size())
 
     with _TEXT_ENCODER_COMPONENT_CACHE_LOCK:
         report["text_cache_count"] = len(_TEXT_ENCODER_COMPONENT_CACHE)

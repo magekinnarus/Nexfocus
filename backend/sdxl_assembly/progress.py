@@ -125,11 +125,17 @@ def log_telemetry(event: str, extra_msg: str = "") -> None:
         # Get GPU memory stats if CUDA is available
         vram_total = 0.0
         vram_free = 0.0
+        cuda_allocated = 0
+        cuda_reserved = 0
+        cuda_peak_allocated = 0
         if torch.cuda.is_available():
             try:
                 vram_free_bytes, vram_total_bytes = torch.cuda.mem_get_info()
                 vram_total = float(vram_total_bytes) / (1024 * 1024)
                 vram_free = float(vram_free_bytes) / (1024 * 1024)
+                cuda_allocated = int(torch.cuda.memory_allocated())
+                cuda_reserved = int(torch.cuda.memory_reserved())
+                cuda_peak_allocated = int(torch.cuda.max_memory_allocated())
             except Exception:
                 pass
                 
@@ -139,6 +145,9 @@ def log_telemetry(event: str, extra_msg: str = "") -> None:
             f"ram_used={ram_used:.1f}MB "
             f"vram_total={vram_total:.1f}MB "
             f"vram_free={vram_free:.1f}MB "
+            f"cuda_allocated={cuda_allocated / (1024 * 1024):.1f}MB "
+            f"cuda_reserved={cuda_reserved / (1024 * 1024):.1f}MB "
+            f"cuda_peak_allocated={cuda_peak_allocated / (1024 * 1024):.1f}MB "
             f"proc_rss={proc_rss:.1f}MB"
         )
         
@@ -157,6 +166,9 @@ def log_telemetry(event: str, extra_msg: str = "") -> None:
                 "ram_used_mb": ram_used,
                 "vram_total_mb": vram_total,
                 "vram_free_mb": vram_free,
+                "cuda_allocated_bytes": cuda_allocated,
+                "cuda_reserved_bytes": cuda_reserved,
+                "cuda_peak_allocated_bytes": cuda_peak_allocated,
                 "proc_rss_mb": proc_rss,
             }
         )
