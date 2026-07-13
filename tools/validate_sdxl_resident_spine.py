@@ -382,6 +382,7 @@ def _lora_stack_hash(label: str, specs: tuple[Any, ...]) -> str:
 
 
 def run_validation(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
+    allow_no_lora = bool(getattr(args, "allow_no_lora", False))
     try:
         main_lora_paths = _configured_main_lora_paths(args)
         main_lora_weights = _configured_main_lora_weights(args, len(main_lora_paths))
@@ -398,7 +399,7 @@ def run_validation(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
             return False, {"status": "failed", "error": "CUDA is not available; use --mock for local diagnostics."}
         if not args.checkpoint:
             return False, {"status": "failed", "error": "--checkpoint is required for real W12a field validation."}
-        if not main_lora_paths:
+        if not main_lora_paths and not allow_no_lora:
             return False, {"status": "failed", "error": "At least one --lora or --lora-a path is required for real W12a GPU LoRA evidence."}
         preflight_assets = [("checkpoint", Path(args.checkpoint))]
         preflight_assets.extend((f"lora_{index}", path) for index, path in enumerate(main_lora_paths, start=1))
@@ -424,7 +425,7 @@ def run_validation(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
     checkpoint_path = Path(args.checkpoint or "checkpoint.safetensors")
     checkpoint_identity = _identity(checkpoint_path, fast_identity=args.fast_identity)
 
-    if args.mock and not main_lora_paths:
+    if args.mock and not main_lora_paths and not allow_no_lora:
         main_lora_specs = (SDXLLoraSpec(
             file_identity=_identity(Path("mock_lora_a.safetensors"), fast_identity=True),
             unet_weight=1.0,
@@ -443,6 +444,8 @@ def run_validation(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
     lora_b = None
     if alternate_lora_path is not None:
         lora_b = _make_lora_spec(alternate_lora_path, weight=args.lora_b_weight, fast_identity=args.fast_identity)
+
+    has_lora_stack = bool(main_lora_specs)
 
     events: list[dict[str, Any]] = []
     records: dict[str, Any] = {}
@@ -472,23 +475,24 @@ def run_validation(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
         records["warm_clean"] = _state_record("warm_clean", spine_clean_warm, device, events)
         records["warm_clean"]["reused"] = bool(warm_reused)
 
-        logger.info("Step 3: UNet LoRA stack change through clean reload + GPU prepatch")
-        req_lora_a = _make_request(
-            checkpoint_identity=checkpoint_identity,
-            lora_specs=main_lora_specs,
-            lora_stack_hash=_lora_stack_hash("lora_stack", main_lora_specs),
-            device=str(device),
-        )
-        spine_lora_a, lora_a_reused = acquire_active_sdxl_resident_spine(req_lora_a)
-        spine_lora_a.start()
-        records["lora_a"] = _state_record("lora_a", spine_lora_a, device, events)
-        records["lora_a"]["reused"] = bool(lora_a_reused)
+        if has_lora_stack:
+            logger.info("Step 3: UNet LoRA stack change through clean reload + GPU prepatch")
+            req_lora_a = _make_request(
+                checkpoint_identity=checkpoint_identity,
+                lora_specs=main_lora_specs,
+                lora_stack_hash=_lora_stack_hash("lora_stack", main_lora_specs),
+                device=str(device),
+            )
+            spine_lora_a, lora_a_reused = acquire_active_sdxl_resident_spine(req_lora_a)
+            spine_lora_a.start()
+            records["lora_a"] = _state_record("lora_a", spine_lora_a, device, events)
+            records["lora_a"]["reused"] = bool(lora_a_reused)
 
-        logger.info("Step 4: same LoRA stack warm reuse")
-        spine_lora_a_warm, lora_a_warm_reused = acquire_active_sdxl_resident_spine(req_lora_a)
-        spine_lora_a_warm.start()
-        records["warm_lora_a"] = _state_record("warm_lora_a", spine_lora_a_warm, device, events)
-        records["warm_lora_a"]["reused"] = bool(lora_a_warm_reused)
+            logger.info("Step 4: same LoRA stack warm reuse")
+            spine_lora_a_warm, lora_a_warm_reused = acquire_active_sdxl_resident_spine(req_lora_a)
+            spine_lora_a_warm.start()
+            records["warm_lora_a"] = _state_record("warm_lora_a", spine_lora_a_warm, device, events)
+            records["warm_lora_a"]["reused"] = bool(lora_a_warm_reused)
 
         if lora_b is not None:
             logger.info("Step 5: optional second UNet LoRA stack change")
@@ -503,11 +507,12 @@ def run_validation(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
             records["lora_b"] = _state_record("lora_b", spine_lora_b, device, events)
             records["lora_b"]["reused"] = bool(lora_b_reused)
 
-        logger.info("Step 6: LoRA removal back to clean identity")
-        spine_removed, removal_reused = acquire_active_sdxl_resident_spine(req_clean)
-        spine_removed.start()
-        records["lora_removed"] = _state_record("lora_removed", spine_removed, device, events)
-        records["lora_removed"]["reused"] = bool(removal_reused)
+        if has_lora_stack or lora_b is not None:
+            logger.info("Step 6: LoRA removal back to clean identity")
+            spine_removed, removal_reused = acquire_active_sdxl_resident_spine(req_clean)
+            spine_removed.start()
+            records["lora_removed"] = _state_record("lora_removed", spine_removed, device, events)
+            records["lora_removed"]["reused"] = bool(removal_reused)
 
         logger.info("Step 7: explicit resident release")
         before_release_memory = _memory_snapshot("before_release", device)
@@ -522,7 +527,7 @@ def run_validation(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
         }
 
     counts = _event_counts(events)
-    lora_compile_metrics = records["lora_a"].get("lora_compile_metrics", {})
+    lora_compile_metrics = records.get("lora_a", {}).get("lora_compile_metrics", {})
     lora_patch_count = int(lora_compile_metrics.get("patch_count", 0) or 0)
     clean_shadow_values = [int(record.get("clean_shadow_bytes", 0) or 0) for record in records.values()]
     cold_report = records["cold_clean"]["cache_report"]
@@ -543,16 +548,6 @@ def run_validation(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
             )
         ),
         "same_clean_stack_reused": records["warm_clean"]["reused"] is True,
-        "lora_change_reused_same_spine_object": (
-            records["lora_a"]["spine_id"] == records["cold_clean"]["spine_id"]
-            and records["lora_a"]["reused"] is False
-        ),
-        "same_lora_stack_reused": records["warm_lora_a"]["reused"] is True,
-        "lora_compile_produced_unet_patches": lora_patch_count > 0,
-        "lora_removal_reused_same_spine_object": (
-            records["lora_removed"]["spine_id"] == records["cold_clean"]["spine_id"]
-            and records["lora_removed"]["reused"] is False
-        ),
         "explicit_release_cleared_resident_spine": not bool(
             (release_after.get("cache_report_after") or {}).get("active_resident_spine")
         ),
@@ -560,16 +555,34 @@ def run_validation(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
         "linux_runtime": platform.system().lower() == "linux",
     }
 
-    field_acceptance_ready = (not args.mock) and all(checks.values())
+    if has_lora_stack:
+        checks.update(
+            {
+                "lora_change_reused_same_spine_object": (
+                    records["lora_a"]["spine_id"] == records["cold_clean"]["spine_id"]
+                    and records["lora_a"]["reused"] is False
+                ),
+                "same_lora_stack_reused": records["warm_lora_a"]["reused"] is True,
+                "lora_compile_produced_unet_patches": lora_patch_count > 0,
+                "lora_removal_reused_same_spine_object": (
+                    records["lora_removed"]["spine_id"] == records["cold_clean"]["spine_id"]
+                    and records["lora_removed"]["reused"] is False
+                ),
+            }
+        )
+
+    scenario_acceptance_ready = all(checks.values())
+    field_acceptance_ready = (not args.mock) and has_lora_stack and scenario_acceptance_ready
     mock_rehearsal_ready = bool(
         args.mock
         and all(value for key, value in checks.items() if key != "linux_runtime")
     )
 
     summary = {
-        "status": "completed" if field_acceptance_ready or mock_rehearsal_ready else "incomplete",
+        "status": "completed" if field_acceptance_ready or mock_rehearsal_ready or scenario_acceptance_ready else "incomplete",
         "mock": bool(args.mock),
         "run_name": args.run_name,
+        "scenario_kind": "lora_stack" if has_lora_stack else "unet_only",
         "environment": {
             "python": sys.version,
             "platform": platform.platform(),
@@ -589,10 +602,11 @@ def run_validation(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
         "telemetry_event_counts": counts,
         "telemetry_tail": events[-20:],
         "acceptance_checks": checks,
+        "scenario_acceptance_ready": scenario_acceptance_ready,
         "field_acceptance_ready": field_acceptance_ready,
         "mock_rehearsal_ready": mock_rehearsal_ready,
     }
-    return bool(field_acceptance_ready or mock_rehearsal_ready), summary
+    return bool(field_acceptance_ready or mock_rehearsal_ready or scenario_acceptance_ready), summary
 
 
 def main() -> int:
@@ -601,6 +615,7 @@ def main() -> int:
     parser.add_argument("--checkpoint", help="Path to an SDXL safetensors checkpoint for real validation.")
     parser.add_argument("--lora", dest="lora_paths", action="append", help="UNet-targeting safetensors LoRA path. Repeat to validate a multi-LoRA stack.")
     parser.add_argument("--lora-weight", dest="lora_weights", action="append", type=float, help="Weight for each repeated --lora path. Defaults to 1.0 for each LoRA.")
+    parser.add_argument("--allow-no-lora", action="store_true", help="Run a UNet-only telemetry scenario without LoRA acceptance checks.")
     parser.add_argument("--lora-a", help="Path to a UNet-targeting safetensors LoRA for stack-change validation.")
     parser.add_argument("--lora-b", help="Optional second UNet-targeting safetensors LoRA for A->B stack-change validation.")
     parser.add_argument("--lora-a-weight", type=float, default=1.0)
