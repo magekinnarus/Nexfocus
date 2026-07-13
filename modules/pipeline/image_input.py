@@ -335,6 +335,7 @@ def apply_upscale(task_state, progressbar_callback=None):
         uov_input_image,
         model_name=task_state.upscale_model if task_state.upscale_model != "None" else None,
         scale_override=task_state.upscale_scale_override if task_state.upscale_scale_override > 0 else None,
+        tile_size=getattr(task_state, 'upscale_gan_tile_size', 256),
     )
     print(f'Image upscaled via GAN to {str(uov_input_image.shape[:2])}.')
 

@@ -381,6 +381,30 @@ def _sdxl_identity_components(key: ProcessKey | None) -> tuple[Any | None, Any |
     return checkpoint_identity, clip_identity, lora_identity
 
 
+def _resolve_process_checkpoint_label(key: ProcessKey | None) -> Any | None:
+    if key is None:
+        return None
+
+    identity = getattr(key, "authoritative_identity", None)
+    if key.family == PROCESS_FAMILY_SDXL:
+        if isinstance(identity, (tuple, list)) and len(identity) > 0:
+            return identity[0]
+        return identity
+
+    if key.family == PROCESS_FAMILY_FLUX_FILL:
+        if isinstance(identity, (tuple, list)):
+            for item in identity:
+                if (
+                    isinstance(item, (tuple, list))
+                    and len(item) >= 2
+                    and str(item[0]).strip().lower() == "unet_path"
+                ):
+                    return item[1]
+        return PROCESS_FAMILY_FLUX_FILL
+
+    return identity
+
+
 def classify_sdxl_process_key_changes(
     current_key: ProcessKey | None,
     requested_key: ProcessKey | None,
@@ -521,7 +545,11 @@ def _is_auxiliary_only_route(route, task_state) -> bool:
 
 def resolve_requested_process_key(task_state, route) -> ProcessKey | None:
     selected_engine = normalize_objr_engine(getattr(task_state, 'objr_engine', None))
-    expects_flux_process = route.family == 'flux_fill' or selected_engine == OBJR_ENGINE_FLUX_FILL
+    route_id = str(getattr(route, 'route_id', '') or '').strip().lower()
+    expects_flux_process = (
+        route.family == 'flux_fill'
+        or (route_id in {'removal', 'flux_removal'} and selected_engine == OBJR_ENGINE_FLUX_FILL)
+    )
     if expects_flux_process:
         return resolve_flux_fill_process_key(
             task_state,
@@ -543,15 +571,35 @@ def release_process_boundary(current_key: ProcessKey | None, requested_key: Proc
         return None
 
     if current_key.family == PROCESS_FAMILY_FLUX_FILL:
+        import backend.resources as resources
         from backend.flux_fill_v3 import (
             release_active_flux_resident_spine,
             release_flux_latent_artifacts,
         )
 
-        released_spine = release_active_flux_resident_spine(reason='route_transition')
-        released_artifacts = release_flux_latent_artifacts()
+        release_state = {
+            'released_spine': False,
+            'released_artifacts': False,
+        }
+
+        def _release_callback() -> None:
+            release_state['released_spine'] = bool(
+                release_active_flux_resident_spine(reason='route_transition')
+            )
+            release_state['released_artifacts'] = bool(release_flux_latent_artifacts())
+
+        resources.prepare_for_checkpoint_switch(
+            current_model=_resolve_process_checkpoint_label(current_key),
+            next_model=_resolve_process_checkpoint_label(requested_key),
+            release_callback=_release_callback,
+            notes={
+                'reason': 'route_transition',
+                'current_process_key': describe_process_key(current_key),
+                'next_process_key': describe_process_key(requested_key),
+            },
+        )
         return {
-            'released': released_spine or released_artifacts,
+            'released': release_state['released_spine'] or release_state['released_artifacts'],
             'reason': 'greenfield_flux_route_transition',
             'hard_reset': False,
             'current_process_key': current_key,
@@ -565,8 +613,8 @@ def release_process_boundary(current_key: ProcessKey | None, requested_key: Proc
         import backend.resources as resources
         from backend import sdxl_unified_runtime
 
-        current_model_name = getattr(current_key, 'authoritative_identity', (None,))[0] if getattr(current_key, 'authoritative_identity', None) else None
-        next_model_name = getattr(requested_key, 'authoritative_identity', (None,))[0] if getattr(requested_key, 'authoritative_identity', None) else None
+        current_model_name = _resolve_process_checkpoint_label(current_key)
+        next_model_name = _resolve_process_checkpoint_label(requested_key)
 
         def _release_callback():
             teardown = (requested_key is None or requested_key.family != PROCESS_FAMILY_SDXL)

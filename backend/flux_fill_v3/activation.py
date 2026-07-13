@@ -109,7 +109,7 @@ def _resolve_flux_fill_prompt_text(task_state: Any) -> str:
     except Exception:
         pass
 
-    if runtime_route_id == "removal":
+    if runtime_route_id in {"removal", "flux_removal"}:
         return remove_prompt
     if runtime_route_id == "flux_inpaint":
         return merged_inpaint_prompt

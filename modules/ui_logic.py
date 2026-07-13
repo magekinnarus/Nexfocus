@@ -400,12 +400,12 @@ def expand_mask(outpaint_selections, inpaint_mask_image):
 def uov_method_change(method):
     if method == 'Super-Upscale':
         # Super-Upscale now refines a provided pre-upscaled target directly.
-        return gr.update(visible=True), gr.update(interactive=False, visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=True), gr.update(visible=False)
+        return gr.update(visible=True), gr.update(interactive=False, visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=True), gr.update(visible=False), gr.update(visible=False)
     if method in {'Color Enhancement', 'Color-Enhanced-Upscale'}:
         # Color enhancement consumes a required existing GAN donor; it never
         # admits an upscaler model. The main negative prompt remains shared.
-        return gr.update(visible=False), gr.update(interactive=False, visible=False), gr.update(visible=False), gr.update(visible=True), gr.update(visible=True), gr.update(visible=False)
-    return gr.update(visible=False), gr.update(interactive=True, visible=True), gr.update(visible=True), gr.update(visible=False), gr.update(visible=False), gr.update(visible=True)
+        return gr.update(visible=False), gr.update(interactive=False, visible=False), gr.update(visible=False), gr.update(visible=True), gr.update(visible=True), gr.update(visible=False), gr.update(visible=False)
+    return gr.update(visible=False), gr.update(interactive=True, visible=True), gr.update(visible=True), gr.update(visible=False), gr.update(visible=False), gr.update(visible=True), gr.update(visible=True)
 
 def update_upscale_scale_info(image_path, model_name, scale_override):
     if image_path is None:
@@ -1147,7 +1147,7 @@ def register_all_events(ctrls_dict, currentTask_component, ui_elements):
     ip_tab.select(lambda: 'ip', outputs=current_tab, queue=False, js=down_js, show_progress=False)
     metadata_tab.select(lambda: 'metadata', outputs=current_tab, queue=False, js=down_js, show_progress=False)
 
-    uov_method.change(uov_method_change, inputs=uov_method, outputs=[upscale_refinement_container, upscale_model, upscale_scale_override, upscale_prompt, upscale_gan_output_container, upscale_scale_info], queue=False, show_progress=False)
+    uov_method.change(uov_method_change, inputs=uov_method, outputs=[upscale_refinement_container, upscale_model, upscale_scale_override, upscale_prompt, upscale_gan_output_container, upscale_scale_info, upscale_gan_tile_size], queue=False, show_progress=False)
 
     uov_input_image.change(update_upscale_scale_info, inputs=[uov_input_image, upscale_model, upscale_scale_override], outputs=upscale_scale_info, queue=False, show_progress=False)
     upscale_model.change(update_upscale_scale_info, inputs=[uov_input_image, upscale_model, upscale_scale_override], outputs=upscale_scale_info, queue=False, show_progress=False)
@@ -1392,7 +1392,7 @@ def get_tasks(*args):
     task_args['requested_route_family'] = requested_intent.route_family
 
     frozen_goals = []
-    if requested_intent.route_id == 'removal':
+    if requested_intent.route_id in {'removal', 'flux_removal'}:
         if bool(task_args.get('remove_bg_enabled', False)):
             frozen_goals.append(flags.remove_bg)
         if bool(task_args.get('remove_obj_enabled', False)):

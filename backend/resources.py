@@ -454,7 +454,21 @@ def teardown_runtime_family(family: str, reason: str = None) -> None:
         except Exception:
             logging.debug("Failed to clear SDXL component cache during teardown", exc_info=True)
     elif family == "flux_fill":
-        logging.debug("Flux Fill legacy runtime is archived; explicit teardown is a no-op.")
+        try:
+            from backend.flux_fill_v3 import (
+                release_active_flux_resident_spine,
+                release_flux_latent_artifacts,
+            )
+
+            released_spine = release_active_flux_resident_spine(reason=reason or "explicit_teardown")
+            released_artifacts = release_flux_latent_artifacts()
+            logging.debug(
+                "Flux Fill teardown released spine=%s artifacts=%s",
+                released_spine,
+                released_artifacts,
+            )
+        except Exception:
+            logging.debug("Failed to release Flux Fill runtime during teardown", exc_info=True)
 
     # 3. Offload all weights from GPU
     unload_all_models()

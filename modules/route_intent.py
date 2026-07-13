@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from modules.flux_fill_surface import normalize_flux_fill_inpaint_route
+from modules.flux_fill_surface import (
+    OBJR_ENGINE_FLUX_FILL,
+    normalize_flux_fill_inpaint_route,
+    normalize_objr_engine,
+)
 
 _DISABLED_VALUE = "Disabled"
 _REMOVE_BG_GOAL = "remove_bg"
@@ -16,6 +20,7 @@ _KNOWN_ROUTE_FAMILIES = {
     "outpaint": "image_input",
     "flux_inpaint": "flux_fill",
     "removal": "removal",
+    "flux_removal": "flux_fill",
 }
 
 
@@ -145,8 +150,13 @@ def resolve_route_intent(state, *, prefer_runtime_route: bool = False) -> RouteI
     route_id = "txt2img"
     route_family = "txt2img"
     if wants_removal:
-        route_id = "removal"
-        route_family = "removal"
+        selected_engine = normalize_objr_engine(getattr(state, "objr_engine", ""))
+        if selected_engine == OBJR_ENGINE_FLUX_FILL and remove_obj_enabled:
+            route_id = "flux_removal"
+            route_family = "flux_fill"
+        else:
+            route_id = "removal"
+            route_family = "removal"
     elif wants_upscale:
         if wants_color_enhancement:
             route_id = "color_enhanced_upscale"
@@ -169,7 +179,7 @@ def resolve_route_intent(state, *, prefer_runtime_route: bool = False) -> RouteI
     if requested_route_id and requested_route_family is not None:
         route_id = requested_route_id
         route_family = requested_route_family
-        wants_removal = route_id == "removal"
+        wants_removal = route_id in {"removal", "flux_removal"}
         wants_upscale = route_id in {"upscale", "super_upscale", "color_enhanced_upscale"}
         wants_outpaint = route_id == "outpaint"
         wants_flux_inpaint = route_id == "flux_inpaint"
@@ -181,7 +191,7 @@ def resolve_route_intent(state, *, prefer_runtime_route: bool = False) -> RouteI
         if runtime_route_id and runtime_route_family is not None:
             route_id = runtime_route_id
             route_family = runtime_route_family
-            wants_removal = route_id == "removal"
+            wants_removal = route_id in {"removal", "flux_removal"}
             wants_upscale = route_id in {"upscale", "super_upscale", "color_enhanced_upscale"}
             wants_outpaint = route_id == "outpaint"
             wants_flux_inpaint = route_id == "flux_inpaint"

@@ -130,6 +130,7 @@ with shared.gradio_root:
                                 upscale_model = gr.Dropdown(label='Upscale Model', choices=['None'], value='None')
                                 upscale_scale_info = gr.HTML(value="<b>Scale:</b> Auto-detecting...", elem_id='upscale_scale_info')
                                 upscale_scale_override = gr.Slider(label='Scale Override', minimum=0.0, maximum=8.0, step=0.1, value=0.0, info='Set to 0.0 to use model default scale.')
+                                upscale_gan_tile_size = gr.Slider(label='GAN Tiling Size', minimum=256, maximum=1024, step=64, value=256, info='Explicit tile size for direct GAN upscale. Uses a 256px safe floor and 64px increments.')
                                 upscale_prompt = gr.Textbox(label='Color Enhancement Prompt (optional)', placeholder='Optional color/style prompt for Color Enhancement.', visible=False)
 
                                 with gr.Group(visible=False) as upscale_refinement_container:
@@ -588,6 +589,7 @@ with shared.gradio_root:
             'upscale_scale_override': upscale_scale_override,
             'upscale_prompt': upscale_prompt,
             'upscale_gan_output_image': upscale_gan_output_path,
+            'upscale_gan_tile_size': upscale_gan_tile_size,
             'upscale_refinement_denoise': upscale_refinement_denoise,
             'upscale_refinement_tile_overlap': upscale_refinement_tile_overlap,
             'outpaint_selections': outpaint_selections,

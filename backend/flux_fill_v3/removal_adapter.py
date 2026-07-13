@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 
 import numpy as np
 from PIL import Image
@@ -9,8 +10,10 @@ from backend import resources
 from backend import environment_profile as environment_profiles
 from backend.flux_fill_v3.activation import (
     resolve_flux_fill_assets,
+    resolve_flux_fill_process_key,
     resolve_flux_fill_request_t5_posture,
     resolve_flux_fill_spine_kind,
+    sync_flux_fill_process_activation,
 )
 from backend.flux_fill_v3.contracts import (
     FluxFillCategory,
@@ -48,6 +51,25 @@ def _should_force_flux_host_cleanup() -> bool:
         )
     except Exception:
         return False
+
+
+def _publish_flux_removal_runtime(context, task_state) -> None:
+    try:
+        from modules.flux_fill_surface import OBJR_ENGINE_FLUX_FILL
+
+        requested_key = resolve_flux_fill_process_key(
+            task_state,
+            route_family="flux_fill",
+            selected_engine=OBJR_ENGINE_FLUX_FILL,
+        )
+        route_id = str(getattr(context, "route_id", "") or "flux_removal")
+        sync_flux_fill_process_activation(
+            SimpleNamespace(route_id=route_id),
+            task_state,
+            requested_key,
+        )
+    except Exception:
+        logger.debug("Failed to publish Flux removal runtime ownership.", exc_info=True)
 
 
 def execute_flux_fill_removal(context, *, progress_percent_start: int = 10):
@@ -141,6 +163,7 @@ def execute_flux_fill_removal(context, *, progress_percent_start: int = 10):
 
         director = FluxAssemblyDirector()
         assembly = director.select_assembly(req)
+        _publish_flux_removal_runtime(context, task_state)
         result = assembly.execute(req, callback=callback)
 
         resources.cleanup_memory(

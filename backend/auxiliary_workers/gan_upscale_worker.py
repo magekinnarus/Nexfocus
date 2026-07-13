@@ -83,7 +83,7 @@ class GanUpscaleWorker:
                 return int(value)
         return 4
 
-    def infer(self, img: np.ndarray, scale_override: float | None = None) -> np.ndarray:
+    def infer(self, img: np.ndarray, scale_override: float | None = None, tile_size: int | None = None) -> np.ndarray:
         """
         Run upscale inference using the loaded model.
         """
@@ -149,6 +149,7 @@ class GanUpscaleWorker:
                 dtype=m_dtype,
                 model_params=model_parameters,
                 architecture_id=architecture_id,
+                tile_size=tile_size,
             )
         finally:
             # The worker, not the caller, owns device detachment on every path.
@@ -201,6 +202,7 @@ def run_gan_upscale(
     *,
     model_name: str | None = None,
     scale_override: float | None = None,
+    tile_size: int | None = None,
 ) -> np.ndarray | None:
     """Run one strictly ephemeral GAN worker inside an auxiliary lease."""
     if img is None:
@@ -210,6 +212,10 @@ def run_gan_upscale(
         worker = GanUpscaleWorker()
         try:
             worker.load(model_name)
+            import inspect
+            sig_params = inspect.signature(worker.infer).parameters
+            if 'tile_size' in sig_params:
+                return worker.infer(img, scale_override=scale_override, tile_size=tile_size)
             return worker.infer(img, scale_override=scale_override)
         finally:
             worker.teardown()

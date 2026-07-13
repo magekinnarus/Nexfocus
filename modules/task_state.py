@@ -36,6 +36,7 @@ class TaskState:
     upscale_scale_override: float = 0
     upscale_prompt: str = ""
     upscale_gan_output_image: Optional[Union[np.ndarray, str]] = None
+    upscale_gan_tile_size: int = 256
     upscale_diffusion_refinement: bool = False
     upscale_refinement_tile_overlap: int = 128
     upscale_refinement_denoise: float = 0.3

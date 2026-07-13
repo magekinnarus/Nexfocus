@@ -118,8 +118,9 @@ def _resolve_task_display_fields(state) -> dict:
     base_model_name = _normalize_text(getattr(state, "base_model_name", ""))
     seed = getattr(state, "seed", "")
     goals = set(getattr(state, "goals", []) or [])
-    remove_bg_enabled = bool(getattr(state, "remove_bg_enabled", False) or (flags.remove_bg in goals))
-    remove_obj_enabled = bool(getattr(state, "remove_obj_enabled", False) or (flags.remove_obj in goals))
+    is_removal = _is_removal_request(state)
+    remove_bg_enabled = is_removal and bool(getattr(state, "remove_bg_enabled", False) or (flags.remove_bg in goals))
+    remove_obj_enabled = is_removal and bool(getattr(state, "remove_obj_enabled", False) or (flags.remove_obj in goals))
     current_tab = _normalize_text(getattr(state, "current_tab", "")).lower()
     runtime_route_id = _normalize_text(getattr(state, "runtime_route_id", "")).lower()
 
@@ -130,12 +131,13 @@ def _resolve_task_display_fields(state) -> dict:
     model_name = base_model_name
     show_prompt = bool(prompt_text)
 
-    if _is_removal_request(state):
+    if is_removal:
         selected_engine = _normalize_objr_engine_name(getattr(state, "objr_engine", ""))
         prompt_text = _normalize_text(getattr(state, "remove_prompt", ""))
         prompt_label = "Remove Prompt"
         model_label = "Engine"
         show_prompt = bool(prompt_text)
+        is_flux_remove = (runtime_route_id == "flux_removal" or "Flux Fill" in selected_engine)
         if remove_bg_enabled and remove_obj_enabled:
             workflow_name = "Background + Object Removal"
             model_name = f"Background Removal + {selected_engine}"
@@ -143,7 +145,7 @@ def _resolve_task_display_fields(state) -> dict:
             workflow_name = "Background Removal"
             model_name = "Background Removal"
         else:
-            workflow_name = "Flux Fill Object Removal" if "Flux Fill" in selected_engine else "Object Removal"
+            workflow_name = "Flux Fill Object Removal" if is_flux_remove else "Object Removal"
             model_name = selected_engine
     elif _is_upscale_request(state):
         method = _normalize_text(getattr(state, "uov_method", "")).lower()

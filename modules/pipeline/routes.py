@@ -1294,7 +1294,8 @@ class RemovalStage(PipelineStage):
         task_state.inpaint_context = None
         selected_engine = normalize_objr_engine(task_state.objr_engine)
         use_flux_fill_removal_adapter = (
-            selected_engine == OBJR_ENGINE_FLUX_FILL and flags.remove_obj in task_state.goals
+            getattr(context, 'route_id', None) == 'flux_removal'
+            or (selected_engine == OBJR_ENGINE_FLUX_FILL and flags.remove_obj in task_state.goals)
         )
         aggressive_flux_remove_cleanup = (
             use_flux_fill_removal_adapter and _should_aggressively_cleanup_flux_remove(task_state)
@@ -1417,12 +1418,20 @@ def build_generation_route(task_state) -> PipelineRoute:
     expects_controlnet = intent.expects_controlnet
 
     if intent.wants_removal:
-        return PipelineRoute(
-            route_id='removal',
-            family='removal',
-            display_name='Removal',
-            stages=[RemovalStage()],
-        )
+        if intent.route_id == 'flux_removal':
+            return PipelineRoute(
+                route_id='flux_removal',
+                family='flux_fill',
+                display_name='Flux Remove',
+                stages=[RemovalStage()],
+            )
+        else:
+            return PipelineRoute(
+                route_id='removal',
+                family='removal',
+                display_name='Removal',
+                stages=[RemovalStage()],
+            )
 
     if intent.wants_upscale:
         route_id = intent.route_id

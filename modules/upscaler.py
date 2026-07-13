@@ -90,9 +90,13 @@ def perform_upscale(img, model_name=None, scale_override=None, retain_warm=False
         return None
 
     from backend.auxiliary_workers.gan_upscale_worker import run_gan_upscale
+    import modules.async_worker as worker
+    active_task = worker.get_active_task()
+    tile_size = getattr(active_task.state, "upscale_gan_tile_size", 256) if active_task and hasattr(active_task, "state") else 256
 
     return run_gan_upscale(
         img,
         model_name=model_name,
         scale_override=scale_override,
+        tile_size=tile_size,
     )

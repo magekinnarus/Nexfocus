@@ -202,6 +202,8 @@ def _release_route_runtime_state(task_state):
 @torch.inference_mode()
 def handler(async_task: AsyncTask):
     async_task.last_stop = False
+    import backend.resources as resources_backend
+    resources_backend.interrupt_current_processing(False)
     task_state = async_task.state
     task_state.processing = True
     task_state.current_progress = 0

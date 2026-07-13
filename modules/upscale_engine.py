@@ -8,6 +8,10 @@ import gc
 import time
 import backend.resources as resources
 import backend.utils as backend_utils
+from modules.upscale_tile_policy import (
+    GAN_TILE_SIZE_MIN,
+    normalize_gan_tile_size,
+)
 
 
 _GIB = 1024 ** 3
@@ -38,7 +42,7 @@ def select_best_tile_size(width: int, height: int, max_safe_tile: int, overlap: 
     Ties prefer the larger tile so transformer upscalers pay less per-call
     dispatch overhead. Counts come from the same splitter used by inference.
     """
-    floor = 256
+    floor = GAN_TILE_SIZE_MIN
     ceil = max(floor, min(1024, int(max_safe_tile)))
     candidates = []
     for tile_size in range(floor, ceil + 1, 64):
@@ -150,7 +154,8 @@ class NexUpscaleEngine:
     @torch.inference_mode()
     def process(self, img: np.ndarray, upscale_fn: Callable[[torch.Tensor], torch.Tensor], 
                 scale: int, device: torch.device, is_bgr: bool = True, dtype: torch.dtype = None,
-                model_params: int | None = None, architecture_id: str | None = None):
+                model_params: int | None = None, architecture_id: str | None = None,
+                tile_size: int | None = None):
         
         m_dtype = dtype or torch.float32
         resources.begin_memory_phase('upscale', notes={'scale': scale, 'device': str(device)})
@@ -171,38 +176,54 @@ class NexUpscaleEngine:
                 oh, ow = h * scale, w * scale
 
                 # Optimized Hardware-Aware Tiling
-                tile_size = 512
+                tile_size_val = 512
                 overlap = 32
 
                 if 'cuda' in device.type:
-                    try:
-                        free, total = torch.cuda.mem_get_info(device)
-                        usable_vram = free * 0.45
-
-                        # Heavy models need larger safety margins than ESRGAN-lite style models.
-                        resolved_model_params = int(model_params or (16 * 1024 * 1024))
-
-                        safety_multiplier = max(800, int(resolved_model_params / 53248))
-                        pixel_size = 2 if m_dtype == torch.float16 else 4
-                        est_pixels = usable_vram / (pixel_size * safety_multiplier)
-                        max_safe_tile = int(est_pixels ** 0.5)
-                        max_safe_tile = cap_tile_for_hardware(
-                            max_safe_tile,
-                            total_vram=total,
-                            model_params=resolved_model_params,
-                            architecture_id=architecture_id,
-                        )
-
-                        tile_size, x_count, y_count = select_best_tile_size(w, h, max_safe_tile, overlap)
-                        arch_label = architecture_id or 'unknown'
+                    if tile_size is not None:
+                        # Direct user-controlled tile size. Normalize onto the
+                        # supported ladder and use that rung directly.
+                        tile_size_val = normalize_gan_tile_size(tile_size)
+                        x_count = len(split_into_segments(int(w), tile_size_val, overlap))
+                        y_count = len(split_into_segments(int(h), tile_size_val, overlap))
                         print(
-                            f'[Nex-Engine] VRAM: {free//1024**2}MB | Best-Fit Tile: {tile_size} '
-                            f'| Grid: {x_count}x{y_count} ({x_count * y_count} calls) '
-                            f'| Precision: {m_dtype} | Architecture: {arch_label} '
-                            f'| Parameters: {resolved_model_params}'
+                            f'[Nex-Engine] User-Controlled Tile: {tile_size_val} '
+                            f'| Grid: {x_count}x{y_count} ({x_count * y_count} calls) | Precision: {m_dtype}'
                         )
-                    except Exception:
-                        pass
+                    else:
+                        try:
+                            free, total = torch.cuda.mem_get_info(device)
+                            usable_vram = free * 0.45
+
+                            # Heavy models need larger safety margins than ESRGAN-lite style models.
+                            resolved_model_params = int(model_params or (16 * 1024 * 1024))
+
+                            safety_multiplier = max(800, int(resolved_model_params / 53248))
+                            pixel_size = 2 if m_dtype == torch.float16 else 4
+                            est_pixels = usable_vram / (pixel_size * safety_multiplier)
+                            max_safe_tile = int(est_pixels ** 0.5)
+                            max_safe_tile = cap_tile_for_hardware(
+                                max_safe_tile,
+                                total_vram=total,
+                                model_params=resolved_model_params,
+                                architecture_id=architecture_id,
+                            )
+
+                            tile_size_val, x_count, y_count = select_best_tile_size(w, h, max_safe_tile, overlap)
+                            arch_label = architecture_id or 'unknown'
+                            print(
+                                f'[Nex-Engine] VRAM: {free//1024**2}MB | Best-Fit Tile: {tile_size_val} '
+                                f'| Grid: {x_count}x{y_count} ({x_count * y_count} calls) '
+                                f'| Precision: {m_dtype} | Architecture: {arch_label} '
+                                f'| Parameters: {resolved_model_params}'
+                            )
+                        except Exception:
+                            pass
+                else:
+                    if tile_size is not None:
+                        tile_size_val = normalize_gan_tile_size(tile_size)
+
+                tile_size = tile_size_val
 
                 if h <= tile_size and w <= tile_size:
                     start_t = time.time()
@@ -225,9 +246,9 @@ class NexUpscaleEngine:
                             )
                             break
                         except torch.cuda.OutOfMemoryError:
-                            if device.type != 'cuda' or attempted_tile <= 256:
+                            if device.type != 'cuda' or attempted_tile <= GAN_TILE_SIZE_MIN:
                                 raise
-                            next_tile = max(256, attempted_tile - 64)
+                            next_tile = max(GAN_TILE_SIZE_MIN, attempted_tile - 64)
                             print(
                                 f'[Nex-Engine] CUDA OOM at tile {attempted_tile}; '
                                 f'retrying with tile {next_tile}.'

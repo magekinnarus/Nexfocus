@@ -14,6 +14,7 @@ from modules.flux_fill_surface import (
     OBJR_ENGINE_MAT,
     normalize_flux_fill_blend_mode,
 )
+from modules.upscale_tile_policy import normalize_gan_tile_size
 
 @dataclass
 class ParamDef:
@@ -88,6 +89,7 @@ PARAM_REGISTRY: List[ParamDef] = [
     ParamDef('upscale_scale_override', 'upscale_scale_override', 0, float),
     ParamDef('upscale_prompt', 'upscale_prompt', '', str),
     ParamDef('upscale_gan_output_image', 'upscale_gan_output_image', None),
+    ParamDef('upscale_gan_tile_size', 'upscale_gan_tile_size', 256, normalize_gan_tile_size),
     ParamDef('upscale_refinement_tile_overlap', 'upscale_refinement_tile_overlap', 128, int),
     ParamDef('upscale_refinement_denoise', 'upscale_refinement_denoise', 0.3, float),
 
