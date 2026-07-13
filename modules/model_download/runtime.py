@@ -36,7 +36,8 @@ def download_file(
     os.makedirs(model_dir, exist_ok=True)
 
     destination = os.path.abspath(os.path.join(model_dir, file_name))
-    if os.path.exists(destination):
+    partial_download = os.path.exists(f'{destination}.aria2')
+    if os.path.exists(destination) and not partial_download:
         return destination
 
     if prefer_aria2 and shutil.which('aria2c'):
@@ -50,6 +51,9 @@ def download_file(
         except Exception as exc:
             print(f"Aria2 download failed for {url}: {exc}. Falling back to the Python downloader.")
             _cleanup_partial_download(destination)
+
+    if partial_download:
+        _cleanup_partial_download(destination)
 
     return load_file_from_url(
         url=url,
