@@ -236,4 +236,11 @@ def release_active_flux_resident_spine(*args, **kwargs) -> bool:
     except Exception:
         pass
 
+    if released_streaming or released_resident:
+        try:
+            from backend.host_cache import flush_pinned_host_cache
+            flush_pinned_host_cache()
+        except Exception:
+            pass
+
     return released_streaming or released_resident or released_t5
