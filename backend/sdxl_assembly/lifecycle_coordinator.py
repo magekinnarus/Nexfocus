@@ -348,6 +348,15 @@ def release_domains(
             _release_contextual_cn(errors)
 
     gc.collect()
+
+    # Flush host-pinned memory cache on model/family transitions
+    if any(d == LifecycleDomain.MODEL_PROMPT for d in plan.domains):
+        try:
+            from backend.host_cache import flush_pinned_host_cache
+            flush_pinned_host_cache()
+        except Exception as exc:
+            logger.debug("[SDXL Telemetry] Failed to flush pinned host cache: %s", exc)
+
     result = LifecycleReleaseResult(plan=plan, errors=tuple(errors))
     if raise_on_error and errors:
         first = errors[0]

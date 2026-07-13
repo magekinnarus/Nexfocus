@@ -47,6 +47,13 @@ def _normalize_flux_fill_runtime_posture_value(value: Any) -> str:
     return 'auto'
 
 
+def _normalize_sdxl_assembly_posture_value(value: Any) -> str:
+    normalized = str(value or 'auto').strip().lower().replace('-', '_').replace(' ', '_')
+    if normalized == 'streaming':
+        return 'streaming'
+    return 'auto'
+
+
 def _normalize_flux_fill_t5_posture_value(value: Any) -> str:
     normalized = str(value or 'disk_paged').strip().lower().replace('-', '_').replace(' ', '_')
     if normalized == 'cpu_resident':
@@ -105,6 +112,7 @@ PARAM_REGISTRY: List[ParamDef] = [
     ParamDef('flux_fill_prompt_cache', 'flux_fill_prompt_cache', 'temp', _normalize_flux_fill_prompt_cache_value),
     ParamDef('flux_fill_runtime_posture', 'flux_fill_runtime_posture', 'auto', _normalize_flux_fill_runtime_posture_value),
     ParamDef('flux_fill_t5_posture', 'flux_fill_t5_posture', 'disk_paged', _normalize_flux_fill_t5_posture_value),
+    ParamDef('sdxl_assembly_posture', 'sdxl_assembly_posture', 'auto', _normalize_sdxl_assembly_posture_value),
     ParamDef(
         'flux_fill_disk_paged_t5_gc_interval',
         'flux_fill_disk_paged_t5_gc_interval',

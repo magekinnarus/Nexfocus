@@ -210,6 +210,10 @@ def run_sdxl_assembly_task(
     preview_runtime_holder: Optional[Dict[str, Any]] = None,
 ) -> np.ndarray:
     """Gateway entry point that executes an eligible task via the SDXL Assembly lane."""
+    import time
+    import psutil
+    import torch
+
     # 1. Build frozen request
     try:
         request = build_assembly_request(
@@ -233,41 +237,133 @@ def run_sdxl_assembly_task(
         logger.error(f"[SDXL Assembly] Request building/freeze failed: {e}")
         raise RuntimeError(f"Request building/freeze failed: {e}") from e
 
-    # 1.5. Detect changes from last request and trigger domain releases
-    global _LAST_REQUEST_STATE
-    request_state = _build_gateway_request_state(request)
-    if _LAST_REQUEST_STATE is not None:
-        changes = _calculate_gateway_changes(_LAST_REQUEST_STATE, request_state)
-        if changes:
-            release_for_changes(changes, reason="gateway_transition")
+    # Telemetry envelope begin
+    process = psutil.Process()
+    rss_start = process.memory_info().rss / (1024 * 1024)
+    cuda_alloc_start = 0.0
+    cuda_reserved_start = 0.0
+    if torch.cuda.is_available():
+        try:
+            cuda_alloc_start = torch.cuda.memory_allocated() / (1024 * 1024)
+            cuda_reserved_start = torch.cuda.memory_reserved() / (1024 * 1024)
+        except Exception:
+            pass
 
-    _LAST_REQUEST_STATE = request_state
+    composition = getattr(task_state, 'sdxl_assembly_posture', 'auto')
+    req_id = getattr(request, 'request_id', f"req_{current_task_id}_{int(time.time())}")
+    unet_p = getattr(getattr(request, 'unet_posture', None), 'value', 'unknown')
+    clip_p = getattr(getattr(request, 'clip_posture', None), 'value', 'unknown')
+    vae_p = getattr(getattr(request, 'vae_posture', None), 'value', 'unknown')
+    lora_p = getattr(getattr(request, 'lora_posture', None), 'value', 'unknown')
+    route_id = getattr(request, 'route_id', 'unknown')
+    seed = getattr(request, 'seed', 'unknown')
+    width = getattr(request, 'width', 'unknown')
+    height = getattr(request, 'height', 'unknown')
+    steps = getattr(request, 'steps', 'unknown')
 
-    # 2. Select assembly
+    ckpt_name = 'unknown'
+    ckpt = getattr(request, 'checkpoint', None)
+    if ckpt is not None:
+        ckpt_path = getattr(ckpt, 'path', None)
+        if ckpt_path is not None:
+            ckpt_name = ckpt_path.name
+        else:
+            ckpt_name = getattr(ckpt, 'sha256', 'unknown')
+
+    lora_specs = getattr(request, 'lora_specs', [])
+    unet_lora_count = sum(1 for spec in lora_specs if getattr(spec, 'unet_weight', 0.0) != 0.0)
+    clip_lora_count = sum(1 for spec in lora_specs if getattr(spec, 'clip_weight', 0.0) != 0.0)
+
+    cn_count = len(getattr(request, 'structural_controls', ())) + len(getattr(request, 'contextual_controls', ()))
+
+    print(f"[SDXL RUN BEGIN] Correlation ID: {req_id} | "
+          f"Composition: {composition} | "
+          f"Postures: unet={unet_p}, clip={clip_p}, vae={vae_p}, lora={lora_p} | "
+          f"Route/Workflow: {route_id} | Seed: {seed} | "
+          f"Dims: {width}x{height} | Steps: {steps} | "
+          f"Checkpoint: {ckpt_name} | "
+          f"LoRAs: UNet={unet_lora_count}, CLIP={clip_lora_count} | "
+          f"ControlNets: {cn_count} | "
+          f"Memory: RSS={rss_start:.1f}MB, CUDA_Alloc={cuda_alloc_start:.1f}MB, CUDA_Res={cuda_reserved_start:.1f}MB")
+
+    start_time = time.perf_counter()
+    status = "SUCCESS"
+    err_msg = ""
+    result = None
+    assembly = None
+
     try:
+        # 1.5. Detect changes from last request and trigger domain releases
+        global _LAST_REQUEST_STATE
+        request_state = _build_gateway_request_state(request)
+        if _LAST_REQUEST_STATE is not None:
+            changes = _calculate_gateway_changes(_LAST_REQUEST_STATE, request_state)
+            if changes:
+                release_for_changes(changes, reason="gateway_transition")
+
+        _LAST_REQUEST_STATE = request_state
+
+        # 2. Select assembly
         assembly = SDXLAssemblyDirector.select_assembly(request)
-    except resources.InterruptProcessingException:
-        raise
-    except Exception as e:
-        logger.error(f"[SDXL Assembly] Assembly selection failed: {e}")
-        raise RuntimeError(f"Assembly selection failed: {e}") from e
 
-    if preview_runtime_holder is not None:
-        preview_runtime_holder["assembly"] = assembly
+        if preview_runtime_holder is not None:
+            preview_runtime_holder["assembly"] = assembly
 
-    # 3. Create progress callback
-    progress_cb = SDXLAssemblyProgressCallback(
-        request,
-        progressbar_callback,
-        progress_state=task_state,
-    )
+        # 3. Create progress callback
+        progress_cb = SDXLAssemblyProgressCallback(
+            request,
+            progressbar_callback,
+            progress_state=task_state,
+        )
 
-    # 4. Execute
-    try:
-        result: SDXLAssemblyResult = assembly.execute(request, callback=progress_cb)
+        # 4. Execute
+        result = assembly.execute(request, callback=progress_cb)
+        return result.output_image
+
+    except resources.InterruptProcessingException as exc:
+        status = "INTERRUPT"
+        raise exc
+    except Exception as exc:
+        status = "FAILURE"
+        err_msg = str(exc)
+        raise exc
     finally:
-        assembly.close()
+        # Telemetry envelope end
+        if assembly is not None:
+            try:
+                assembly.close()
+            except Exception:
+                pass
         if preview_runtime_holder is not None:
             preview_runtime_holder["assembly"] = None
 
-    return result.output_image
+        duration = time.perf_counter() - start_time
+        rss_end = process.memory_info().rss / (1024 * 1024)
+        cuda_alloc_end = 0.0
+        cuda_reserved_end = 0.0
+        cuda_peak_end = 0.0
+        if torch.cuda.is_available():
+            try:
+                cuda_alloc_end = torch.cuda.memory_allocated() / (1024 * 1024)
+                cuda_reserved_end = torch.cuda.memory_reserved() / (1024 * 1024)
+                cuda_peak_end = torch.cuda.max_memory_allocated() / (1024 * 1024)
+            except Exception:
+                pass
+
+        from backend.sdxl_assembly.runtime_state import debug_component_cache_report
+        cache_report = debug_component_cache_report()
+        resident_retained = "retained" if cache_report.get("active_resident_spine") else "released/none"
+        unet_bytes = cache_report.get("resident_unet_model_bytes", 0)
+        clean_shadow = cache_report.get("clean_shadow_bytes", 0)
+
+        output_info = ""
+        if status == "SUCCESS" and result is not None:
+            output_info = f" | Image: {result.output_image.shape[1]}x{result.output_image.shape[0]}"
+
+        err_info = f" | Error: {err_msg}" if err_msg else ""
+
+        print(f"[SDXL RUN END] Correlation ID: {getattr(request, 'request_id', 'unknown')} | "
+              f"Status: {status}{err_info} | Duration: {duration:.3f}s{output_info} | "
+              f"Resident Spine Retained: {resident_retained} | "
+              f"Resident UNet Bytes: {unet_bytes} | Clean Shadow Bytes: {clean_shadow} | "
+              f"Memory: RSS={rss_end:.1f}MB, CUDA_Alloc={cuda_alloc_end:.1f}MB, CUDA_Res={cuda_reserved_end:.1f}MB, CUDA_Peak={cuda_peak_end:.1f}MB")

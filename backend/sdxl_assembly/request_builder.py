@@ -50,6 +50,21 @@ def _task_attr_or_none(task_state: Any, name: str) -> Any:
     return None
 
 
+def _resolve_sdxl_assembly_posture(task_state: Any) -> Tuple[str, str]:
+    posture = str(getattr(task_state, 'sdxl_assembly_posture', 'auto') or 'auto').strip().lower().replace('-', '_').replace(' ', '_')
+    if posture == 'auto':
+        from backend.environment_profile import detect_total_vram_mb
+        vram_mb = detect_total_vram_mb()
+        if config.hardware_total_vram_override_mb is not None:
+            vram_mb = float(config.hardware_total_vram_override_mb)
+        if vram_mb >= 7.5 * 1024:
+            return posture, 'resident_unet_cpu_text'
+        return posture, 'streaming'
+    if posture == 'streaming':
+        return posture, 'streaming'
+    return posture, posture
+
+
 def _dict_or_empty(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
@@ -269,10 +284,10 @@ def determine_eligibility(
     target_route = intent.route_id
 
     # 1. Check for resident SDXL or resident ControlNet
-    if target_route not in {"color_enhanced_upscale", "super_upscale"}:
-        policy = getattr(task_state, 'sdxl_execution_policy', None)
-        if policy is not None and getattr(policy, 'execution_mode', None) == 'resident':
-            return False, "Resident SDXL posture is not supported on the new assembly lane"
+    posture, posture_resolved = _resolve_sdxl_assembly_posture(task_state)
+
+    if posture_resolved not in {'streaming', 'resident_unet_cpu_text'}:
+        return False, f"Unsupported SDXL assembly composition: {posture}"
 
     if force_eligible:
         return True, None
@@ -517,12 +532,23 @@ def build_assembly_request(
     lora_hash_payload = "".join(f"{spec.file_identity.sha256}:{spec.unet_weight}:{spec.clip_weight}" for spec in lora_specs).encode("utf-8")
     lora_stack_hash = hashlib.sha256(lora_hash_payload).hexdigest()
 
-    # Postures (Flux Fill user settings policy)
+    # SDXL assembly posture selected at queue time.
+    posture, posture_resolved = _resolve_sdxl_assembly_posture(task_state)
+
+    if posture_resolved == 'resident_unet_cpu_text':
+        unet_posture = UNetPostureKind.RESIDENT
+        clip_posture = TextEncoderPostureKind.CPU_PINNED
+        vae_posture = VAEPostureKind.TRANSIENT
+        lora_posture = LoraPatchPostureKind.RESIDENT
+    elif posture_resolved == 'streaming':
+        unet_posture = UNetPostureKind.STREAMING
+        clip_posture = TextEncoderPostureKind.CPU_PINNED
+        vae_posture = VAEPostureKind.TRANSIENT
+        lora_posture = LoraPatchPostureKind.STREAMING
+    else:
+        raise SDXLAssemblyValidationError(f"Unknown or unsupported SDXL assembly posture selection: {posture}")
+
     policy = getattr(task_state, 'sdxl_execution_policy', None)
-    unet_posture = UNetPostureKind.STREAMING
-    clip_posture = TextEncoderPostureKind.CPU_PINNED
-    vae_posture = VAEPostureKind.TRANSIENT
-    lora_posture = LoraPatchPostureKind.STREAMING
     prefetch_depth = int(
         _first_non_none(
             _task_attr_or_none(task_state, 'prefetch_depth'),
@@ -538,6 +564,12 @@ def build_assembly_request(
         )
     )
     execution_metadata: Dict[str, Any] = {
+        "sdxl_assembly_posture": posture,
+        "sdxl_assembly_posture_resolved": posture_resolved,
+        "unet_posture": unet_posture.value,
+        "clip_posture": clip_posture.value,
+        "vae_posture": vae_posture.value,
+        "lora_posture": lora_posture.value,
         "pin_unet_host": bool(
             _first_non_none(
                 _task_attr_or_none(task_state, 'pin_unet_host'),

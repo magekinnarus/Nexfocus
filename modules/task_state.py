@@ -69,6 +69,7 @@ class TaskState:
     flux_fill_t5_posture: str = ""
     flux_fill_disk_paged_t5_gc_interval: str = "auto"
     flux_fill_runtime_posture: str = "auto"
+    sdxl_assembly_posture: str = "auto"
     prefetch_depth: int = 1
     prefetch_chunk_mb: int = 64
     objr_mask_dilate: int = 16

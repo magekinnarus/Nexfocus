@@ -531,6 +531,7 @@ with shared.gradio_root:
                 flux_fill_runtime_posture = debug_panel_result['flux_fill_runtime_posture']
                 flux_fill_t5_posture = debug_panel_result['flux_fill_t5_posture']
                 flux_fill_disk_paged_t5_gc_interval = debug_panel_result['flux_fill_disk_paged_t5_gc_interval']
+                sdxl_assembly_posture = debug_panel_result['sdxl_assembly_posture']
                 if not args_manager.args.disable_metadata:
                     save_metadata_to_images = debug_panel_result['save_metadata_to_images']
                     metadata_scheme = debug_panel_result['metadata_scheme']
@@ -610,6 +611,7 @@ with shared.gradio_root:
             'flux_fill_runtime_posture': flux_fill_runtime_posture,
             'flux_fill_t5_posture': flux_fill_t5_posture,
             'flux_fill_disk_paged_t5_gc_interval': flux_fill_disk_paged_t5_gc_interval,
+            'sdxl_assembly_posture': sdxl_assembly_posture,
             'adm_scaler_positive': adm_scaler_positive,
             'adm_scaler_negative': adm_scaler_negative,
             'adm_scaler_end': adm_scaler_end,

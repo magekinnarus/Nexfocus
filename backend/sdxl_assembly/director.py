@@ -18,28 +18,28 @@ class SDXLAssemblyDirector:
 
     @staticmethod
     def select_assembly(request: SDXLAssemblyRequest) -> SDXLAssembly:
-        # Enforce validation of the only supported posture combinations in W02 and W12a
+        # Enforce validation of the only supported production posture combinations.
         is_w02_streaming = (
             request.unet_posture == UNetPostureKind.STREAMING
             and request.clip_posture == TextEncoderPostureKind.CPU_PINNED
             and request.vae_posture == VAEPostureKind.TRANSIENT
             and request.lora_posture == LoraPatchPostureKind.STREAMING
         )
-        is_w12a_resident = (
+        is_w12b_resident = (
             request.unet_posture == UNetPostureKind.RESIDENT
             and request.clip_posture == TextEncoderPostureKind.CPU_PINNED
             and request.vae_posture == VAEPostureKind.TRANSIENT
             and request.lora_posture == LoraPatchPostureKind.RESIDENT
         )
 
-        if not is_w02_streaming and not is_w12a_resident:
+        if not is_w02_streaming and not is_w12b_resident:
             raise NotImplementedError(
                 f"Posture combination (unet={request.unet_posture}, clip={request.clip_posture}, "
-                f"vae={request.vae_posture}, lora={request.lora_posture}) is not supported in W12a."
+                f"vae={request.vae_posture}, lora={request.lora_posture}) is not supported in W12b."
             )
 
         # Retrieve/instantiate posture-specific workers via Assembler.  The
-        # resident W12a composition is side-specific: UNet LoRAs compile on GPU,
+        # resident W12b composition is side-specific: UNet LoRAs compile on GPU,
         # while CPU text keeps CPU CLIP LoRA ownership.
         if request.lora_posture == LoraPatchPostureKind.RESIDENT:
             lora_worker = SDXLAssemblyAssembler.acquire_gpu_lora_worker(request)

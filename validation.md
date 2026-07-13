@@ -73,7 +73,7 @@ Compile sanity on the authoritative runtime surfaces:
 
 ```powershell
 $fluxV3Files = Get-ChildItem backend\flux_fill_v3\*.py | ForEach-Object { $_.FullName }
-.\venv\Scripts\python.exe -m py_compile @fluxV3Files backend\memory_governor.py backend\resources.py backend\sdxl_runtime_policy.py backend\sdxl_streaming_runtime.py backend\sdxl_unified_runtime.py backend\staging_manager.py backend\sdxl_assembly\cpu_text_encode_worker.py backend\sdxl_assembly\progress.py backend\sdxl_assembly\runtime_state.py modules\async_worker.py modules\objr_engine.py modules\parameter_registry.py modules\pipeline\inference.py modules\pipeline\routes.py modules\pipeline\tiled_refinement.py modules\runtime_surface_state.py modules\runtime_surface_api.py modules\task_state.py modules\ui_components\advanced_panel.py modules\ui_logic.py webui.py tools\check_validation_env.py tracked_tests\test_memory_residency.py tracked_tests\test_pipeline_routes.py tracked_tests\test_pipeline_stage_runtime.py tracked_tests\test_sdxl_assembly_w03_regression.py tracked_tests\test_sdxl_assembly_w04_regression.py tracked_tests\test_sdxl_assembly_w10b_lifecycle_coordinator.py tests\test_runtime_surface_api.py tests\test_sdxl_assembly_w10d.py tests\test_sdxl_outer_wiring_w10c.py
+.\venv\Scripts\python.exe -m py_compile @fluxV3Files backend\memory_governor.py backend\resources.py backend\sdxl_runtime_policy.py backend\sdxl_streaming_runtime.py backend\sdxl_unified_runtime.py backend\staging_manager.py backend\sdxl_assembly\cpu_text_encode_worker.py backend\sdxl_assembly\progress.py backend\sdxl_assembly\runtime_state.py modules\async_worker.py modules\objr_engine.py modules\parameter_registry.py modules\pipeline\inference.py modules\pipeline\routes.py modules\pipeline\tiled_refinement.py modules\runtime_surface_state.py modules\runtime_surface_api.py modules\task_state.py modules\ui_components\advanced_panel.py modules\ui_logic.py webui.py tools\check_validation_env.py tracked_tests\test_memory_residency.py tracked_tests\test_pipeline_routes.py tracked_tests\test_pipeline_stage_runtime.py tracked_tests\test_sdxl_assembly_w03_regression.py tracked_tests\test_sdxl_assembly_w04_regression.py tracked_tests\test_sdxl_assembly_w10b_lifecycle_coordinator.py tracked_tests\test_sdxl_assembly_w12b_production_resident.py tests\test_runtime_surface_api.py tests\test_sdxl_assembly_w10d.py tests\test_sdxl_outer_wiring_w10c.py
 ```
 
 ## Regression Matrix
@@ -122,7 +122,7 @@ Covers:
 ### 4. Worker-Centric SDXL Lifecycle / Queue-Boundary / Interrupt Regressions
 
 ```powershell
-.\venv\Scripts\python.exe -m pytest tests\test_sdxl_assembly_w10b.py tests\test_sdxl_assembly_w10d.py tests\test_sdxl_outer_wiring_w10c.py tracked_tests\test_sdxl_assembly_w03_regression.py tracked_tests\test_sdxl_assembly_w10b_lifecycle_coordinator.py -q
+.\venv\Scripts\python.exe -m pytest tests\test_sdxl_assembly_w10b.py tests\test_sdxl_assembly_w10d.py tests\test_sdxl_outer_wiring_w10c.py tracked_tests\test_sdxl_assembly_w03_regression.py tracked_tests\test_sdxl_assembly_w10b_lifecycle_coordinator.py tracked_tests\test_sdxl_assembly_w12b_production_resident.py -q
 .\venv\Scripts\python.exe -m pytest tracked_tests\test_sdxl_assembly_w04_regression.py -k "assembly_progress_callback_preserves_interrupt_processing_exception or assembly_progress_callback_throttles_full_memory_telemetry" -q
 .\venv\Scripts\python.exe -m pytest tests\test_runtime_surface_api.py -k "runtime_surface_skip_action_interrupts_active_task" -q
 ```
@@ -275,7 +275,37 @@ Expected result:
 - `Skip` cleanly interrupts the current image without surfacing the prior callback error
 - if later queued work exists, execution advances to the next queued item instead of continuing the skipped image
 
-### 6. Color Enhancement Local Replay
+### 6. SDXL W12b Auto/Streaming Resident Replay
+
+Run this exact UI sequence on Colab L4 for W12b acceptance:
+
+1. `SDXL Assembly Posture = streaming`, `Txt2Img`
+2. `SDXL Assembly Posture = auto`, `Txt2Img (cold)`
+3. `Prompt change` while keeping checkpoint, LoRA stack, and route assets fixed
+4. `One UNet+CLIP LoRA`, then repeat with the same stack
+5. Remove the LoRA stack
+6. One image-input route that requires transient VAE encode/decode
+7. One accepted ControlNet route where assets permit
+8. `Color Enhancement`
+9. `Super-Upscale`
+10. Press `Skip` during a resident run
+11. Switch to Flux or trigger an explicit full release
+
+Expected result:
+
+- `auto` resolves to resident UNet on L4, while `streaming` forces streaming.
+- Each run emits matched `[SDXL RUN BEGIN]` and `[SDXL RUN END]` records with
+  the same correlation ID.
+- Resident cold load, prompt-only warm reuse, LoRA same-stack reuse, LoRA
+  removal, transient VAE attach/detach, ControlNet coexistence, skip/interrupt,
+  and final release are visible in console telemetry.
+- Report CPU RSS, CUDA allocated/reserved/peak, output success/path, resident
+  spine retention/release, and any failure/interrupt status in the same
+  issue/outcome style as `.agent/temp/P4-M18-W11e_issues4.md`.
+- Full Colab Free T4 stress, including the GPU text worker default and
+  three-LoRA/three-ControlNet headroom where assets permit, begins in W12c.
+
+### 7. Color Enhancement Local Replay
 
 Run on local assets with an original image and its previously generated GAN
 upscale. Keep the selected base model and LoRA stack fixed across a normal SDXL
@@ -320,7 +350,7 @@ Expected result:
 - The color-enhanced image has no regular 32-pixel block lattice; color transfer
   remains smooth under a one-pixel source translation.
 
-### 7. Tracked Route / Stage Smoke
+### 8. Tracked Route / Stage Smoke
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tracked_tests\test_pipeline_routes.py tracked_tests\test_pipeline_stage_runtime.py tracked_tests\test_memory_residency.py -q
@@ -332,7 +362,7 @@ Covers:
 - stage runner execution contract
 - memory residency dispatch smoke
 
-### 8. Full Suite
+### 9. Full Suite
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tests\ --ignore=tests\test_bgr.py --ignore=tests\test_objr.py -q

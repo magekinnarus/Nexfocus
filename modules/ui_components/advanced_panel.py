@@ -121,6 +121,13 @@ def build_debug_tab():
         info='Debug/benchmark override. Keep auto for normal use; force streaming only when benchmarking Flux Fill on high-RAM Colab sessions.'
     )
 
+    results['sdxl_assembly_posture'] = gr.Radio(
+        label='SDXL Assembly Posture',
+        choices=['auto', 'streaming'],
+        value='auto',
+        info='Auto uses resident UNet on 8GB or higher GPUs and streaming on 6GB or less. Use streaming to force the streaming lane on roomier hardware.'
+    )
+
     total_ram_gb = 0.0
     try:
         from backend.flux_fill_v3.activation import resolve_flux_fill_total_ram_gb
