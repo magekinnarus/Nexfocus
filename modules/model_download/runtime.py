@@ -156,6 +156,7 @@ def _build_generic_aria2_command(
     command = [
         'aria2c',
         '--console-log-level=warn',
+        '--check-certificate=false',
         '-c',
         '-x', '16',
         '-s', '16',
@@ -197,6 +198,7 @@ def _build_hf_aria2_command(
         'aria2c',
         '--console-log-level=warn',
         f'--user-agent={_ARIA2_USER_AGENT}',
+        '--check-certificate=false',
         '-c',
         '-x', '16',
         '-s', '16',
