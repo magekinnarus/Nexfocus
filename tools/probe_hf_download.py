@@ -180,7 +180,8 @@ def _report_hf_transport(url: str) -> None:
     if not _is_huggingface_url(url):
         return
     aria2_path = shutil.which('aria2c')
-    print('HF transport: Aria2 direct-resolution path when aria2c is available.')
+    print('HF transport: Aria2 resolve-URL path when aria2c is available.')
+    print('HF request: browser User-Agent with download=true; Aria2 follows redirects.')
     if aria2_path:
         print(f'Aria2: detected at {aria2_path}; configured split connections: 4.')
     else:

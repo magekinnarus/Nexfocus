@@ -4,7 +4,7 @@ import os
 import shutil
 import subprocess
 from typing import Iterable
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from modules.model_loader import load_file_from_url
 
@@ -125,6 +125,22 @@ def _is_huggingface_download_url(url: str) -> bool:
     return host.endswith('huggingface.co') or (mirror_host and host == mirror_host)
 
 
+def _with_download_query(url: str) -> str:
+    parsed = urlparse(str(url or '').strip())
+    if not parsed.netloc:
+        return url
+
+    query_items = parse_qsl(parsed.query, keep_blank_values=True)
+    if any(key.lower() == 'download' for key, _value in query_items):
+        query_items = [
+            (key, 'true') if key.lower() == 'download' else (key, value)
+            for key, value in query_items
+        ]
+    else:
+        query_items.append(('download', 'true'))
+    return urlunparse(parsed._replace(query=urlencode(query_items)))
+
+
 def _resolve_hf_direct_url(url: str, headers: Iterable[tuple[str, str]] = ()) -> str:
     request_headers = {key: value for key, value in headers}
     if 'User-Agent' not in request_headers:
@@ -188,6 +204,45 @@ def _build_generic_aria2_command(
     return command
 
 
+def _build_hf_aria2_command(
+    *,
+    url: str,
+    model_dir: str,
+    file_name: str,
+    headers: Iterable[tuple[str, str]] = (),
+) -> list[str]:
+    user_agent = _ARIA2_USER_AGENT
+    forwarded_headers = []
+    for key, value in headers:
+        if key.lower() == 'user-agent':
+            user_agent = value
+        else:
+            forwarded_headers.append((key, value))
+
+    command = [
+        'aria2c',
+        '--console-log-level=warn',
+        '--max-tries=20',
+        '--retry-wait=5',
+        '--timeout=60',
+        '--connect-timeout=30',
+        '--file-allocation=none',
+        f'--user-agent={user_agent}',
+        '-c',
+        '-x', _ARIA2_CONNECTIONS,
+        '-s', _ARIA2_CONNECTIONS,
+        '-k', '1M',
+        '--dir', model_dir,
+        '--out', file_name,
+    ]
+
+    for key, value in forwarded_headers:
+        command.extend(['--header', f'{key}: {value}'])
+
+    command.append(url)
+    return command
+
+
 def _build_civitai_aria2_command(*, direct_url: str, model_dir: str, file_name: str) -> list[str]:
     return [
         'aria2c',
@@ -231,9 +286,8 @@ def _download_with_aria2(
             file_name=file_name,
         )
     elif _is_huggingface_download_url(url):
-        direct_url = _resolve_hf_direct_url(url, headers=headers)
-        command = _build_generic_aria2_command(
-            url=direct_url,
+        command = _build_hf_aria2_command(
+            url=_with_download_query(url),
             model_dir=model_dir,
             file_name=file_name,
             headers=headers,

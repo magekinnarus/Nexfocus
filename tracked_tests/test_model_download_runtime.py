@@ -5,8 +5,10 @@ import pytest
 from modules.model_download.runtime import (
     _build_civitai_aria2_command,
     _build_generic_aria2_command,
+    _build_hf_aria2_command,
     _download_with_aria2,
     _resolve_hf_direct_url,
+    _with_download_query,
     download_file,
 )
 
@@ -119,6 +121,49 @@ def test_generic_aria2_uses_four_connections():
     ]
 
 
+def test_hf_download_query_is_added_without_losing_existing_params():
+    assert _with_download_query(
+        'https://huggingface.co/example/model/resolve/main/model.safetensors'
+    ) == 'https://huggingface.co/example/model/resolve/main/model.safetensors?download=true'
+    assert _with_download_query(
+        'https://huggingface.co/example/model/resolve/main/model.safetensors?foo=bar'
+    ) == 'https://huggingface.co/example/model/resolve/main/model.safetensors?foo=bar&download=true'
+    assert _with_download_query(
+        'https://huggingface.co/example/model/resolve/main/model.safetensors?download=false'
+    ) == 'https://huggingface.co/example/model/resolve/main/model.safetensors?download=true'
+
+
+def test_hf_aria2_uses_browser_user_agent_and_preserves_auth_headers():
+    command = _build_hf_aria2_command(
+        url='https://huggingface.co/example/model/resolve/main/model.safetensors?download=true',
+        model_dir='/models',
+        file_name='model.safetensors',
+        headers=(('Authorization', 'Bearer token'),),
+    )
+
+    assert any(item.startswith('--user-agent=Mozilla/5.0') for item in command)
+    assert command[command.index('-x') + 1] == '4'
+    assert command[command.index('-s') + 1] == '4'
+    assert '--max-tries=20' in command
+    assert '--retry-wait=5' in command
+    assert '--file-allocation=none' in command
+    assert ['--header', 'Authorization: Bearer token'] == command[
+        command.index('--header'):command.index('--header') + 2
+    ]
+
+
+def test_hf_aria2_uses_custom_user_agent_as_aria2_option_not_header():
+    command = _build_hf_aria2_command(
+        url='https://huggingface.co/example/model/resolve/main/model.safetensors?download=true',
+        model_dir='/models',
+        file_name='model.safetensors',
+        headers=(('User-Agent', 'CustomProbe/1.0'),),
+    )
+
+    assert '--user-agent=CustomProbe/1.0' in command
+    assert 'User-Agent: CustomProbe/1.0' not in command
+
+
 def test_civitai_aria2_uses_browser_user_agent_and_four_connections():
     command = _build_civitai_aria2_command(
         direct_url='https://cdn.example/model.safetensors',
@@ -137,11 +182,10 @@ def test_civitai_aria2_uses_browser_user_agent_and_four_connections():
 def test_hf_download_reuses_generator_headers_for_aria2(tmp_path, monkeypatch):
     commands = []
 
-    def fake_resolve(url, headers):
-        assert dict(headers)['Authorization'] == 'Bearer token'
-        return 'https://cdn.example/model.safetensors'
-
-    monkeypatch.setattr('modules.model_download.runtime._resolve_hf_direct_url', fake_resolve)
+    monkeypatch.setattr(
+        'modules.model_download.runtime._resolve_hf_direct_url',
+        lambda *_args, **_kwargs: pytest.fail('HF Aria2 should keep the resolve URL and let Aria2 follow redirects'),
+    )
     monkeypatch.setattr('modules.model_download.runtime._run_aria2_command', commands.append)
 
     _download_with_aria2(
@@ -152,6 +196,8 @@ def test_hf_download_reuses_generator_headers_for_aria2(tmp_path, monkeypatch):
     )
 
     command = commands[0]
+    assert command[-1] == 'https://huggingface.co/example/model/resolve/main/model.safetensors?download=true'
+    assert any(item.startswith('--user-agent=Mozilla/5.0') for item in command)
     assert command[command.index('-x') + 1] == '4'
     assert command[command.index('-s') + 1] == '4'
     assert ['--header', 'Authorization: Bearer token'] == command[
