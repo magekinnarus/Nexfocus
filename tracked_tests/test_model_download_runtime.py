@@ -1,10 +1,14 @@
+import sys
 from pathlib import Path
+
+import pytest
 
 from modules.model_download.runtime import (
     _build_civitai_aria2_command,
     _download_with_huggingface_hub,
     _headers_with_default_user_agent,
     _parse_huggingface_url,
+    _run_child_with_idle_timeout,
     download_file,
 )
 
@@ -91,14 +95,14 @@ def test_hf_url_parser_extracts_repo_revision_and_filename():
 def test_hf_download_uses_local_dir_and_moves_repo_subpath(tmp_path, monkeypatch):
     calls = []
 
-    def fake_hf_hub_download(**kwargs):
+    def fake_hf_hub_download(kwargs):
         calls.append(kwargs)
         downloaded = Path(kwargs['local_dir']) / kwargs['filename']
         downloaded.parent.mkdir(parents=True, exist_ok=True)
         downloaded.write_bytes(b'complete')
         return str(downloaded)
 
-    monkeypatch.setattr('modules.model_download.runtime.hf_hub_download', fake_hf_hub_download)
+    monkeypatch.setattr('modules.model_download.runtime._run_huggingface_hub_child', fake_hf_hub_download)
 
     result = _download_with_huggingface_hub(
         url='https://huggingface.co/example/model/resolve/main/subdir/model.safetensors',
@@ -120,3 +124,46 @@ def test_hf_default_user_agent_preserves_custom_header():
     headers = _headers_with_default_user_agent((('User-Agent', 'CustomUA'),))
 
     assert headers == (('User-Agent', 'CustomUA'),)
+
+
+def test_hf_failure_removes_nested_partial_before_python_fallback(tmp_path, monkeypatch):
+    nested_partial = tmp_path / 'subdir' / 'model.safetensors'
+    nested_partial.parent.mkdir()
+    nested_partial.write_bytes(b'partial')
+    cache_download = tmp_path / '.cache' / 'huggingface' / 'download'
+    cache_download.mkdir(parents=True)
+    (cache_download / 'partial.incomplete').write_bytes(b'partial')
+
+    monkeypatch.setattr(
+        'modules.model_download.runtime._run_huggingface_hub_child',
+        lambda _kwargs: (_ for _ in ()).throw(RuntimeError('hub idle')),
+    )
+
+    def fake_load_file_from_url(**kwargs):
+        assert not nested_partial.exists()
+        assert not cache_download.exists()
+        target = Path(kwargs['model_dir']) / kwargs['file_name']
+        target.write_bytes(b'complete')
+        return str(target)
+
+    monkeypatch.setattr('modules.model_download.runtime.load_file_from_url', fake_load_file_from_url)
+
+    result = download_file(
+        url='https://huggingface.co/example/model/resolve/main/subdir/model.safetensors',
+        model_dir=str(tmp_path),
+        file_name='model.safetensors',
+    )
+
+    assert Path(result).read_bytes() == b'complete'
+
+
+def test_hf_child_runner_times_out_when_hub_is_idle():
+    command = [sys.executable, '-u', '-c', 'import time; time.sleep(2)']
+
+    with pytest.raises(TimeoutError):
+        _run_child_with_idle_timeout(
+            command,
+            env={},
+            idle_timeout_seconds=0.25,
+            result_prefix='NEX_HF_HUB_RESULT=',
+        )

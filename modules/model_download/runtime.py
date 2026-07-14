@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import os
+import json
+import queue
 import shutil
 import subprocess
+import sys
+import threading
+import time
 from dataclasses import dataclass
 from typing import Iterable
 from urllib.parse import unquote, urlparse
@@ -14,12 +19,9 @@ try:
 except ImportError:  # pragma: no cover - fallback path only matters if requests is missing.
     requests = None
 
-try:
-    from huggingface_hub import hf_hub_download
-except ImportError:  # pragma: no cover - fallback path only matters if huggingface_hub is missing.
-    hf_hub_download = None
-
 _ARIA2_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+_HF_HUB_RESULT_PREFIX = 'NEX_HF_HUB_RESULT='
+_HF_HUB_IDLE_TIMEOUT_SECONDS = 120
 
 
 def download_file(
@@ -58,6 +60,7 @@ def download_file(
             )
         except Exception as exc:
             print(f"Hugging Face Hub download failed for {url}: {exc}. Falling back to the Python downloader.")
+            _cleanup_hf_local_download_artifacts(url=url, model_dir=model_dir, file_name=file_name)
             _cleanup_partial_download(destination)
 
         return load_file_from_url(
@@ -211,9 +214,6 @@ def _download_with_huggingface_hub(
     file_name: str,
     headers: Iterable[tuple[str, str]] = (),
 ) -> str:
-    if hf_hub_download is None:
-        raise RuntimeError('huggingface_hub is not installed')
-
     spec = _parse_huggingface_url(url)
     if spec is None:
         raise ValueError(f'Unsupported Hugging Face download URL: {url}')
@@ -236,12 +236,7 @@ def _download_with_huggingface_hub(
     if spec.endpoint:
         kwargs['endpoint'] = spec.endpoint
 
-    try:
-        downloaded_path = hf_hub_download(**kwargs)
-    except TypeError:
-        # Older huggingface_hub builds may not support the headers parameter.
-        kwargs.pop('headers', None)
-        downloaded_path = hf_hub_download(**kwargs)
+    downloaded_path = _run_huggingface_hub_child(kwargs)
 
     downloaded_path = os.path.abspath(downloaded_path)
     if downloaded_path != destination:
@@ -250,6 +245,132 @@ def _download_with_huggingface_hub(
         os.replace(downloaded_path, destination)
         _cleanup_empty_hf_download_dirs(downloaded_path, model_dir)
     return destination
+
+
+def _run_huggingface_hub_child(kwargs: dict) -> str:
+    script = r'''
+import json
+import sys
+
+from huggingface_hub import hf_hub_download
+
+kwargs = json.loads(sys.argv[1])
+try:
+    path = hf_hub_download(**kwargs)
+except TypeError:
+    kwargs.pop("headers", None)
+    path = hf_hub_download(**kwargs)
+print("NEX_HF_HUB_RESULT=" + json.dumps({"path": path}), flush=True)
+'''
+    env = os.environ.copy()
+    env.setdefault('HF_XET_HIGH_PERFORMANCE', '1')
+    env.setdefault('HF_XET_NUM_CONCURRENT_RANGE_GETS', '8')
+    command = [sys.executable, '-u', '-c', script, json.dumps(kwargs)]
+    return _run_child_with_idle_timeout(
+        command,
+        env=env,
+        idle_timeout_seconds=_read_hf_hub_idle_timeout(),
+        result_prefix=_HF_HUB_RESULT_PREFIX,
+    )['path']
+
+
+def _read_hf_hub_idle_timeout() -> float:
+    raw_value = os.environ.get('NEX_HF_HUB_IDLE_TIMEOUT_SECONDS', '').strip()
+    if not raw_value:
+        return _HF_HUB_IDLE_TIMEOUT_SECONDS
+    try:
+        return max(10.0, float(raw_value))
+    except ValueError:
+        return _HF_HUB_IDLE_TIMEOUT_SECONDS
+
+
+def _run_child_with_idle_timeout(
+    command: list[str],
+    *,
+    env: dict[str, str],
+    idle_timeout_seconds: float,
+    result_prefix: str,
+) -> dict:
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    output_queue: queue.Queue[tuple[str, bytes]] = queue.Queue()
+    stdout_chunks: list[bytes] = []
+    stderr_tail = bytearray()
+
+    def pump(stream_name: str, stream) -> None:
+        try:
+            while True:
+                chunk = stream.read(1)
+                if not chunk:
+                    break
+                output_queue.put((stream_name, chunk))
+        finally:
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+    threads = [
+        threading.Thread(target=pump, args=('stdout', process.stdout), daemon=True),
+        threading.Thread(target=pump, args=('stderr', process.stderr), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+
+    last_activity = time.monotonic()
+    killed_for_idle = False
+    while process.poll() is None:
+        try:
+            stream_name, chunk = output_queue.get(timeout=0.25)
+        except queue.Empty:
+            if time.monotonic() - last_activity > idle_timeout_seconds:
+                killed_for_idle = True
+                process.kill()
+                break
+            continue
+        last_activity = time.monotonic()
+        if stream_name == 'stdout':
+            stdout_chunks.append(chunk)
+        else:
+            stderr_tail.extend(chunk)
+            del stderr_tail[:-4096]
+            sys.stderr.write(chunk.decode('utf-8', errors='replace'))
+            sys.stderr.flush()
+
+    return_code = process.wait()
+    while True:
+        try:
+            stream_name, chunk = output_queue.get_nowait()
+        except queue.Empty:
+            break
+        if stream_name == 'stdout':
+            stdout_chunks.append(chunk)
+        else:
+            stderr_tail.extend(chunk)
+            del stderr_tail[:-4096]
+            sys.stderr.write(chunk.decode('utf-8', errors='replace'))
+            sys.stderr.flush()
+
+    for thread in threads:
+        thread.join(timeout=1)
+
+    stdout_text = b''.join(stdout_chunks).decode('utf-8', errors='replace')
+    if killed_for_idle:
+        raise TimeoutError(
+            f'Hugging Face Hub download produced no output for {idle_timeout_seconds:.0f}s; '
+            'falling back to the Python downloader.'
+        )
+    if return_code != 0:
+        tail = bytes(stderr_tail).decode('utf-8', errors='replace')
+        raise RuntimeError(f'Hugging Face Hub child exited with code {return_code}: {tail}')
+    for line in stdout_text.splitlines():
+        if line.startswith(result_prefix):
+            return json.loads(line[len(result_prefix):])
+    raise RuntimeError('Hugging Face Hub child completed without reporting a downloaded path.')
 
 
 def _build_generic_aria2_command(
@@ -342,6 +463,31 @@ def _cleanup_empty_hf_download_dirs(downloaded_path: str, model_dir: str) -> Non
         except OSError:
             break
         current = os.path.dirname(current)
+
+
+def _cleanup_hf_local_download_artifacts(*, url: str, model_dir: str, file_name: str) -> None:
+    destination = os.path.abspath(os.path.join(model_dir, file_name))
+    spec = _parse_huggingface_url(url)
+    if spec is not None:
+        mirrored_path = os.path.abspath(os.path.join(model_dir, spec.filename))
+        try:
+            inside_model_dir = os.path.commonpath([mirrored_path, os.path.abspath(model_dir)]) == os.path.abspath(model_dir)
+        except ValueError:
+            inside_model_dir = False
+        if inside_model_dir and mirrored_path != destination and os.path.isfile(mirrored_path):
+            try:
+                os.remove(mirrored_path)
+                _cleanup_empty_hf_download_dirs(mirrored_path, model_dir)
+            except OSError:
+                pass
+
+    download_cache = os.path.abspath(os.path.join(model_dir, '.cache', 'huggingface', 'download'))
+    try:
+        inside_model_dir = os.path.commonpath([download_cache, os.path.abspath(model_dir)]) == os.path.abspath(model_dir)
+    except ValueError:
+        inside_model_dir = False
+    if inside_model_dir and os.path.isdir(download_cache):
+        shutil.rmtree(download_cache, ignore_errors=True)
 
 
 def _cleanup_partial_download(destination: str) -> None:

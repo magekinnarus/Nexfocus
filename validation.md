@@ -19,6 +19,7 @@ Validated local W12 baseline:
 
 - `transformers==4.44.2`
 - `huggingface-hub==0.36.2`
+- `hf-xet==1.5.1`
 - `tokenizers==0.19.1`
 - `accelerate==1.13.0`
 

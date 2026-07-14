@@ -57,9 +57,26 @@ def load_file_from_url(
 def _download_url_to_file_with_headers(url: str, destination: str, *, headers: Iterable[tuple[str, str]] = ()) -> None:
     request_headers = {key: value for key, value in headers}
     request = urllib.request.Request(url, headers=request_headers)
-    with urllib.request.urlopen(request) as response, open(destination, 'wb') as target:
+    with urllib.request.urlopen(request, timeout=60) as response, open(destination, 'wb') as target:
+        total_size = int(response.headers.get('Content-Length') or 0)
+        downloaded = 0
+        last_progress_at = time.monotonic()
         while True:
             chunk = response.read(1024 * 1024)
             if not chunk:
                 break
             target.write(chunk)
+            downloaded += len(chunk)
+            if total_size and time.monotonic() - last_progress_at >= 1:
+                print(
+                    f'\r{os.path.basename(destination)}: {downloaded / total_size:.1%} '
+                    f'({downloaded / 1024 ** 3:.2f}G/{total_size / 1024 ** 3:.2f}G)',
+                    end='',
+                    flush=True,
+                )
+                last_progress_at = time.monotonic()
+        if total_size:
+            print(
+                f'\r{os.path.basename(destination)}: 100.0% '
+                f'({downloaded / 1024 ** 3:.2f}G/{total_size / 1024 ** 3:.2f}G)'
+            )
