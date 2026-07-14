@@ -13,7 +13,7 @@ try:
 except ImportError:  # pragma: no cover - fallback path only matters if requests is missing.
     requests = None
 
-_CIVITAI_ARIA2_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+_ARIA2_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
 
 
 def download_file(
@@ -75,7 +75,7 @@ def _resolve_civitai_direct_url(url: str, headers: Iterable[tuple[str, str]] = (
     # Use headers for resolution to ensure UA is set
     request_headers = {key: value for key, value in headers}
     if 'User-Agent' not in request_headers:
-        request_headers['User-Agent'] = _CIVITAI_ARIA2_USER_AGENT
+        request_headers['User-Agent'] = _ARIA2_USER_AGENT
 
     def _do_resolve(target_url):
         try:
@@ -127,32 +127,20 @@ def _resolve_hf_direct_url(url: str, headers: Iterable[tuple[str, str]] = ()) ->
     # Use headers for resolution to ensure UA is set
     request_headers = {key: value for key, value in headers}
     if 'User-Agent' not in request_headers:
-        request_headers['User-Agent'] = _CIVITAI_ARIA2_USER_AGENT
+        request_headers['User-Agent'] = _ARIA2_USER_AGENT
 
     try:
         if requests is not None:
-            # Try HEAD first as it's the most efficient
-            try:
-                response = requests.head(url, headers=request_headers, allow_redirects=True, timeout=15)
+            # Hugging Face Xet signed endpoints can reject HEAD even when GET is
+            # publicly authorized. Stream the GET so only response headers are read.
+            with requests.get(url, headers=request_headers, allow_redirects=True, timeout=15, stream=True) as response:
                 response.raise_for_status()
                 return response.url
-            except Exception as head_exc:
-                status_code = getattr(getattr(head_exc, 'response', None), 'status_code', None)
-                if status_code in (403, 405) or "403" in str(head_exc) or "405" in str(head_exc):
-                    with requests.get(url, headers=request_headers, allow_redirects=True, timeout=15, stream=True) as response:
-                        response.raise_for_status()
-                        return response.url
-                raise head_exc
 
         import urllib.request
-        request = urllib.request.Request(url, headers=request_headers, method='HEAD')
-        try:
-            with urllib.request.urlopen(request, timeout=15) as response:
-                return response.geturl()
-        except Exception:
-            request.method = 'GET'
-            with urllib.request.urlopen(request, timeout=15) as response:
-                return response.geturl()
+        request = urllib.request.Request(url, headers=request_headers, method='GET')
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return response.geturl()
     except Exception as e:
         print(f"Hugging Face redirect resolution failed for {url}: {e}. Downloading directly.")
         return url
@@ -187,7 +175,7 @@ def _build_civitai_aria2_command(*, direct_url: str, model_dir: str, file_name: 
     return [
         'aria2c',
         '--console-log-level=warn',
-        f'--user-agent={_CIVITAI_ARIA2_USER_AGENT}',
+        f'--user-agent={_ARIA2_USER_AGENT}',
         '--check-certificate=false',
         '-x', '16',
         '-s', '16',
@@ -196,6 +184,33 @@ def _build_civitai_aria2_command(*, direct_url: str, model_dir: str, file_name: 
         '--out', file_name,
         direct_url,
     ]
+
+
+def _build_hf_aria2_command(
+    *,
+    direct_url: str,
+    model_dir: str,
+    file_name: str,
+    headers: Iterable[tuple[str, str]] = (),
+) -> list[str]:
+    command = [
+        'aria2c',
+        '--console-log-level=warn',
+        f'--user-agent={_ARIA2_USER_AGENT}',
+        '-c',
+        '-x', '16',
+        '-s', '16',
+        '-k', '1M',
+        '--dir', model_dir,
+        '--out', file_name,
+    ]
+    for key, value in headers:
+        if key.lower() != 'user-agent':
+            command.extend(['--header', f'{key}: {value}'])
+        else:
+            command[2] = f'--user-agent={value}'
+    command.append(direct_url)
+    return command
 
 
 def _run_aria2_command(command: list[str]) -> None:
@@ -210,6 +225,7 @@ def _download_with_aria2(
     headers: Iterable[tuple[str, str]] = (),
 ) -> str:
     destination = os.path.abspath(os.path.join(model_dir, file_name))
+    headers = tuple(headers)
 
     if _is_civitai_api_download_url(url):
         direct_url = _resolve_civitai_direct_url(url, headers=headers)
@@ -221,8 +237,8 @@ def _download_with_aria2(
         )
     elif _is_huggingface_download_url(url):
         direct_url = _resolve_hf_direct_url(url, headers=headers)
-        command = _build_generic_aria2_command(
-            url=direct_url,
+        command = _build_hf_aria2_command(
+            direct_url=direct_url,
             model_dir=model_dir,
             file_name=file_name,
             headers=headers,
