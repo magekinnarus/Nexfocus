@@ -24,7 +24,22 @@ class DirectResolver(DownloadResolver):
             destination_path=destination_path,
             resolved_url=source.url,
             headers=source.headers,
-            transport='aria2',
+            transport='generic_aria2',
+        )
+
+
+class GitHubResolver(DirectResolver):
+    """Resolve public GitHub Release/raw URLs without provider auth or URL rewriting."""
+
+    def resolve(self, entry: ModelCatalogEntry, policy: ModelDownloadPolicy) -> DownloadPlan:
+        plan = super().resolve(entry, policy)
+        return DownloadPlan(
+            entry=plan.entry,
+            destination_root=plan.destination_root,
+            destination_path=plan.destination_path,
+            resolved_url=plan.resolved_url,
+            headers=plan.headers,
+            transport='github_aria2',
         )
 
 
@@ -47,7 +62,7 @@ class CivitAIResolver(DownloadResolver):
             destination_path=destination_path,
             resolved_url=resolved_url,
             headers=source.headers,
-            transport='aria2',
+            transport='civitai_aria2',
         )
 
 
@@ -70,7 +85,7 @@ class HuggingFaceResolver(DownloadResolver):
             destination_path=destination_path,
             resolved_url=source.url,
             headers=tuple(headers),
-            transport='aria2',
+            transport='hf_get',
         )
 
 

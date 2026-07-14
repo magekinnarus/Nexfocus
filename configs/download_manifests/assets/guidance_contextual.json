@@ -27,6 +27,9 @@
       "relative_path": "fooocus_ip_negative.safetensors",
       "sources": [
         {
+          "url": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/fooocus_ip_negative.safetensors"
+        },
+        {
           "url": "https://huggingface.co/lllyasviel/misc/resolve/main/fooocus_ip_negative.safetensors"
         }
       ]

@@ -5,6 +5,7 @@ from .resolver import (
     DownloadResolver,
     CivitAIResolver,
     DirectResolver,
+    GitHubResolver,
     HuggingFaceResolver,
 )
 from .spec import (
@@ -23,6 +24,7 @@ __all__ = [
     'Aria2Transport',
     'CivitAIResolver',
     'DirectResolver',
+    'GitHubResolver',
     'DownloadPlan',
     'DownloadResolver',
     'DownloadResult',

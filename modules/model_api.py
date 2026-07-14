@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 import modules.model_taxonomy as model_taxonomy
 from modules.model_download.policy import ModelDownloadPolicy
-from modules.model_download.resolver import CivitAIResolver, DirectResolver, HuggingFaceResolver
+from modules.model_download.resolver import CivitAIResolver, DirectResolver, GitHubResolver, HuggingFaceResolver
 from modules.model_download.transport import Aria2Transport
 from modules.model_manager import ModelManager, default_model_manager
 
@@ -79,6 +79,8 @@ def _select_resolver(entry):
         return CivitAIResolver(token_env=_resolver_token_env(entry, 'CIVITAI_TOKEN'))
     if provider in {'huggingface', 'hf'}:
         return HuggingFaceResolver(token_env=_resolver_token_env(entry, 'HUGGINGFACE_TOKEN'))
+    if provider == 'github':
+        return GitHubResolver()
     return DirectResolver()
 
 
@@ -116,7 +118,7 @@ def _is_downloadable_browser_record(record) -> bool:
     entry = record.entry
     provider = str(entry.source_provider or '').strip().lower()
     has_source_url = bool(entry.source is not None and str(entry.source.url or '').strip())
-    return has_source_url and provider in {'civitai', 'huggingface', 'hf'}
+    return has_source_url and provider in {'civitai', 'huggingface', 'hf', 'github'}
 
 
 def _catalog_sources_payload(manager: ModelManager) -> list[dict[str, Any]]:

@@ -14,6 +14,9 @@
       "relative_path": "2xNomosUni_span_multijpg_ldl.pth",
       "sources": [
         {
+          "url": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/2xNomosUni_span_multijpg_ldl.pth"
+        },
+        {
           "url": "https://huggingface.co/Old-Fisherman/Fooocus_Nex/resolve/main/utils/2xNomosUni_span_multijpg_ldl.pth"
         }
       ]
@@ -30,6 +33,9 @@
       "destination": "upscale_models",
       "relative_path": "4xFFHQDAT.pth",
       "sources": [
+        {
+          "url": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/4xFFHQDAT.pth"
+        },
         {
           "url": "https://huggingface.co/Old-Fisherman/Fooocus_Nex/resolve/main/utils/4xFFHQDAT.pth"
         }
@@ -48,6 +54,9 @@
       "relative_path": "4xNomos2_otf_esrgan.pth",
       "sources": [
         {
+          "url": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/4xNomos2_otf_esrgan.pth"
+        },
+        {
           "url": "https://huggingface.co/Old-Fisherman/Fooocus_Nex/resolve/main/utils/4xNomos2_otf_esrgan.pth"
         }
       ]
@@ -64,6 +73,9 @@
       "destination": "upscale_models",
       "relative_path": "4xNomos8kSCHAT-L.pth",
       "sources": [
+        {
+          "url": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/4xNomos8kSCHAT-L.pth"
+        },
         {
           "url": "https://huggingface.co/Old-Fisherman/Fooocus_Nex/resolve/main/utils/4xNomos8kSCHAT-L.pth"
         }
@@ -82,6 +94,9 @@
       "relative_path": "4xNomosUniDAT_bokeh_jpg.pth",
       "sources": [
         {
+          "url": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/4xNomosUniDAT_bokeh_jpg.pth"
+        },
+        {
           "url": "https://huggingface.co/Old-Fisherman/Fooocus_Nex/resolve/main/utils/4xNomosUniDAT_bokeh_jpg.pth"
         }
       ]
@@ -99,6 +114,9 @@
       "relative_path": "Real_HAT_GAN_SRx4.pth",
       "sources": [
         {
+          "url": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/Real_HAT_GAN_SRx4.pth"
+        },
+        {
           "url": "https://huggingface.co/Old-Fisherman/Fooocus_Nex/resolve/main/utils/Real_HAT_GAN_SRx4.pth"
         }
       ]
@@ -115,6 +133,9 @@
       "destination": "upscale_models",
       "relative_path": "Swin2SR_RealworldSR_X4_64_BSRGAN_PSNR.pth",
       "sources": [
+        {
+          "url": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/Swin2SR_RealworldSR_X4_64_BSRGAN_PSNR.pth"
+        },
         {
           "url": "https://huggingface.co/Old-Fisherman/Fooocus_Nex/resolve/main/utils/Swin2SR_RealworldSR_X4_64_BSRGAN_PSNR.pth"
         }

@@ -19,21 +19,10 @@
                 { key: 'illustrious', label: 'Illustrious', match: (record) => record.architecture === 'sdxl' && record.sub_architecture === 'illustrious' },
             ],
         },
-        unet: {
-            label: 'UNet',
-            rootKeys: ['unet'],
-            subTabs: [
-                { key: 'sdxl', label: 'SDXL', match: (record) => record.architecture === 'sdxl' && (record.sub_architecture === 'base' || record.sub_architecture === 'general') },
-                { key: 'pony', label: 'Pony', match: (record) => record.architecture === 'sdxl' && record.sub_architecture === 'pony' },
-                { key: 'illustrious', label: 'Illustrious', match: (record) => record.architecture === 'sdxl' && record.sub_architecture === 'illustrious' },
-                { key: 'noob', label: 'Noob', match: (record) => record.architecture === 'sdxl' && record.sub_architecture === 'noob' },
-            ],
-        },
         others: {
             label: 'Others',
-            rootKeys: ['clip', 'vae', 'embeddings'],
+            rootKeys: ['vae', 'embeddings'],
             subTabs: [
-                { key: 'clip', label: 'CLIP', match: (record) => record.root_key === 'clip' },
                 { key: 'sdxl_vae', label: 'SDXL VAE', match: (record) => record.root_key === 'vae' && record.architecture === 'sdxl' },
                 { key: 'sdxl_embeddings', label: 'SDXL Embeddings', match: (record) => record.root_key === 'embeddings' && record.architecture === 'sdxl' },
             ],
@@ -46,20 +35,20 @@
         installed_unregistered: 'Installed and Unregistered',
         available_registered: 'Available for Download',
     };
-    const MODEL_TYPE_OPTIONS = ['checkpoint', 'lora', 'unet', 'clip', 'vae', 'embedding'];
+    const MODEL_TYPE_OPTIONS = ['checkpoint', 'lora', 'vae', 'embedding'];
     const ARCHITECTURE_OPTIONS = ['unknown', 'sd15', 'sdxl'];
     const SUB_ARCHITECTURE_OPTIONS = ['general', 'none', 'base', 'pony', 'illustrious', 'noob'];
-    const SOURCE_PROVIDER_OPTIONS = ['local', 'civitai', 'huggingface'];
+    const SOURCE_PROVIDER_OPTIONS = ['local', 'civitai', 'huggingface', 'github'];
     const NON_EDITABLE_ADD_MODEL_CATALOG_IDS = new Set([
         'user.local.models',
         'user.civitai.main',
         'user.huggingface.main',
+        'user.github.main',
     ]);
-    const DRAG_ROOTS = new Set(['checkpoints', 'unet', 'vae', 'clip', 'loras', 'embeddings']);
+    const DRAG_ROOTS = new Set(['checkpoints', 'vae', 'loras', 'embeddings']);
     const DROP_TARGETS = [
-        { selector: '#model_base_dropdown', target: 'base_model', roots: ['checkpoints', 'unet'] },
+        { selector: '#model_base_dropdown', target: 'base_model', roots: ['checkpoints'] },
         { selector: '#model_vae_dropdown', target: 'vae_model', roots: ['vae'] },
-        { selector: '#model_clip_dropdown', target: 'clip_model', roots: ['clip'] },
         { selector: '[id^="lora_model_dropdown_"]', target: (node) => `lora_model:${String(node.id).split('_').pop()}`, roots: ['loras'] },
     ];
     const PROMPT_TARGETS = [
@@ -403,8 +392,6 @@
             return {
                 checkpoint: 'checkpoints',
                 lora: 'loras',
-                unet: 'unet',
-                clip: 'clip',
                 vae: 'vae',
                 embedding: 'embeddings',
             }[String(modelType || '').trim().toLowerCase()] || '';
@@ -447,19 +434,16 @@
             const subKey = this.activeSubTabDef()?.key || '';
             let rootKey = this.activeRootKeys()[0] || 'checkpoints';
             if (this.state.activeTab === 'others') {
-                if (subKey === 'clip') rootKey = 'clip';
-                else if (subKey.includes('vae')) rootKey = 'vae';
+                if (subKey.includes('vae')) rootKey = 'vae';
                 else rootKey = 'embeddings';
             }
             const modelType = {
                 checkpoints: 'checkpoint',
                 loras: 'lora',
-                unet: 'unet',
-                clip: 'clip',
                 vae: 'vae',
                 embeddings: 'embedding',
             }[rootKey] || 'checkpoint';
-            const architecture = subKey.startsWith('sd15') ? 'sd15' : (subKey === 'clip' ? 'sdxl' : 'sdxl');
+            const architecture = subKey.startsWith('sd15') ? 'sd15' : 'sdxl';
             let subArchitecture = 'base';
             if (['pony', 'illustrious', 'noob'].includes(subKey)) subArchitecture = subKey;
             else if (rootKey === 'vae' || rootKey === 'embeddings') subArchitecture = 'none';
@@ -490,7 +474,7 @@
         }
 
         deriveFilenameFromAddSource(sourceProvider = '', sourceInput = '') {
-            if (String(sourceProvider || '').trim().toLowerCase() !== 'huggingface') return '';
+            if (!['huggingface', 'github'].includes(String(sourceProvider || '').trim().toLowerCase())) return '';
             try {
                 const parsed = new URL(String(sourceInput || '').trim());
                 const candidate = decodeURIComponent((parsed.pathname || '').split('/').pop() || '').trim();
@@ -516,6 +500,7 @@
             const providers = [
                 ['huggingface', 'HuggingFace'],
                 ['civitai', 'CivitAI'],
+                ['github', 'GitHub'],
             ];
             return `
                 <div class="nmb-provider-toggle" role="group" aria-label="Source Provider">
@@ -590,11 +575,10 @@
                 }
                 return null;
             }
-            if (rootKey === 'checkpoints' || rootKey === 'unet') {
-                return { targetKey: 'base_model', acceptedRoots: ['checkpoints', 'unet'] };
+            if (rootKey === 'checkpoints') {
+                return { targetKey: 'base_model', acceptedRoots: ['checkpoints'] };
             }
             if (rootKey === 'vae') return { targetKey: 'vae_model', acceptedRoots: ['vae'] };
-            if (rootKey === 'clip') return { targetKey: 'clip_model', acceptedRoots: ['clip'] };
             if (rootKey === 'loras') return { targetKey: this.resolvePreferredLoraTarget(), acceptedRoots: ['loras'] };
             return null;
         }
@@ -1180,13 +1164,11 @@
             if (!selector || !rootKey) return;
             let targetKey = null;
             let acceptedRoots = [rootKey];
-            if (rootKey === 'checkpoints' || rootKey === 'unet') {
+            if (rootKey === 'checkpoints') {
                 targetKey = 'base_model';
-                acceptedRoots = ['checkpoints', 'unet'];
+                acceptedRoots = ['checkpoints'];
             } else if (rootKey === 'vae') {
                 targetKey = 'vae_model';
-            } else if (rootKey === 'clip') {
-                targetKey = 'clip_model';
             } else if (rootKey === 'loras') {
                 targetKey = this.resolvePreferredLoraTarget();
             }
@@ -1550,13 +1532,15 @@
             const sourceLabel = provider === 'civitai' ? 'Version ID' : 'Download URL';
             const sourcePlaceholder = provider === 'civitai'
                 ? 'CivitAI model version id'
-                : 'https://huggingface.co/.../resolve/.../model.safetensors';
+                : provider === 'github'
+                    ? 'https://github.com/.../releases/download/.../model.safetensors'
+                    : 'https://huggingface.co/.../resolve/.../model.safetensors';
             return `
                 <aside class="nmb-drawer ${drawer.loading ? 'is-loading' : ''}">
                     <div class="nmb-drawer__header">
                         <div>
                             <h3>Add Downloadable Model</h3>
-                            <p>Add a Hugging Face download URL or a CivitAI version id into a managed personal catalog.</p>
+                            <p>Add a Hugging Face, GitHub, or CivitAI model source into a managed personal catalog.</p>
                         </div>
                         <button type="button" class="nmb-secondary" data-action="close-drawer">Close</button>
                     </div>

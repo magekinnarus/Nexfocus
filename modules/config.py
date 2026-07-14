@@ -1398,7 +1398,7 @@ def downloading_inpaint_models(v):
 
 def downloading_sdxl_lcm_lora():
     load_file_from_url(
-        url='https://huggingface.co/lllyasviel/misc/resolve/main/sdxl_lcm_lora.safetensors',
+        url='https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/sdxl_lcm_lora.safetensors',
         model_dir=path_loras_lcm,
         file_name='sdxl_lcm_lora.safetensors'
     )

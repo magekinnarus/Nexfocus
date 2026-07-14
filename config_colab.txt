@@ -25,10 +25,10 @@
     "path_model_thumbnails": "/content/drive/MyDrive/Fooocus_Nex/thumbnails/",
     "Selected_model": "beretMixReal_v110.safetensors",
     "checkpoint_downloads": {
-        "beretMixReal_v110.safetensors": "https://huggingface.co/Old-Fisherman/Fooocus_Nex/resolve/main/checkpoints/sdxl/beretMixReal_v110.safetensors"
+        "beretMixReal_v110.safetensors": "https://civitai.com/api/download/models/2619644"
     },
     "vae_downloads": {
-        "sdxl/sdxl_vae.safetensors": "https://huggingface.co/stabilityai/sdxl-vae/resolve/main/sdxl_vae.safetensors"
+        "sdxl/sdxl_vae.safetensors": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/sdxl_vae.safetensors"
     },
     "default_sampler": "dpmpp_2m",
     "default_scheduler": "beta",

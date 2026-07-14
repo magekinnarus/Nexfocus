@@ -13,6 +13,6 @@
     "default_overwrite_step": 8,
     "embeddings_downloads": {},
     "lora_downloads": {
-        "sdxl_lcm_lora.safetensors": "https://huggingface.co/lllyasviel/misc/resolve/main/sdxl_lcm_lora.safetensors"
+        "sdxl_lcm_lora.safetensors": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/sdxl_lcm_lora.safetensors"
     }
 }

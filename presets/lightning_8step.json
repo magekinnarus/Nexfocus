@@ -13,6 +13,6 @@
     "default_overwrite_step": 8,
     "embeddings_downloads": {},
     "lora_downloads": {
-        "sdxl_lightning_8step_lora.safetensors": "https://huggingface.co/ByteDance/SDXL-Lightning/resolve/main/sdxl_lightning_8step_lora.safetensors"
+        "sdxl_lightning_8step_lora.safetensors": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/sdxl_lightning_8step_lora.safetensors"
     }
 }

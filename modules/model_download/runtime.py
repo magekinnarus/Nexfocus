@@ -14,7 +14,9 @@ except ImportError:  # pragma: no cover - fallback path only matters if requests
     requests = None
 
 _ARIA2_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
-_ARIA2_CONNECTIONS = '4'
+_ARIA2_GENERIC_CONNECTIONS = '4'
+_ARIA2_CIVITAI_CONNECTIONS = '16'
+_ARIA2_GITHUB_CONNECTIONS = '16'
 
 
 def download_file(
@@ -40,6 +42,19 @@ def download_file(
     partial_download = os.path.exists(f'{destination}.aria2')
     if os.path.exists(destination) and not partial_download:
         return destination
+
+    if _is_huggingface_download_url(url):
+        # HF downloads use one streaming GET. Aria2's redirect/Xet handling is
+        # intentionally bypassed, and stale Aria2 state is not resumed.
+        if partial_download:
+            _cleanup_partial_download(destination)
+        return load_file_from_url(
+            url=_with_download_query(url),
+            model_dir=model_dir,
+            file_name=file_name,
+            progress=progress,
+            headers=headers,
+        )
 
     if prefer_aria2 and shutil.which('aria2c'):
         try:
@@ -125,6 +140,17 @@ def _is_huggingface_download_url(url: str) -> bool:
     return host.endswith('huggingface.co') or (mirror_host and host == mirror_host)
 
 
+def _is_github_download_url(url: str) -> bool:
+    parsed = urlparse(str(url or '').strip())
+    host = (parsed.netloc or '').lower()
+    return (
+        host == 'github.com'
+        or host.endswith('.github.com')
+        or host == 'githubusercontent.com'
+        or host.endswith('.githubusercontent.com')
+    )
+
+
 def _with_download_query(url: str) -> str:
     parsed = urlparse(str(url or '').strip())
     if not parsed.netloc:
@@ -141,45 +167,13 @@ def _with_download_query(url: str) -> str:
     return urlunparse(parsed._replace(query=urlencode(query_items)))
 
 
-def _resolve_hf_direct_url(url: str, headers: Iterable[tuple[str, str]] = ()) -> str:
-    request_headers = {key: value for key, value in headers}
-    if 'User-Agent' not in request_headers:
-        request_headers['User-Agent'] = _ARIA2_USER_AGENT
-
-    try:
-        if requests is not None:
-            try:
-                response = requests.head(url, headers=request_headers, allow_redirects=True, timeout=15)
-                response.raise_for_status()
-                return response.url
-            except Exception as head_exc:
-                status_code = getattr(getattr(head_exc, 'response', None), 'status_code', None)
-                if status_code in (403, 405) or "403" in str(head_exc) or "405" in str(head_exc):
-                    with requests.get(url, headers=request_headers, allow_redirects=True, timeout=15, stream=True) as response:
-                        response.raise_for_status()
-                        return response.url
-                raise head_exc
-
-        import urllib.request
-        request = urllib.request.Request(url, headers=request_headers, method='HEAD')
-        try:
-            with urllib.request.urlopen(request, timeout=15) as response:
-                return response.geturl()
-        except Exception:
-            request.method = 'GET'
-            with urllib.request.urlopen(request, timeout=15) as response:
-                return response.geturl()
-    except Exception as exc:
-        print(f"Hugging Face redirect resolution failed for {url}: {exc}. Downloading directly.")
-        return url
-
-
 def _build_generic_aria2_command(
     *,
     url: str,
     model_dir: str,
     file_name: str,
     headers: Iterable[tuple[str, str]] = (),
+    connections: str = _ARIA2_GENERIC_CONNECTIONS,
 ) -> list[str]:
     command = [
         'aria2c',
@@ -190,8 +184,8 @@ def _build_generic_aria2_command(
         '--connect-timeout=30',
         '--file-allocation=none',
         '-c',
-        '-x', _ARIA2_CONNECTIONS,
-        '-s', _ARIA2_CONNECTIONS,
+        '-x', connections,
+        '-s', connections,
         '-k', '1M',
         '--dir', model_dir,
         '--out', file_name,
@@ -204,43 +198,20 @@ def _build_generic_aria2_command(
     return command
 
 
-def _build_hf_aria2_command(
+def _build_github_aria2_command(
     *,
     url: str,
     model_dir: str,
     file_name: str,
     headers: Iterable[tuple[str, str]] = (),
 ) -> list[str]:
-    user_agent = _ARIA2_USER_AGENT
-    forwarded_headers = []
-    for key, value in headers:
-        if key.lower() == 'user-agent':
-            user_agent = value
-        else:
-            forwarded_headers.append((key, value))
-
-    command = [
-        'aria2c',
-        '--console-log-level=warn',
-        '--max-tries=20',
-        '--retry-wait=5',
-        '--timeout=60',
-        '--connect-timeout=30',
-        '--file-allocation=none',
-        f'--user-agent={user_agent}',
-        '-c',
-        '-x', _ARIA2_CONNECTIONS,
-        '-s', _ARIA2_CONNECTIONS,
-        '-k', '1M',
-        '--dir', model_dir,
-        '--out', file_name,
-    ]
-
-    for key, value in forwarded_headers:
-        command.extend(['--header', f'{key}: {value}'])
-
-    command.append(url)
-    return command
+    return _build_generic_aria2_command(
+        url=url,
+        model_dir=model_dir,
+        file_name=file_name,
+        headers=headers,
+        connections=_ARIA2_GITHUB_CONNECTIONS,
+    )
 
 
 def _build_civitai_aria2_command(*, direct_url: str, model_dir: str, file_name: str) -> list[str]:
@@ -254,8 +225,8 @@ def _build_civitai_aria2_command(*, direct_url: str, model_dir: str, file_name: 
         '--file-allocation=none',
         f'--user-agent={_ARIA2_USER_AGENT}',
         '--check-certificate=false',
-        '-x', _ARIA2_CONNECTIONS,
-        '-s', _ARIA2_CONNECTIONS,
+        '-x', _ARIA2_CIVITAI_CONNECTIONS,
+        '-s', _ARIA2_CIVITAI_CONNECTIONS,
         '-k', '1M',
         '--dir', model_dir,
         '--out', file_name,
@@ -277,6 +248,9 @@ def _download_with_aria2(
     destination = os.path.abspath(os.path.join(model_dir, file_name))
     headers = tuple(headers)
 
+    if _is_huggingface_download_url(url):
+        raise RuntimeError('Hugging Face assets must use the single-stream downloader, not Aria2.')
+
     if _is_civitai_api_download_url(url):
         direct_url = _resolve_civitai_direct_url(url, headers=headers)
         _cleanup_partial_download(destination)
@@ -285,9 +259,9 @@ def _download_with_aria2(
             model_dir=model_dir,
             file_name=file_name,
         )
-    elif _is_huggingface_download_url(url):
-        command = _build_hf_aria2_command(
-            url=_with_download_query(url),
+    elif _is_github_download_url(url):
+        command = _build_github_aria2_command(
+            url=url,
             model_dir=model_dir,
             file_name=file_name,
             headers=headers,

@@ -40,7 +40,7 @@ LOCAL_REGISTERED_CATALOG_ID = 'user.local.models'
 LOCAL_REGISTERED_CATALOG_LABEL = 'User Local Models'
 AUTO_GENERATED_UNREGISTERED_TAGS = ('auto_generated', 'unregistered')
 MANAGED_CATALOG_SCHEMA_VERSION = 'm06-draft-1'
-MANAGED_SOURCE_PROVIDERS = ('local', 'civitai', 'huggingface')
+MANAGED_SOURCE_PROVIDERS = ('local', 'civitai', 'huggingface', 'github')
 SYSTEM_CATALOG_IDS = {
     UNREGISTERED_INSTALL_CATALOG_ID,
     INSTALLED_MODEL_LINKS_ID,
@@ -183,6 +183,21 @@ def _normalize_huggingface_source_url(value: str | None) -> str:
     if not os.path.basename(path):
         raise ValueError('Hugging Face source URL must point to a specific file.')
     return parsed._replace(scheme='https', path=path, query='', fragment='').geturl()
+
+
+def _normalize_github_source_url(value: str | None) -> str:
+    text = str(value or '').strip()
+    if not text:
+        raise ValueError('GitHub source URL is required.')
+    parsed = urlparse(text)
+    if parsed.scheme not in {'http', 'https'}:
+        raise ValueError('GitHub source URL must start with http:// or https://.')
+    host = str(parsed.netloc or '').strip().lower()
+    if host not in {'github.com', 'raw.githubusercontent.com'} and not host.endswith('.githubusercontent.com'):
+        raise ValueError('GitHub source URL must point to github.com or githubusercontent.com.')
+    if not os.path.basename(parsed.path or ''):
+        raise ValueError('GitHub source URL must point to a specific file.')
+    return parsed._replace(scheme='https', query='', fragment='').geturl()
 
 
 def _normalize_civitai_source_url(value: str | None) -> tuple[str, str]:

@@ -17,7 +17,7 @@
       ],
       "sources": [
         {
-          "url": "https://huggingface.co/Old-Fisherman/Fooocus_Nex/resolve/main/flux_fill/flux1-Fill-Dev_FP8.safetensors"
+          "url": "https://civitai.com/api/download/models/1085456"
         }
       ]
     },
@@ -91,7 +91,7 @@
       "relative_path": "flux/t5xxl_fp16.safetensors",
       "sources": [
         {
-          "url": "https://huggingface.co/Old-Fisherman/Fooocus_Nex/resolve/main/flux_fill/t5xxl_fp16.safetensors"
+          "url": "https://civitai.com/api/download/models/787954"
         }
       ]
     },
@@ -125,7 +125,7 @@
       "relative_path": "flux/clip_l.safetensors",
       "sources": [
         {
-          "url": "https://huggingface.co/Old-Fisherman/Fooocus_Nex/resolve/main/flux_fill/clip_l.safetensors"
+          "url": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/clip_l.safetensors"
         }
       ]
     },
@@ -141,6 +141,9 @@
       "destination": "vae",
       "relative_path": "flux/ae.safetensors",
       "sources": [
+        {
+          "url": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/ae.safetensors"
+        },
         {
           "url": "https://huggingface.co/Old-Fisherman/Fooocus_Nex/resolve/main/flux_fill/ae.safetensors"
         }

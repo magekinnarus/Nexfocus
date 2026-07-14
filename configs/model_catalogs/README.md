@@ -12,6 +12,7 @@ The app-facing goal is:
 
 - `civitai_main_catalog.json` - committed preset CivitAI catalog
 - `huggingface_main_catalog.json` - committed preset HuggingFace catalog
+- `github_main_catalog.json` - committed preset GitHub Release catalog
 
 These main preset JSON files are also the reference examples for committed catalog structure in this folder.
 
@@ -24,6 +25,8 @@ Every catalog should declare its upstream provider when it is created.
 For M06, the provider layer is currently:
 - CivitAI catalogs
 - HuggingFace catalogs
+- GitHub Release catalogs
+- GitHub Release catalogs
 - local catalogs for installed-only assets
 
 Private or personal catalogs may still fall under one of those providers. In other words:
@@ -33,6 +36,7 @@ Private or personal catalogs may still fall under one of those providers. In oth
 Examples:
 - a personal CivitAI catalog should still use `source_provider: "civitai"`
 - a private HuggingFace catalog should still use `source_provider: "huggingface"`
+- a GitHub Release catalog should use `source_provider: "github"`
 - a discovered local-only model can use `source_provider: "local"`
 
 The app should normalize them into one unified runtime index, but users can still maintain them as separate JSON files.
@@ -197,7 +201,7 @@ Normalized entries should use the normalized `name` as the persisted filename fi
 `registration_state` tracks where an entry sits in the catalog lifecycle:
 - `unregistered`: auto-discovered or draft metadata that still needs user review
 - `locally_registered`: confirmed catalog entry without a remote download source
-- `sourced_registered`: confirmed catalog entry backed by a remote source such as HuggingFace or CivitAI
+- `sourced_registered`: confirmed catalog entry backed by a remote source such as HuggingFace, GitHub, or CivitAI
 
 ## Key Fields in the Runtime Schema
 

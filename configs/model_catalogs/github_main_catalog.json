@@ -1,0 +1,76 @@
+{
+    "schema_version": "m06-draft-1",
+    "catalog_id": "user.github.main",
+    "catalog_label": "User GitHub Main Catalog",
+    "source_provider": "github",
+    "generated_at": "2026-07-14",
+    "notes": [
+        "User-facing models mirrored to the Fooocus_Nex support_models GitHub Release.",
+        "The release is the primary source for these entries; the startup manifests retain Hugging Face fallbacks where applicable."
+    ],
+    "entries": [
+        {
+            "id": "github.vae.sdxl.base.sdxl_vae",
+            "alias": "sdxl_vae",
+            "name": "sdxl_vae.safetensors",
+            "display_name": "sdxl vae",
+            "model_type": "vae",
+            "architecture": "sdxl",
+            "sub_architecture": "none",
+            "root_key": "vae",
+            "asset_group_key": "base.sdxl_vae",
+            "thumbnail_library_relative": "thumbnails/vae/sdxl/sdxl_vae_sdxl_vae.png",
+            "source_provider": "github",
+            "source_version_id": "support_models",
+            "visibility": "generic",
+            "preset_managed": false,
+            "token_required": false,
+            "source": {
+                "url": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/sdxl_vae.safetensors"
+            },
+            "registration_state": "sourced_registered"
+        },
+        {
+            "id": "github.lora.sdxl.base.sdxl_lcm_lora",
+            "alias": "sdxl_lcm_lora",
+            "name": "sdxl_lcm_lora.safetensors",
+            "display_name": "SDXL LCM LoRA",
+            "model_type": "lora",
+            "architecture": "sdxl",
+            "sub_architecture": "base",
+            "root_key": "loras",
+            "asset_group_key": "base.sdxl_lcm_lora",
+            "thumbnail_library_relative": "thumbnails/loras/sdxl/base/sdxl_base_lora_sdxl_lcm_lora.png",
+            "source_provider": "github",
+            "source_version_id": "support_models",
+            "visibility": "generic",
+            "preset_managed": false,
+            "token_required": false,
+            "source": {
+                "url": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/sdxl_lcm_lora.safetensors"
+            },
+            "registration_state": "sourced_registered"
+        },
+        {
+            "id": "github.lora.sdxl.base.sdxl_lightning_8step_lora",
+            "alias": "sdxl_lightning_8step_lora",
+            "name": "sdxl_lightning_8step_lora.safetensors",
+            "display_name": "SDXL Lightning 8-step LoRA",
+            "model_type": "lora",
+            "architecture": "sdxl",
+            "sub_architecture": "base",
+            "root_key": "loras",
+            "asset_group_key": "base.sdxl_lightning_8step_lora",
+            "thumbnail_library_relative": "thumbnails/loras/sdxl/base/sdxl_base_lora_sdxl_lightning_8step_lora.png",
+            "source_provider": "github",
+            "source_version_id": "support_models",
+            "visibility": "generic",
+            "preset_managed": false,
+            "token_required": false,
+            "source": {
+                "url": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/sdxl_lightning_8step_lora.safetensors"
+            },
+            "registration_state": "sourced_registered"
+        }
+    ]
+}

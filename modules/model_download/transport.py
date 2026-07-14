@@ -16,7 +16,7 @@ class DownloadTransport(ABC):
 
 class Aria2Transport(DownloadTransport):
     def download(self, plan: DownloadPlan) -> DownloadResult:
-        return _download_plan(plan, prefer_aria2=True, transport_name='aria2')
+        return _download_plan(plan, prefer_aria2=True, transport_name=plan.transport)
 
 
 class FallbackTransport(DownloadTransport):

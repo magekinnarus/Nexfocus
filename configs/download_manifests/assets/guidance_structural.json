@@ -12,6 +12,9 @@
       "relative_path": "control-lora-canny-rank128.safetensors",
       "sources": [
         {
+          "url": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/control-lora-canny-rank128.safetensors"
+        },
+        {
           "url": "https://huggingface.co/lllyasviel/misc/resolve/main/control-lora-canny-rank128.safetensors"
         }
       ]
@@ -26,6 +29,9 @@
       "destination": "controlnet_models",
       "relative_path": "fooocus_xl_cpds_128.safetensors",
       "sources": [
+        {
+          "url": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/fooocus_xl_cpds_128.safetensors"
+        },
         {
           "url": "https://huggingface.co/lllyasviel/misc/resolve/main/fooocus_xl_cpds_128.safetensors"
         }
@@ -56,6 +62,9 @@
       "destination": "controlnet_models",
       "relative_path": "bdsqlsz_controlllite_xl_depth.safetensors",
       "sources": [
+        {
+          "url": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/bdsqlsz_controlllite_xl_depth.safetensors"
+        },
         {
           "url": "https://huggingface.co/bdsqlsz/qinglong_controlnet-lllite/resolve/main/bdsqlsz_controlllite_xl_depth.safetensors"
         }

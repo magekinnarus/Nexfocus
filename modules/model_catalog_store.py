@@ -28,6 +28,7 @@ from modules.model_manager_helpers import (
     _normalize_catalog_label,
     _normalize_civitai_source_url,
     _normalize_generated_sub_architecture,
+    _normalize_github_source_url,
     _normalize_huggingface_source_url,
     _normalize_lookup_key,
     _normalize_path,
@@ -294,8 +295,8 @@ class ModelCatalogStore:
         entry_id: str | None = None,
     ) -> dict[str, Any]:
         provider = _normalize_source_provider_value(source_provider)
-        if provider not in {'civitai', 'huggingface'}:
-            raise ValueError('source_provider must be civitai or huggingface for add-model flow.')
+        if provider not in {'civitai', 'huggingface', 'github'}:
+            raise ValueError('source_provider must be civitai, huggingface, or github for add-model flow.')
 
         normalized_model_type = str(model_type or '').strip().lower()
         root_key = _default_root_key_for_model_type(normalized_model_type)
@@ -317,6 +318,11 @@ class ModelCatalogStore:
             normalized_source_url = _normalize_huggingface_source_url(source_input)
             default_token_required = False
             default_token_env = 'HUGGINGFACE_TOKEN'
+        elif provider == 'github':
+            normalized_source_version_id = str(source_version_id or '').strip() or None
+            normalized_source_url = _normalize_github_source_url(source_input)
+            default_token_required = False
+            default_token_env = None
         else:
             normalized_source_version_id, normalized_source_url = _normalize_civitai_source_url(source_input)
             default_token_required = True

@@ -17,7 +17,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
-DEFAULT_SELECTOR = 'beretMixReal_v110.safetensors'
+DEFAULT_SELECTOR = 'innovision_v10.safetensors'
 DEFAULT_CATALOG = REPO_ROOT / 'configs' / 'model_catalogs' / 'huggingface_main_catalog.json'
 DEFAULT_TARGET_ROOT = REPO_ROOT / '.agent' / 'temp' / 'hf_download_probe'
 
@@ -179,14 +179,8 @@ def _is_huggingface_url(url: str) -> bool:
 def _report_hf_transport(url: str) -> None:
     if not _is_huggingface_url(url):
         return
-    aria2_path = shutil.which('aria2c')
-    print('HF transport: Aria2 resolve-URL path when aria2c is available.')
-    print('HF request: browser User-Agent with download=true; Aria2 follows redirects.')
-    if aria2_path:
-        print(f'Aria2: detected at {aria2_path}; configured split connections: 4.')
-    else:
-        print('Aria2: not detected; Python GET will be used.')
-    print('Python GET: used only when Aria2 is unavailable or explicitly bypassed.')
+    print('HF transport: single-thread Python GET; Aria2 is bypassed.')
+    print('HF request: download=true; retries use the temporary .downloading file.')
     print('HF Hub/Xet: not used by the project downloader.')
 
 
@@ -223,13 +217,19 @@ def main() -> int:
         )
     except KeyboardInterrupt:
         print('Download interrupted by user.')
-        if _is_huggingface_url(url) and (destination.exists() or Path(f'{destination}.aria2').exists()):
-            print('HF Aria2 partial files were preserved. Rerun without --force to resume.')
+        if _is_huggingface_url(url) and any(
+            candidate.exists()
+            for candidate in (destination, Path(f'{destination}.aria2'), Path(f'{destination}.downloading'))
+        ):
+            print('HF temporary download state is not resumable; rerun the single-stream download.')
         return 130
     except Exception as exc:
         print(f'Download failed: {exc}')
-        if _is_huggingface_url(url) and (destination.exists() or Path(f'{destination}.aria2').exists()):
-            print('HF Aria2 partial files were preserved. Rerun without --force to resume.')
+        if _is_huggingface_url(url) and any(
+            candidate.exists()
+            for candidate in (destination, Path(f'{destination}.aria2'), Path(f'{destination}.downloading'))
+        ):
+            print('HF temporary download state is not resumable; rerun the single-stream download.')
         return 1
     elapsed = time.perf_counter() - started
 
