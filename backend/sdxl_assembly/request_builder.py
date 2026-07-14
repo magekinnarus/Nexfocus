@@ -620,12 +620,6 @@ def build_assembly_request(
             "tile_policy": "target_geometry_driven",
         }
 
-    if policy is not None and getattr(policy, 'execution_mode', None) == 'resident':
-        logger.debug(
-            "[SDXL Assembly] Ignoring legacy resident SDXL policy for W04 route cutover; "
-            "the new route currently admits only the accepted streaming assembly."
-        )
-
     # Retrieve quality configs
     sharpness = float(getattr(task_state, 'sharpness', 2.0))
     adaptive_cfg = float(getattr(task_state, 'adaptive_cfg', 7.0))
@@ -855,11 +849,17 @@ def build_assembly_request(
             stitch_policy="sin_blend",
         )
 
+    spatial_context_descriptor = build_spatial_context_descriptor(task_state, image_input_result)
+
     assembly_route_id = "txt2img_assembly"
     if color_extraction_spec is not None:
         assembly_route_id = "color_enhancement"
     elif tiled_refinement_spec is not None:
         assembly_route_id = "super_upscale"
+    elif spatial_context_descriptor is not None:
+        spatial_mode = str(spatial_context_descriptor.mode or "image").strip().lower()
+        if spatial_mode in {"inpaint", "outpaint"}:
+            assembly_route_id = f"{spatial_mode}_assembly"
 
     request = SDXLAssemblyRequest(
         request_id=f"req_{current_task_id}_{int(time.time())}",
@@ -900,7 +900,7 @@ def build_assembly_request(
         adm_scaler_negative=adm_neg,
         adm_scaler_end=adm_end,
         metadata=execution_metadata,
-        spatial_context=build_spatial_context_descriptor(task_state, image_input_result),
+        spatial_context=spatial_context_descriptor,
         structural_controls=tuple(structural_controls_list),
         contextual_controls=tuple(contextual_controls_list),
         color_extraction=color_extraction_spec,

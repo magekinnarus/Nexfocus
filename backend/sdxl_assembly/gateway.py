@@ -246,6 +246,7 @@ def run_sdxl_assembly_task(
         try:
             cuda_alloc_start = torch.cuda.memory_allocated() / (1024 * 1024)
             cuda_reserved_start = torch.cuda.memory_reserved() / (1024 * 1024)
+            torch.cuda.reset_peak_memory_stats()
         except Exception:
             pass
 

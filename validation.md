@@ -277,6 +277,14 @@ Expected result:
 
 ### 6. SDXL W12b Auto/Streaming Resident Replay
 
+Current field status (2026-07-13): five L4 `auto` resident runs passed for
+Txt2Img cold, three LoRAs, warm inpaint, inpaint with two structural controls
+plus PuLID, and checkpoint change with warm CN artifacts. The remaining steps
+below are still required for W12b acceptance. New runs must show truthful
+`inpaint_assembly` / `outpaint_assembly` route IDs,
+`spatial_compose_complete ... blend=morphological_sin2`, and run-local
+`CUDA_Peak` values.
+
 Run this exact UI sequence on Colab L4 for W12b acceptance:
 
 1. `SDXL Assembly Posture = streaming`, `Txt2Img`

@@ -200,13 +200,14 @@ def test_super_upscale_ui_exposes_target_and_hides_gan_controls() -> None:
 
     updates = uov_method_change("Super-Upscale")
 
-    assert len(updates) == 6
+    assert len(updates) == 7
     assert updates[0]["visible"] is True
     assert updates[1]["visible"] is False
     assert updates[2]["visible"] is False
     assert updates[3]["visible"] is False
     assert updates[4]["visible"] is True
     assert updates[5]["visible"] is False
+    assert updates[6]["visible"] is False
 
 
 def test_plain_upscale_preserves_active_major_family_without_publishing_synthetic_sdxl_identity(monkeypatch) -> None:

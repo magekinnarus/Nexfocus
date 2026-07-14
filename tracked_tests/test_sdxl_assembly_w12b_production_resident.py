@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+import numpy as np
 import pytest
 import torch
 
@@ -155,6 +156,100 @@ def test_legacy_policy_does_not_override(monkeypatch):
     )
     # The legacy policy's resident mode must not override the explicit streaming choice
     assert req.unet_posture == UNetPostureKind.STREAMING
+
+
+@pytest.mark.parametrize(
+    ("goal", "image_key", "mask_key", "expected_route"),
+    (
+        ("inpaint", "inpaint_image", "inpaint_mask", "inpaint_assembly"),
+        ("outpaint", "outpaint_image", "outpaint_mask", "outpaint_assembly"),
+    ),
+)
+def test_spatial_request_telemetry_route_is_truthful(goal, image_key, mask_key, expected_route):
+    task = TaskState()
+    task.base_model_name = "test_model.safetensors"
+    task.goals = [goal]
+    image = np.zeros((64, 64, 3), dtype=np.uint8)
+    mask = np.ones((64, 64), dtype=np.uint8) * 255
+
+    req = build_assembly_request(
+        task,
+        {"task_seed": 12345},
+        0,
+        1,
+        30,
+        0,
+        1.0,
+        "karras",
+        loras=[],
+        image_input_result={image_key: image, mask_key: mask},
+    )
+
+    assert req.route_id == expected_route
+    assert req.spatial_context is not None
+    assert req.spatial_context.mode == goal
+
+
+def test_zero_clip_patch_stack_bypasses_isolated_clone(monkeypatch):
+    import backend.sdxl_assembly.runtime_state as runtime_state
+
+    runtime_state.clear_all_caches()
+    isolate_calls = []
+    clip = SimpleNamespace(
+        patcher=SimpleNamespace(
+            isolated_clone=lambda: isolate_calls.append(True),
+        )
+    )
+    monkeypatch.setattr(runtime_state, "acquire_text_encoder_component", lambda _request: clip)
+
+    class NoClipPatchWorker:
+        clip_patch_count = 0
+
+        @staticmethod
+        def resolve_clip_patches(_clip):
+            return ()
+
+        @staticmethod
+        def apply_clip_patches(*_args, **_kwargs):
+            raise AssertionError("No-op CLIP LoRAs must not reach patch application")
+
+    request = SDXLAssemblyRequest(
+        request_id="zero_clip_patch",
+        route_id="txt2img_assembly",
+        image_index=0,
+        image_count=1,
+        checkpoint=_identity("checkpoint.safetensors", "checkpoint_sha"),
+        vae=None,
+        model_variant_key="sdxl",
+        prompt="prompt",
+        negative_prompt="",
+        positive_texts=("prompt",),
+        negative_texts=("",),
+        width=64,
+        height=64,
+        steps=1,
+        cfg=1.0,
+        sampler="euler",
+        scheduler="karras",
+        seed=1,
+        device="cpu",
+        lora_specs=(
+            SimpleNamespace(
+                enabled=True,
+                clip_weight=1.0,
+                file_identity=_identity("unet_only.safetensors", "lora_sha"),
+            ),
+        ),
+    )
+
+    result = runtime_state.acquire_patched_text_encoder_component(
+        request,
+        lora_worker=NoClipPatchWorker(),
+    )
+
+    assert result is clip
+    assert isolate_calls == []
+    runtime_state.clear_all_caches()
 
 def test_telemetry_envelope_success(monkeypatch, capsys):
     task = TaskState()

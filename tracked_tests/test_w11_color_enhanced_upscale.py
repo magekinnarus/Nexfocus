@@ -573,14 +573,16 @@ def test_color_method_exposes_prompt_and_existing_gan_input() -> None:
     color_updates = uov_method_change("Color Enhancement")
     normal_updates = uov_method_change("Upscale")
 
-    assert len(color_updates) == 6
+    assert len(color_updates) == 7
     assert color_updates[3]["visible"] is True
     assert color_updates[4]["visible"] is True
     assert color_updates[1]["visible"] is False
     assert color_updates[2]["visible"] is False
     assert color_updates[5]["visible"] is False
+    assert color_updates[6]["visible"] is False
     assert normal_updates[3]["visible"] is False
     assert normal_updates[4]["visible"] is False
+    assert normal_updates[6]["visible"] is True
 
 
 def test_color_enhancement_request_freezes_workflow_contract(monkeypatch, tmp_path) -> None:

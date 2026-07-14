@@ -94,16 +94,17 @@ class CpuLoraWorker:
         log_telemetry("lora_apply_complete", f"target=unet patches={patch_count}")
         return patch_count
 
-    def apply_clip_patches(self, clip: Any) -> int:
-        """Parses and applies CLIP-side patches to the model patcher."""
+    def resolve_clip_patches(self, clip: Any) -> tuple[tuple[dict, float], ...]:
+        """Parse CLIP-side patches without mutating or cloning the text encoder."""
         if not self.request.lora_specs:
-            return 0
+            self.clip_patch_count = 0
+            return ()
         
         patcher = clip.patcher
         model = patcher.model
         key_map = backend_lora.model_lora_keys_clip(model)
         model_class_name = model.__class__.__name__
-        patch_count = 0
+        resolved_patches = []
         
         for spec in self.request.lora_specs:
             if not spec.enabled or spec.clip_weight == 0.0:
@@ -133,8 +134,26 @@ class CpuLoraWorker:
                     _PARSED_LORA_CACHE.pop(next(iter(_PARSED_LORA_CACHE)))
                         
             if patch_dict:
-                patcher.add_patches(patch_dict, spec.clip_weight)
-                patch_count += len(patch_dict)
+                resolved_patches.append((patch_dict, float(spec.clip_weight)))
+
+        self.clip_patch_count = sum(len(patch_dict) for patch_dict, _weight in resolved_patches)
+        return tuple(resolved_patches)
+
+    def apply_clip_patches(
+        self,
+        clip: Any,
+        *,
+        resolved_patches: tuple[tuple[dict, float], ...] | None = None,
+    ) -> int:
+        """Apply previously resolved CLIP patches, parsing them when necessary."""
+        if resolved_patches is None:
+            resolved_patches = self.resolve_clip_patches(clip)
+
+        patcher = clip.patcher
+        for patch_dict, weight in resolved_patches:
+            patcher.add_patches(patch_dict, weight)
+
+        patch_count = sum(len(patch_dict) for patch_dict, _weight in resolved_patches)
                 
         self.clip_patch_count = patch_count
         if self.patch_artifact is not None:

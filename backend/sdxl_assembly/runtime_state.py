@@ -172,10 +172,6 @@ def acquire_text_encoder_component(request: SDXLAssemblyRequest) -> Any:
     """Return an owned CLIP worker component without loading UNet/VAE."""
     checkpoint_path = str(request.checkpoint.path)
     key = request.checkpoint.sha256
-    isolate_for_lora = any(
-        spec.enabled and spec.clip_weight != 0.0
-        for spec in request.lora_specs
-    )
 
     with _TEXT_ENCODER_COMPONENT_CACHE_LOCK:
         clip = _TEXT_ENCODER_COMPONENT_CACHE.get(key)
@@ -204,7 +200,7 @@ def acquire_text_encoder_component(request: SDXLAssemblyRequest) -> Any:
             logger.debug("[SDXL Telemetry] Text encoder cache HIT for checkpoint=%s", request.checkpoint.sha256)
             log_telemetry("text_encoder_cache_hit", f"checkpoint={request.checkpoint.path.name}")
 
-        return _clone_owned_component(clip, "CLIP", isolate_model=isolate_for_lora)
+        return _clone_owned_component(clip, "CLIP")
 
 
 def acquire_patched_text_encoder_component(
@@ -239,7 +235,34 @@ def acquire_patched_text_encoder_component(
             logger.debug("[SDXL Telemetry] Releasing stale warm patched text encoder before rebuild.")
 
         clip = acquire_text_encoder_component(request)
-        lora_worker.apply_clip_patches(clip)
+        resolve_clip_patches = getattr(lora_worker, "resolve_clip_patches", None)
+        if callable(resolve_clip_patches):
+            resolved_patches = resolve_clip_patches(clip)
+        else:
+            resolved_patches = None
+
+        if resolved_patches == ():
+            logger.debug(
+                "[SDXL Telemetry] Patched text encoder build resolved no CLIP-side patches for checkpoint=%s",
+                request.checkpoint.sha256,
+            )
+            log_telemetry("clip_lora_isolation_bypass", f"checkpoint={request.checkpoint.path.name} patches=0")
+            log_telemetry("patched_text_encoder_cache_bypass", f"checkpoint={request.checkpoint.path.name}")
+            return clip
+
+        patcher = getattr(clip, "patcher", None)
+        isolated_clone = getattr(patcher, "isolated_clone", None)
+        if resolved_patches is not None and not callable(isolated_clone):
+            raise TypeError("CLIP patch application requires an isolated patcher clone.")
+        if callable(isolated_clone):
+            clip.patcher = isolated_clone()
+            log_telemetry("clip_lora_isolation_complete", f"checkpoint={request.checkpoint.path.name}")
+
+        if resolved_patches is None:
+            lora_worker.apply_clip_patches(clip)
+        else:
+            lora_worker.apply_clip_patches(clip, resolved_patches=resolved_patches)
+
         if int(getattr(lora_worker, "clip_patch_count", 0) or 0) <= 0:
             logger.debug(
                 "[SDXL Telemetry] Patched text encoder build resolved no CLIP-side patches for checkpoint=%s",

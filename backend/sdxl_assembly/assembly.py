@@ -273,7 +273,13 @@ class SDXLAssembly:
         if blend_mask is None:
             blend_mask = getattr(spatial_artifacts, "blend_mask", None)
         if blend_mask is None:
+            log_telemetry("spatial_compose_skipped", f"mode={spatial_mode} reason=missing_blend_mask")
             return output_image
+
+        log_telemetry(
+            "spatial_compose_begin",
+            f"mode={spatial_mode} bbox={tuple(int(v) for v in bbox)} blend=morphological_sin2",
+        )
 
         base_batch = self._ensure_image_batch_tensor(base_pixels)
         patch_batch = self._ensure_image_batch_tensor(output_image)
@@ -313,7 +319,12 @@ class SDXLAssembly:
 
         weight = blending.apply_sin2_curve(blend_batch[..., None].to(dtype=torch.float32))
         composed = torch.clamp(result * weight + base_batch * (1.0 - weight), min=0.0, max=1.0)
-        return self._tensor_to_output_image(composed, output_image)
+        final_output = self._tensor_to_output_image(composed, output_image)
+        log_telemetry(
+            "spatial_compose_complete",
+            f"mode={spatial_mode} output={final_output.shape[1]}x{final_output.shape[0]} blend=morphological_sin2",
+        )
+        return final_output
 
     def _ensure_image_batch_tensor(self, value: Any) -> torch.Tensor | None:
         if value is None:
