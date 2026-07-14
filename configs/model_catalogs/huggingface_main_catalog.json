@@ -491,7 +491,7 @@
                         "preset_managed":  false,
                         "token_required":  false,
                         "source":  {
-                                       "url":  "https://huggingface.co/stabilityai/sdxl-vae/resolve/main/sdxl_vae.safetensors"
+                                       "url":  "https://huggingface.co/Old-Fisherman/Fooocus_Nex/resolve/main/vae/sdxl_vae.safetensors"
                                    },
                         "registration_state":  "sourced_registered"
                     },
