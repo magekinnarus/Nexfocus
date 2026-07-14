@@ -70,10 +70,9 @@ def test_hf_aria2_command_uses_user_agent_and_parallel_connections():
         direct_url='https://cdn.example/model.safetensors',
         model_dir='/models',
         file_name='model.safetensors',
-        headers=(('Authorization', 'Bearer token'),),
+        headers=(('Authorization', 'Bearer token'), ('User-Agent', 'CustomUA')),
     )
 
-    assert any(item.startswith('--user-agent=') for item in command)
     assert '--check-certificate=false' in command
     assert '--retry-wait=2' in command
     assert command[command.index('-x') + 1] == '8'
@@ -81,9 +80,12 @@ def test_hf_aria2_command_uses_user_agent_and_parallel_connections():
     assert ['--header', 'Authorization: Bearer token'] == command[
         command.index('--header'):command.index('--header') + 2
     ]
+    # Check that custom User-Agent is passed as a header rather than a command flag
+    assert not any(item.startswith('--user-agent=') for item in command)
+    assert any(item == 'User-Agent: CustomUA' for item in command)
 
 
-def test_civitai_and_hf_commands_share_parallel_browser_posture():
+def test_civitai_uses_browser_user_agent_and_parallel_connections():
     command = _build_civitai_aria2_command(
         direct_url='https://cdn.example/model.safetensors',
         model_dir='/models',

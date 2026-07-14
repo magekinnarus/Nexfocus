@@ -124,10 +124,8 @@ def _is_huggingface_download_url(url: str) -> bool:
 
 
 def _resolve_hf_direct_url(url: str, headers: Iterable[tuple[str, str]] = ()) -> str:
-    # Use headers for resolution to ensure UA is set
+    # Use headers for resolution to ensure any custom UA is set
     request_headers = {key: value for key, value in headers}
-    if 'User-Agent' not in request_headers:
-        request_headers['User-Agent'] = _ARIA2_USER_AGENT
 
     try:
         if requests is not None:
@@ -198,7 +196,6 @@ def _build_hf_aria2_command(
     command = [
         'aria2c',
         '--console-log-level=warn',
-        f'--user-agent={_ARIA2_USER_AGENT}',
         '--check-certificate=false',
         '--retry-wait=2',
         '-c',
@@ -209,10 +206,7 @@ def _build_hf_aria2_command(
         '--out', file_name,
     ]
     for key, value in headers:
-        if key.lower() != 'user-agent':
-            command.extend(['--header', f'{key}: {value}'])
-        else:
-            command[2] = f'--user-agent={value}'
+        command.extend(['--header', f'{key}: {value}'])
     command.append(direct_url)
     return command
 
