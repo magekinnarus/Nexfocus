@@ -75,8 +75,9 @@ def test_hf_aria2_command_uses_user_agent_and_parallel_connections():
 
     assert any(item.startswith('--user-agent=') for item in command)
     assert '--check-certificate=false' in command
-    assert command[command.index('-x') + 1] == '16'
-    assert command[command.index('-s') + 1] == '16'
+    assert '--retry-wait=2' in command
+    assert command[command.index('-x') + 1] == '8'
+    assert command[command.index('-s') + 1] == '8'
     assert ['--header', 'Authorization: Bearer token'] == command[
         command.index('--header'):command.index('--header') + 2
     ]
