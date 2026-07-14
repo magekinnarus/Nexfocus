@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -17,6 +18,11 @@ _ARIA2_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
 _ARIA2_GENERIC_CONNECTIONS = '4'
 _ARIA2_CIVITAI_CONNECTIONS = '16'
 _ARIA2_GITHUB_CONNECTIONS = '16'
+_MAX_SAFETENSORS_HEADER_BYTES = 100 * 1024 * 1024
+
+
+class _CivitAIAuthenticationError(RuntimeError):
+    pass
 
 
 def download_file(
@@ -41,30 +47,37 @@ def download_file(
     destination = os.path.abspath(os.path.join(model_dir, file_name))
     partial_download = os.path.exists(f'{destination}.aria2')
     if os.path.exists(destination) and not partial_download:
-        return destination
+        if validate_downloaded_file(destination):
+            return destination
+        print(f"Discarding invalid cached model payload: {destination}")
+        _cleanup_partial_download(destination)
 
     if _is_huggingface_download_url(url):
         # HF downloads use one streaming GET. Aria2's redirect/Xet handling is
         # intentionally bypassed, and stale Aria2 state is not resumed.
         if partial_download:
             _cleanup_partial_download(destination)
-        return load_file_from_url(
+        downloaded = load_file_from_url(
             url=_with_download_query(url),
             model_dir=model_dir,
             file_name=file_name,
             progress=progress,
             headers=headers,
         )
+        return _require_valid_download(downloaded, url=url)
 
     if prefer_aria2 and shutil.which('aria2c'):
         try:
-            return _download_with_aria2(
+            downloaded = _download_with_aria2(
                 url=url,
                 model_dir=model_dir,
                 file_name=file_name,
                 headers=headers,
             )
+            return _require_valid_download(downloaded, url=url)
         except Exception as exc:
+            if isinstance(exc, _CivitAIAuthenticationError):
+                raise
             if _is_huggingface_download_url(url):
                 print(
                     f"Aria2 download failed for Hugging Face asset {url}: {exc}. "
@@ -77,12 +90,78 @@ def download_file(
     if partial_download:
         _cleanup_partial_download(destination)
 
-    return load_file_from_url(
+    downloaded = load_file_from_url(
         url=url,
         model_dir=model_dir,
         file_name=file_name,
         progress=progress,
         headers=headers,
+    )
+    return _require_valid_download(downloaded, url=url)
+
+
+def validate_downloaded_file(path: str) -> bool:
+    """Cheaply reject obvious non-model payloads saved under model filenames."""
+    if not str(path).lower().endswith('.safetensors'):
+        return True
+
+    try:
+        file_size = os.path.getsize(path)
+        if file_size < 10:
+            return False
+
+        with open(path, 'rb') as handle:
+            header_size_raw = handle.read(8)
+            if len(header_size_raw) != 8:
+                return False
+            header_size = int.from_bytes(header_size_raw, byteorder='little', signed=False)
+            if not 2 <= header_size <= _MAX_SAFETENSORS_HEADER_BYTES:
+                return False
+            if header_size > file_size - 8:
+                return False
+            header = handle.read(header_size)
+
+        metadata = json.loads(header.decode('utf-8'))
+        if not isinstance(metadata, dict):
+            return False
+
+        payload_size = file_size - 8 - header_size
+        tensor_descriptors = [
+            descriptor
+            for key, descriptor in metadata.items()
+            if key != '__metadata__'
+        ]
+        if not tensor_descriptors:
+            return False
+
+        for descriptor in tensor_descriptors:
+            if not isinstance(descriptor, dict):
+                return False
+            if not isinstance(descriptor.get('dtype'), str):
+                return False
+            if not isinstance(descriptor.get('shape'), list):
+                return False
+            offsets = descriptor.get('data_offsets')
+            if not (
+                isinstance(offsets, list)
+                and len(offsets) == 2
+                and all(isinstance(value, int) for value in offsets)
+                and 0 <= offsets[0] <= offsets[1] <= payload_size
+            ):
+                return False
+        return True
+    except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def _require_valid_download(path: str, *, url: str) -> str:
+    if validate_downloaded_file(path):
+        return path
+
+    _cleanup_partial_download(path)
+    raise RuntimeError(
+        f"Downloaded payload from {url} is not a valid safetensors file. "
+        "The response may be an HTML/XML error page or an unresolved pointer."
     )
 
 
@@ -94,6 +173,7 @@ def _is_civitai_api_download_url(url: str) -> bool:
 
 
 def _resolve_civitai_direct_url(url: str, headers: Iterable[tuple[str, str]] = ()) -> str:
+    url = _with_civitai_token(url)
     request_headers = {key: value for key, value in headers}
     if 'User-Agent' not in request_headers:
         request_headers['User-Agent'] = _ARIA2_USER_AGENT
@@ -104,25 +184,39 @@ def _resolve_civitai_direct_url(url: str, headers: Iterable[tuple[str, str]] = (
                 try:
                     response = requests.head(target_url, headers=request_headers, allow_redirects=True, timeout=10)
                     response.raise_for_status()
-                    return response.url
+                    return _validate_civitai_direct_response(
+                        response.url,
+                        content_type=response.headers.get('Content-Type'),
+                    )
                 except Exception as head_exc:
                     status_code = getattr(getattr(head_exc, 'response', None), 'status_code', None)
                     if status_code in (403, 405) or "403" in str(head_exc) or "405" in str(head_exc):
                         with requests.get(target_url, headers=request_headers, allow_redirects=True, timeout=10, stream=True) as response:
                             response.raise_for_status()
-                            return response.url
+                            return _validate_civitai_direct_response(
+                                response.url,
+                                content_type=response.headers.get('Content-Type'),
+                            )
                     raise head_exc
 
             import urllib.request
             request = urllib.request.Request(target_url, headers=request_headers, method='HEAD')
             try:
                 with urllib.request.urlopen(request, timeout=10) as response:
-                    return response.geturl()
+                    return _validate_civitai_direct_response(
+                        response.geturl(),
+                        content_type=response.headers.get('Content-Type'),
+                    )
             except Exception:
                 request.method = 'GET'
                 with urllib.request.urlopen(request, timeout=10) as response:
-                    return response.geturl()
+                    return _validate_civitai_direct_response(
+                        response.geturl(),
+                        content_type=response.headers.get('Content-Type'),
+                    )
         except Exception as exc:
+            if isinstance(exc, _CivitAIAuthenticationError):
+                raise
             parsed = urlparse(target_url)
             if parsed.netloc.lower() == 'civitai.com':
                 red_url = target_url.replace('civitai.com', 'civitai.red', 1)
@@ -131,6 +225,40 @@ def _resolve_civitai_direct_url(url: str, headers: Iterable[tuple[str, str]] = (
             raise exc
 
     return _do_resolve(url)
+
+
+def _with_civitai_token(url: str) -> str:
+    parsed = urlparse(str(url or '').strip())
+    query_items = parse_qsl(parsed.query, keep_blank_values=True)
+    if any(key.lower() == 'token' and value for key, value in query_items):
+        return url
+
+    token = os.environ.get('CIVITAI_TOKEN', '').strip()
+    if not token:
+        return url
+
+    query_items.append(('token', token))
+    return urlunparse(parsed._replace(query=urlencode(query_items)))
+
+
+def _validate_civitai_direct_response(url: str, *, content_type: str | None = None) -> str:
+    parsed = urlparse(str(url or '').strip())
+    host = (parsed.netloc or '').lower()
+    path = (parsed.path or '').lower()
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    normalized_content_type = str(content_type or '').lower()
+
+    is_auth_redirect = (
+        host == 'auth.civitai.com'
+        or path.startswith('/login')
+        or query.get('reason') == 'download-auth'
+    )
+    if is_auth_redirect or 'text/html' in normalized_content_type:
+        raise _CivitAIAuthenticationError(
+            'CivitAI returned an authentication/login page instead of a model file. '
+            'Set CIVITAI_TOKEN to a valid CivitAI API token and retry.'
+        )
+    return url
 
 
 def _is_huggingface_download_url(url: str) -> bool:

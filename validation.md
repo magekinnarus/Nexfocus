@@ -31,6 +31,16 @@ downloads are not resumed.
 CivitAI and GitHub model downloads use Aria2 with 16 connections/splits.
 Unknown generic URLs retain the conservative 4-connection Aria2 path.
 
+Every cached or newly downloaded `.safetensors` file is checked at the shared
+download boundary before it is accepted. The check reads only the bounded
+safetensors JSON header; HTML/XML error responses and unresolved pointer files
+are deleted instead of being passed to a model loader. Manifest-backed assets
+may then continue to another declared source. The Flux FP16 T5 asset is
+deliberately CivitAI-only: its exact expected size is 9,787,841,024 bytes, and
+there is no automatic Hugging Face fallback. CivitAI API downloads append
+`CIVITAI_TOKEN` when configured. A login/HTML redirect fails closed with a
+clear token requirement instead of being passed to Aria2.
+
 The `support_models` GitHub Release is now the primary source for the moved
 startup/support assets. The asset manifests list the GitHub Release URL first
 and retain the previous Hugging Face URL as a fallback where one exists. The
@@ -323,6 +333,12 @@ Expected result:
 - Resident cold load, prompt-only warm reuse, LoRA same-stack reuse, LoRA
   removal, transient VAE attach/detach, ControlNet coexistence, skip/interrupt,
   and final release are visible in console telemetry.
+- On the SDXL-to-Flux transition, the departing resident spine releases before
+  Flux activation. If a provider returns HTML/XML under a `.safetensors`
+  filename, the downloader rejects and deletes it instead of failing later
+  inside prompt encoding. For the CivitAI-only FP16 T5 asset, an authentication
+  redirect must report the `CIVITAI_TOKEN` requirement; it must not fall back to
+  Hugging Face automatically.
 - Report CPU RSS, CUDA allocated/reserved/peak, output success/path, resident
   spine retention/release, and any failure/interrupt status in the same
   issue/outcome style as `.agent/temp/P4-M18-W11e_issues4.md`.

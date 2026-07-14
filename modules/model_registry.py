@@ -3,7 +3,7 @@ import os
 import zipfile
 from functools import lru_cache
 
-from modules.model_download.runtime import download_file
+from modules.model_download.runtime import download_file, validate_downloaded_file
 
 
 def _load_manifest(path):
@@ -122,6 +122,18 @@ def _ensure_parent_dir(path):
         os.makedirs(parent, exist_ok=True)
 
 
+def _validate_file_asset(asset, path):
+    if not validate_downloaded_file(path):
+        return False
+    expected_size = asset.get('expected_size_bytes')
+    if expected_size is not None:
+        try:
+            return os.path.getsize(path) == int(expected_size)
+        except (OSError, TypeError, ValueError):
+            return False
+    return True
+
+
 def _verify_expected_files(base_dir, expected_files):
     if not expected_files:
         return True
@@ -148,8 +160,15 @@ def ensure_asset(asset_id, progress=True):
 
 
 def _ensure_file_asset(asset, target_path, progress=True):
-    if os.path.exists(target_path):
-        return target_path
+    has_aria2_state = os.path.exists(f'{target_path}.aria2')
+    if os.path.exists(target_path) and not has_aria2_state:
+        if _validate_file_asset(asset, target_path):
+            return target_path
+        print(f"Discarding invalid cached asset {asset['id']}: {target_path}")
+        try:
+            os.remove(target_path)
+        except OSError:
+            pass
 
     sources = _get_asset_sources(asset)
     if not sources:
@@ -162,13 +181,22 @@ def _ensure_file_asset(asset, target_path, progress=True):
     last_error = None
     for source in sources:
         try:
-            return download_file(
+            downloaded_path = download_file(
                 url=source["url"],
                 model_dir=download_dir,
                 file_name=file_name,
                 progress=progress,
                 headers=source.get("headers", ()),
             )
+            if not _validate_file_asset(asset, downloaded_path):
+                try:
+                    os.remove(downloaded_path)
+                except OSError:
+                    pass
+                raise RuntimeError(
+                    f"Downloaded asset {asset['id']} failed its format or expected-size check"
+                )
+            return downloaded_path
         except Exception as exc:
             last_error = exc
             print(f"Failed to download asset {asset['id']} from {source['url']}: {exc}")

@@ -89,6 +89,7 @@
       "artifact_type": "file",
       "destination": "clip",
       "relative_path": "flux/t5xxl_fp16.safetensors",
+      "expected_size_bytes": 9787841024,
       "sources": [
         {
           "url": "https://civitai.com/api/download/models/787954"
