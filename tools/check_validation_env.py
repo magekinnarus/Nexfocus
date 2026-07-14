@@ -11,7 +11,7 @@ from packaging.version import InvalidVersion, Version
 
 REQUIRED_SPECS = {
     "transformers": SpecifierSet(">=4.42.4"),
-    "huggingface-hub": SpecifierSet(">=0.24,<1.0"),
+    "huggingface-hub": SpecifierSet(">=0.32,<1.0"),
     "tokenizers": SpecifierSet("==0.19.1"),
     "accelerate": SpecifierSet(">=0.32.1"),
 }
