@@ -1,16 +1,12 @@
-import sys
 from pathlib import Path
 
 import pytest
 
 from modules.model_download.runtime import (
     _build_civitai_aria2_command,
-    _download_with_huggingface_hub,
-    _headers_with_default_user_agent,
-    _parse_huggingface_url,
-    _read_hf_hub_idle_timeout,
-    _run_huggingface_hub_child,
-    _run_child_with_idle_timeout,
+    _build_generic_aria2_command,
+    _download_with_aria2,
+    _resolve_hf_direct_url,
     download_file,
 )
 
@@ -32,36 +28,7 @@ def test_runtime_resumes_aria2_partial_when_destination_exists(tmp_path, monkeyp
     monkeypatch.setattr('modules.model_download.runtime._download_with_aria2', fake_download_with_aria2)
 
     result = download_file(
-        url='https://example.com/model.safetensors',
-        model_dir=str(tmp_path),
-        file_name=destination.name,
-        prefer_aria2=True,
-    )
-
-    assert result == str(destination)
-    assert len(calls) == 1
-    assert calls[0]['url'].startswith('https://example.com/')
-
-
-def test_runtime_uses_huggingface_hub_for_hf_urls(tmp_path, monkeypatch):
-    calls = []
-    destination = tmp_path / 'model.safetensors'
-
-    monkeypatch.setattr('modules.model_download.runtime.shutil.which', lambda _: 'aria2c')
-    monkeypatch.setattr(
-        'modules.model_download.runtime._download_with_aria2',
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError('HF must not use Aria2')),
-    )
-
-    def fake_hf_download(**kwargs):
-        calls.append(kwargs)
-        destination.write_bytes(b'complete')
-        return str(destination)
-
-    monkeypatch.setattr('modules.model_download.runtime._download_with_huggingface_hub', fake_hf_download)
-
-    result = download_file(
-        url='https://huggingface.co/example/model/resolve/main/model.safetensors',
+        url='https://huggingface.co/example/model.safetensors',
         model_dir=str(tmp_path),
         file_name=destination.name,
         prefer_aria2=True,
@@ -72,7 +39,87 @@ def test_runtime_uses_huggingface_hub_for_hf_urls(tmp_path, monkeypatch):
     assert calls[0]['url'].startswith('https://huggingface.co/')
 
 
-def test_civitai_uses_browser_user_agent_and_parallel_connections():
+def test_hf_aria2_failure_preserves_partial_and_does_not_fallback(tmp_path, monkeypatch):
+    destination = tmp_path / 'model.safetensors'
+    destination.write_bytes(b'partial')
+    Path(f'{destination}.aria2').write_bytes(b'control')
+
+    monkeypatch.setattr('modules.model_download.runtime.shutil.which', lambda _: 'aria2c')
+    monkeypatch.setattr(
+        'modules.model_download.runtime._download_with_aria2',
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError('aria2 interrupted')),
+    )
+    monkeypatch.setattr(
+        'modules.model_download.runtime.load_file_from_url',
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError('HF must not fall back to Python GET after Aria2 failure')),
+    )
+
+    with pytest.raises(RuntimeError, match='aria2 interrupted'):
+        download_file(
+            url='https://huggingface.co/example/model/resolve/main/model.safetensors',
+            model_dir=str(tmp_path),
+            file_name=destination.name,
+            prefer_aria2=True,
+        )
+
+    assert destination.read_bytes() == b'partial'
+    assert Path(f'{destination}.aria2').read_bytes() == b'control'
+
+
+def test_hf_redirect_resolution_uses_head_then_get_fallback(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        url = 'https://cdn.example/model.safetensors'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def raise_for_status(self):
+            return None
+
+    def fake_head(url, **kwargs):
+        calls.append(('head', url, kwargs))
+        raise RuntimeError('403 HEAD rejected')
+
+    def fake_get(url, **kwargs):
+        calls.append(('get', url, kwargs))
+        return FakeResponse()
+
+    monkeypatch.setattr('modules.model_download.runtime.requests.head', fake_head)
+    monkeypatch.setattr('modules.model_download.runtime.requests.get', fake_get)
+
+    resolved = _resolve_hf_direct_url('https://huggingface.co/example/model/resolve/main/model.safetensors')
+
+    assert resolved == 'https://cdn.example/model.safetensors'
+    assert calls[0][0] == 'head'
+    assert calls[1][0] == 'get'
+    assert calls[1][2]['stream'] is True
+    assert calls[1][2]['allow_redirects'] is True
+
+
+def test_generic_aria2_uses_four_connections():
+    command = _build_generic_aria2_command(
+        url='https://cdn.example/model.safetensors',
+        model_dir='/models',
+        file_name='model.safetensors',
+        headers=(('Authorization', 'Bearer token'),),
+    )
+
+    assert command[command.index('-x') + 1] == '4'
+    assert command[command.index('-s') + 1] == '4'
+    assert '--max-tries=20' in command
+    assert '--retry-wait=5' in command
+    assert '--file-allocation=none' in command
+    assert ['--header', 'Authorization: Bearer token'] == command[
+        command.index('--header'):command.index('--header') + 2
+    ]
+
+
+def test_civitai_aria2_uses_browser_user_agent_and_four_connections():
     command = _build_civitai_aria2_command(
         direct_url='https://cdn.example/model.safetensors',
         model_dir='/models',
@@ -80,139 +127,33 @@ def test_civitai_uses_browser_user_agent_and_parallel_connections():
     )
 
     assert any(item.startswith('--user-agent=Mozilla/5.0') for item in command)
-    assert command[command.index('-x') + 1] == '16'
-    assert command[command.index('-s') + 1] == '16'
+    assert command[command.index('-x') + 1] == '4'
+    assert command[command.index('-s') + 1] == '4'
+    assert '--max-tries=20' in command
+    assert '--retry-wait=5' in command
+    assert '--file-allocation=none' in command
 
 
-def test_hf_url_parser_extracts_repo_revision_and_filename():
-    parsed = _parse_huggingface_url(
-        'https://huggingface.co/Old-Fisherman/Fooocus_Nex/resolve/main/checkpoints/sdxl/beretMixReal_v110.safetensors'
-    )
+def test_hf_download_reuses_generator_headers_for_aria2(tmp_path, monkeypatch):
+    commands = []
 
-    assert parsed.repo_id == 'Old-Fisherman/Fooocus_Nex'
-    assert parsed.revision == 'main'
-    assert parsed.filename == 'checkpoints/sdxl/beretMixReal_v110.safetensors'
+    def fake_resolve(url, headers):
+        assert dict(headers)['Authorization'] == 'Bearer token'
+        return 'https://cdn.example/model.safetensors'
 
+    monkeypatch.setattr('modules.model_download.runtime._resolve_hf_direct_url', fake_resolve)
+    monkeypatch.setattr('modules.model_download.runtime._run_aria2_command', commands.append)
 
-def test_hf_download_uses_local_dir_and_moves_repo_subpath(tmp_path, monkeypatch):
-    calls = []
-
-    def fake_hf_hub_download(kwargs):
-        calls.append(kwargs)
-        downloaded = Path(kwargs['local_dir']) / kwargs['filename']
-        downloaded.parent.mkdir(parents=True, exist_ok=True)
-        downloaded.write_bytes(b'complete')
-        return str(downloaded)
-
-    monkeypatch.setattr('modules.model_download.runtime._run_huggingface_hub_child', fake_hf_hub_download)
-
-    result = _download_with_huggingface_hub(
-        url='https://huggingface.co/example/model/resolve/main/subdir/model.safetensors',
+    _download_with_aria2(
+        url='https://huggingface.co/example/model/resolve/main/model.safetensors',
         model_dir=str(tmp_path),
         file_name='model.safetensors',
         headers=iter((('Authorization', 'Bearer token'),)),
     )
 
-    assert result == str(tmp_path / 'model.safetensors')
-    assert Path(result).read_bytes() == b'complete'
-    assert not (tmp_path / 'subdir' / 'model.safetensors').exists()
-    assert calls[0]['local_dir'] == str(tmp_path)
-    assert calls[0]['filename'] == 'subdir/model.safetensors'
-    assert calls[0]['token'] == 'token'
-    assert calls[0]['headers']['User-Agent'].startswith('Mozilla/5.0')
-
-
-def test_hf_default_user_agent_preserves_custom_header():
-    headers = _headers_with_default_user_agent((('User-Agent', 'CustomUA'),))
-
-    assert headers == (('User-Agent', 'CustomUA'),)
-
-
-def test_hf_child_disables_xet(monkeypatch):
-    calls = []
-
-    def fake_run_child(command, *, env, idle_timeout_seconds, result_prefix):
-        calls.append(
-            {
-                'command': command,
-                'env': env,
-                'idle_timeout_seconds': idle_timeout_seconds,
-                'result_prefix': result_prefix,
-            }
-        )
-        return {'path': 'model.safetensors'}
-
-    monkeypatch.setattr('modules.model_download.runtime._run_child_with_idle_timeout', fake_run_child)
-
-    result = _run_huggingface_hub_child({'repo_id': 'example/model', 'filename': 'model.safetensors'})
-
-    assert result == 'model.safetensors'
-    assert calls[0]['env']['HF_HUB_DISABLE_XET'] == '1'
-    assert calls[0]['env']['HF_HUB_DOWNLOAD_TIMEOUT'] == '60'
-    assert 'HF_XET_HIGH_PERFORMANCE' not in calls[0]['env']
-
-
-def test_hf_failure_removes_nested_partial_before_python_fallback(tmp_path, monkeypatch):
-    nested_partial = tmp_path / 'subdir' / 'model.safetensors'
-    nested_partial.parent.mkdir()
-    nested_partial.write_bytes(b'partial')
-    cache_download = tmp_path / '.cache' / 'huggingface' / 'download'
-    cache_download.mkdir(parents=True)
-    (cache_download / 'partial.incomplete').write_bytes(b'partial')
-
-    monkeypatch.setattr(
-        'modules.model_download.runtime._run_huggingface_hub_child',
-        lambda _kwargs: (_ for _ in ()).throw(RuntimeError('hub idle')),
-    )
-
-    def fake_load_file_from_url(**kwargs):
-        assert not nested_partial.exists()
-        assert not cache_download.exists()
-        target = Path(kwargs['model_dir']) / kwargs['file_name']
-        target.write_bytes(b'complete')
-        return str(target)
-
-    monkeypatch.setattr('modules.model_download.runtime.load_file_from_url', fake_load_file_from_url)
-
-    result = download_file(
-        url='https://huggingface.co/example/model/resolve/main/subdir/model.safetensors',
-        model_dir=str(tmp_path),
-        file_name='model.safetensors',
-    )
-
-    assert Path(result).read_bytes() == b'complete'
-
-
-def test_hf_idle_timeout_is_disabled_by_default(monkeypatch):
-    monkeypatch.delenv('NEX_HF_HUB_IDLE_TIMEOUT_SECONDS', raising=False)
-
-    assert _read_hf_hub_idle_timeout() is None
-
-    monkeypatch.setenv('NEX_HF_HUB_IDLE_TIMEOUT_SECONDS', '0')
-
-    assert _read_hf_hub_idle_timeout() is None
-
-
-def test_hf_child_runner_allows_idle_when_timeout_disabled():
-    script = 'import time; time.sleep(0.2); print(\'NEX_HF_HUB_RESULT={"path":"ok"}\', flush=True)'
-
-    result = _run_child_with_idle_timeout(
-        [sys.executable, '-u', '-c', script],
-        env={},
-        idle_timeout_seconds=None,
-        result_prefix='NEX_HF_HUB_RESULT=',
-    )
-
-    assert result == {'path': 'ok'}
-
-
-def test_hf_child_runner_times_out_when_hub_is_idle():
-    command = [sys.executable, '-u', '-c', 'import time; time.sleep(2)']
-
-    with pytest.raises(TimeoutError):
-        _run_child_with_idle_timeout(
-            command,
-            env={},
-            idle_timeout_seconds=0.25,
-            result_prefix='NEX_HF_HUB_RESULT=',
-        )
+    command = commands[0]
+    assert command[command.index('-x') + 1] == '4'
+    assert command[command.index('-s') + 1] == '4'
+    assert ['--header', 'Authorization: Bearer token'] == command[
+        command.index('--header'):command.index('--header') + 2
+    ]

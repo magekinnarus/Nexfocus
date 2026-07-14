@@ -22,9 +22,12 @@ Validated local W12 baseline:
 - `tokenizers==0.19.1`
 - `accelerate==1.13.0`
 
-Hugging Face model downloads use `huggingface_hub` regular HTTP with Xet
-explicitly disabled by the project downloader. Raw Python `GET` remains the
-last fallback for HF URLs.
+Hugging Face model downloads use the project Aria2 direct-resolution path when
+`aria2c` is available, capped at 4 split connections. Raw Python `GET` remains
+the fallback only when Aria2 is unavailable or explicitly disabled; after an HF
+Aria2 failure, partial files are preserved for rerun/resume instead of handing
+off to slow Python `GET`. The project downloader does not use `hf-xet` or
+`hf_hub_download` for this path.
 
 Known mismatch:
 

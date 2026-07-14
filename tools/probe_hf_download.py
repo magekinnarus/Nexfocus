@@ -59,7 +59,7 @@ def _build_parser() -> argparse.ArgumentParser:
         '--idle-timeout',
         type=float,
         default=0.0,
-        help='Seconds with no Hugging Face Hub output before falling back to direct GET. Use 0 to disable.',
+        help='Deprecated compatibility option; the current runtime probe does not use Hugging Face Hub.',
     )
     parser.add_argument(
         '--force',
@@ -179,8 +179,14 @@ def _is_huggingface_url(url: str) -> bool:
 def _report_hf_transport(url: str) -> None:
     if not _is_huggingface_url(url):
         return
-    print('HF transport: Hugging Face Hub HTTP primary; direct GET fallback.')
-    print('Xet: disabled for project downloads.')
+    aria2_path = shutil.which('aria2c')
+    print('HF transport: Aria2 direct-resolution path when aria2c is available.')
+    if aria2_path:
+        print(f'Aria2: detected at {aria2_path}; configured split connections: 4.')
+    else:
+        print('Aria2: not detected; Python GET will be used.')
+    print('Python GET: used only when Aria2 is unavailable or explicitly bypassed.')
+    print('HF Hub/Xet: not used by the project downloader.')
 
 
 def main() -> int:
@@ -189,15 +195,9 @@ def main() -> int:
     target_dir = target_dir.resolve()
     destination = target_dir / file_name
 
-    os.environ['NEX_HF_HUB_IDLE_TIMEOUT_SECONDS'] = str(args.idle_timeout)
-
     print(f'Python: {sys.executable}')
     print(f'URL: {url}')
     print(f'Destination: {destination}')
-    if args.idle_timeout > 0:
-        print(f'HF idle timeout: {args.idle_timeout:.0f}s')
-    else:
-        print('HF idle timeout: disabled')
     _report_hf_transport(url)
 
     if args.dry_run:
@@ -209,16 +209,27 @@ def main() -> int:
         _remove_existing(destination)
 
     started = time.perf_counter()
-    result = Path(
-        download_file(
-            url=url,
-            model_dir=str(target_dir),
-            file_name=file_name,
-            progress=True,
-            headers=headers,
-            prefer_aria2=True,
+    try:
+        result = Path(
+            download_file(
+                url=url,
+                model_dir=str(target_dir),
+                file_name=file_name,
+                progress=True,
+                headers=headers,
+                prefer_aria2=True,
+            )
         )
-    )
+    except KeyboardInterrupt:
+        print('Download interrupted by user.')
+        if _is_huggingface_url(url) and (destination.exists() or Path(f'{destination}.aria2').exists()):
+            print('HF Aria2 partial files were preserved. Rerun without --force to resume.')
+        return 130
+    except Exception as exc:
+        print(f'Download failed: {exc}')
+        if _is_huggingface_url(url) and (destination.exists() or Path(f'{destination}.aria2').exists()):
+            print('HF Aria2 partial files were preserved. Rerun without --force to resume.')
+        return 1
     elapsed = time.perf_counter() - started
 
     size_gib = result.stat().st_size / 1024**3
