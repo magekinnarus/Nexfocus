@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover - fallback path only matters if requests
 
 _ARIA2_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
 _HF_HUB_RESULT_PREFIX = 'NEX_HF_HUB_RESULT='
-_HF_HUB_IDLE_TIMEOUT_SECONDS = 120
+_HF_HUB_IDLE_TIMEOUT_SECONDS: float | None = None
 
 
 def download_file(
@@ -263,8 +263,11 @@ except TypeError:
 print("NEX_HF_HUB_RESULT=" + json.dumps({"path": path}), flush=True)
 '''
     env = os.environ.copy()
-    env.setdefault('HF_XET_HIGH_PERFORMANCE', '1')
-    env.setdefault('HF_XET_NUM_CONCURRENT_RANGE_GETS', '8')
+    env['HF_HUB_DISABLE_XET'] = '1'
+    env.setdefault('HF_HUB_DOWNLOAD_TIMEOUT', '60')
+    for key in tuple(env):
+        if key.startswith('HF_XET_'):
+            env.pop(key, None)
     command = [sys.executable, '-u', '-c', script, json.dumps(kwargs)]
     return _run_child_with_idle_timeout(
         command,
@@ -274,21 +277,24 @@ print("NEX_HF_HUB_RESULT=" + json.dumps({"path": path}), flush=True)
     )['path']
 
 
-def _read_hf_hub_idle_timeout() -> float:
+def _read_hf_hub_idle_timeout() -> float | None:
     raw_value = os.environ.get('NEX_HF_HUB_IDLE_TIMEOUT_SECONDS', '').strip()
     if not raw_value:
         return _HF_HUB_IDLE_TIMEOUT_SECONDS
     try:
-        return max(10.0, float(raw_value))
+        value = float(raw_value)
     except ValueError:
         return _HF_HUB_IDLE_TIMEOUT_SECONDS
+    if value <= 0:
+        return None
+    return max(10.0, value)
 
 
 def _run_child_with_idle_timeout(
     command: list[str],
     *,
     env: dict[str, str],
-    idle_timeout_seconds: float,
+    idle_timeout_seconds: float | None,
     result_prefix: str,
 ) -> dict:
     process = subprocess.Popen(
@@ -327,7 +333,7 @@ def _run_child_with_idle_timeout(
         try:
             stream_name, chunk = output_queue.get(timeout=0.25)
         except queue.Empty:
-            if time.monotonic() - last_activity > idle_timeout_seconds:
+            if idle_timeout_seconds is not None and time.monotonic() - last_activity > idle_timeout_seconds:
                 killed_for_idle = True
                 process.kill()
                 break

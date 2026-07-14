@@ -8,6 +8,8 @@ from modules.model_download.runtime import (
     _download_with_huggingface_hub,
     _headers_with_default_user_agent,
     _parse_huggingface_url,
+    _read_hf_hub_idle_timeout,
+    _run_huggingface_hub_child,
     _run_child_with_idle_timeout,
     download_file,
 )
@@ -126,6 +128,30 @@ def test_hf_default_user_agent_preserves_custom_header():
     assert headers == (('User-Agent', 'CustomUA'),)
 
 
+def test_hf_child_disables_xet(monkeypatch):
+    calls = []
+
+    def fake_run_child(command, *, env, idle_timeout_seconds, result_prefix):
+        calls.append(
+            {
+                'command': command,
+                'env': env,
+                'idle_timeout_seconds': idle_timeout_seconds,
+                'result_prefix': result_prefix,
+            }
+        )
+        return {'path': 'model.safetensors'}
+
+    monkeypatch.setattr('modules.model_download.runtime._run_child_with_idle_timeout', fake_run_child)
+
+    result = _run_huggingface_hub_child({'repo_id': 'example/model', 'filename': 'model.safetensors'})
+
+    assert result == 'model.safetensors'
+    assert calls[0]['env']['HF_HUB_DISABLE_XET'] == '1'
+    assert calls[0]['env']['HF_HUB_DOWNLOAD_TIMEOUT'] == '60'
+    assert 'HF_XET_HIGH_PERFORMANCE' not in calls[0]['env']
+
+
 def test_hf_failure_removes_nested_partial_before_python_fallback(tmp_path, monkeypatch):
     nested_partial = tmp_path / 'subdir' / 'model.safetensors'
     nested_partial.parent.mkdir()
@@ -155,6 +181,29 @@ def test_hf_failure_removes_nested_partial_before_python_fallback(tmp_path, monk
     )
 
     assert Path(result).read_bytes() == b'complete'
+
+
+def test_hf_idle_timeout_is_disabled_by_default(monkeypatch):
+    monkeypatch.delenv('NEX_HF_HUB_IDLE_TIMEOUT_SECONDS', raising=False)
+
+    assert _read_hf_hub_idle_timeout() is None
+
+    monkeypatch.setenv('NEX_HF_HUB_IDLE_TIMEOUT_SECONDS', '0')
+
+    assert _read_hf_hub_idle_timeout() is None
+
+
+def test_hf_child_runner_allows_idle_when_timeout_disabled():
+    script = 'import time; time.sleep(0.2); print(\'NEX_HF_HUB_RESULT={"path":"ok"}\', flush=True)'
+
+    result = _run_child_with_idle_timeout(
+        [sys.executable, '-u', '-c', script],
+        env={},
+        idle_timeout_seconds=None,
+        result_prefix='NEX_HF_HUB_RESULT=',
+    )
+
+    assert result == {'path': 'ok'}
 
 
 def test_hf_child_runner_times_out_when_hub_is_idle():

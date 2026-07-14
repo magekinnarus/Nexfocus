@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.metadata as metadata
 import importlib.util
 import json
 import os
@@ -59,8 +58,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--idle-timeout',
         type=float,
-        default=120.0,
-        help='Seconds with no Hugging Face Hub output before falling back to direct GET.',
+        default=0.0,
+        help='Seconds with no Hugging Face Hub output before falling back to direct GET. Use 0 to disable.',
     )
     parser.add_argument(
         '--force',
@@ -177,22 +176,11 @@ def _is_huggingface_url(url: str) -> bool:
     return host.endswith('huggingface.co') or (mirror_host and host == mirror_host)
 
 
-def _hf_xet_version() -> str | None:
-    try:
-        return metadata.version('hf-xet')
-    except metadata.PackageNotFoundError:
-        return None
-
-
 def _report_hf_transport(url: str) -> None:
     if not _is_huggingface_url(url):
         return
-    version = _hf_xet_version()
-    print('HF transport: Hugging Face Hub/Xet primary; direct GET fallback.')
-    if version:
-        print(f'hf-xet: installed ({version})')
-    else:
-        print('hf-xet: missing; Hub may fall back to regular HTTP before direct GET fallback.')
+    print('HF transport: Hugging Face Hub HTTP primary; direct GET fallback.')
+    print('Xet: disabled for project downloads.')
 
 
 def main() -> int:
@@ -206,7 +194,10 @@ def main() -> int:
     print(f'Python: {sys.executable}')
     print(f'URL: {url}')
     print(f'Destination: {destination}')
-    print(f'HF idle timeout: {args.idle_timeout:.0f}s')
+    if args.idle_timeout > 0:
+        print(f'HF idle timeout: {args.idle_timeout:.0f}s')
+    else:
+        print('HF idle timeout: disabled')
     _report_hf_transport(url)
 
     if args.dry_run:

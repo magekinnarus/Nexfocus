@@ -12,7 +12,6 @@ from packaging.version import InvalidVersion, Version
 REQUIRED_SPECS = {
     "transformers": SpecifierSet(">=4.42.4"),
     "huggingface-hub": SpecifierSet(">=0.32,<1.0"),
-    "hf-xet": SpecifierSet(">=1.1.3,<2.0"),
     "tokenizers": SpecifierSet("==0.19.1"),
     "accelerate": SpecifierSet(">=0.32.1"),
 }
@@ -20,7 +19,6 @@ REQUIRED_SPECS = {
 VALIDATED_BASELINE = {
     "transformers": "4.44.2",
     "huggingface-hub": "0.36.2",
-    "hf-xet": "1.5.1",
     "tokenizers": "0.19.1",
     "accelerate": "1.13.0",
 }
