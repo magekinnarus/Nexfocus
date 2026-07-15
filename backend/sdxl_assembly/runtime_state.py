@@ -716,6 +716,10 @@ def release_active_sdxl_resident_spine(reason: str | None = None) -> bool:
     return _RESIDENT_RUNTIME_STATE.release(reason=reason)
 
 
+def get_active_sdxl_resident_spine_key() -> SDXLResidentSpineKey | None:
+    return _RESIDENT_RUNTIME_STATE.get_active_key()
+
+
 class SDXLGpuTextRuntimeState:
     def __init__(self) -> None:
         self._lock = RLock()
@@ -962,6 +966,10 @@ def acquire_active_gpu_text(
 
 def release_active_gpu_text(reason: str | None = None) -> bool:
     return _GPU_TEXT_RUNTIME_STATE.release(reason=reason)
+
+
+def get_active_gpu_text_key() -> SDXLGpuTextKey | None:
+    return _GPU_TEXT_RUNTIME_STATE.get_active_key()
 
 
 def _release_clip_resources(clip: Any) -> None:

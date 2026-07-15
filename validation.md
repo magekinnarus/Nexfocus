@@ -382,6 +382,9 @@ Expected evidence:
   in-place CLIP restoration, and zero-patch bypass truth;
 - resident UNet + GPU text coexistence through transient VAE and selected CN
   windows without hidden eviction, fallback, or OOM;
+- if a same-family request is assembly-ineligible and enters the legacy SDXL
+  runtime, `assembly_route_legacy_transition` must precede legacy checkpoint
+  loading and the retained assembly UNet/GPU-text inventories must be released;
 - materially lower process RSS than the comparable W12b CPU-text composition;
 - `checkpoint_switch ... trim_host=True` and cleanup
   `proc_rss_before`/`proc_rss_after` evidence with no stepwise family-transition

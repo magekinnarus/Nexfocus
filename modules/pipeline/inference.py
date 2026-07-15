@@ -564,6 +564,56 @@ def _run_unified_sdxl_task(
         runtime.close()
 
 
+def _prepare_gpu_text_legacy_bypass_transition(
+    task_state,
+    *,
+    loras,
+    base_model_additional_loras=None,
+):
+    """Release assembly-owned GPU residents before legacy SDXL admission."""
+    from backend import process_transition
+
+    current_key = process_transition.get_active_process_key()
+    if (
+        current_key is None
+        or current_key.family != process_transition.PROCESS_FAMILY_SDXL
+        or str(current_key.residency_class or '').lower() != 'resident_unet_gpu_text'
+    ):
+        return None
+
+    legacy_key = resolve_unified_sdxl_process_key(
+        task_state,
+        loras=loras,
+        base_model_additional_loras=base_model_additional_loras,
+    )
+    if legacy_key is None:
+        raise RuntimeError(
+            'Refusing legacy SDXL bypass while GPU-text assembly residents are active: '
+            'the legacy process identity could not be resolved for deterministic release.'
+        )
+
+    decision = process_transition.apply_process_transition_gate(legacy_key)
+    if decision is None or not decision.reset_required:
+        raise RuntimeError(
+            'Refusing legacy SDXL bypass while GPU-text assembly residents are active: '
+            'the process transition did not establish a releasing posture boundary.'
+        )
+
+    from backend.sdxl_assembly import runtime_state
+
+    remaining_owners = []
+    if runtime_state.get_active_sdxl_resident_spine_key() is not None:
+        remaining_owners.append('resident_unet')
+    if runtime_state.get_active_gpu_text_key() is not None:
+        remaining_owners.append('gpu_text')
+    if remaining_owners:
+        raise RuntimeError(
+            'Refusing legacy SDXL bypass because assembly-owned GPU residents '
+            f'remain active after transition: {", ".join(remaining_owners)}.'
+        )
+    return decision
+
+
 def process_task(task_state, task_dict, current_task_id, total_count, all_steps,
                  preparation_steps, denoising_strength, final_scheduler_name, loras,
                  controlnet_paths=None,
@@ -652,6 +702,17 @@ def process_task(task_state, task_dict, current_task_id, total_count, all_steps,
             current_task_id + 1, total_count, assembly_reason or "N/A"
         )
         log_telemetry("assembly_route_legacy_bypass", f"reason={assembly_reason}")
+
+        transition_decision = _prepare_gpu_text_legacy_bypass_transition(
+            task_state,
+            loras=loras,
+            base_model_additional_loras=base_model_additional_loras,
+        )
+        if transition_decision is not None:
+            log_telemetry(
+                "assembly_route_legacy_transition",
+                f"action={transition_decision.action} reason={transition_decision.reason}",
+            )
 
         _ensure_supported_unified_runtime_request(task_state)
         imgs = _run_unified_sdxl_task(

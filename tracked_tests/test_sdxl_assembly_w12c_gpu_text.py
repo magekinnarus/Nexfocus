@@ -409,6 +409,113 @@ def test_gpu_text_process_identity_comes_from_assembly_selector(monkeypatch):
     assert [change.value for change in changes] == ["spine_posture_change"]
 
 
+def test_gpu_text_legacy_bypass_releases_before_legacy_load(monkeypatch):
+    from backend.sdxl_assembly import gateway
+    from backend.sdxl_assembly import runtime_state
+    from modules.pipeline import inference
+
+    gpu_key = process_transition.ProcessKey(
+        family="sdxl",
+        process_class="standard_sdxl",
+        authoritative_identity=("checkpoint", "clip"),
+        execution_family="standard_sdxl",
+        residency_class="resident_unet_gpu_text",
+        route_family="sdxl",
+    )
+    legacy_key = process_transition.ProcessKey(
+        family="sdxl",
+        process_class="standard_sdxl",
+        authoritative_identity=("checkpoint", "clip"),
+        execution_family="standard_sdxl",
+        residency_class="full_resident",
+        route_family="sdxl",
+    )
+    decision = process_transition.ProcessTransitionDecision(
+        action="reset",
+        reason="process_posture_change",
+        reset_required=True,
+        current_key=gpu_key,
+        requested_key=legacy_key,
+    )
+    events = []
+
+    monkeypatch.setattr(gateway, "is_eligible_for_sdxl_assembly", lambda **kwargs: (False, "forced bypass"))
+    monkeypatch.setattr(process_transition, "get_active_process_key", lambda: gpu_key)
+    monkeypatch.setattr(inference, "resolve_unified_sdxl_process_key", lambda *args, **kwargs: legacy_key)
+    monkeypatch.setattr(
+        process_transition,
+        "apply_process_transition_gate",
+        lambda key: events.append(("release", key)) or decision,
+    )
+    monkeypatch.setattr(runtime_state, "get_active_sdxl_resident_spine_key", lambda: None)
+    monkeypatch.setattr(runtime_state, "get_active_gpu_text_key", lambda: None)
+    monkeypatch.setattr(inference, "_ensure_supported_unified_runtime_request", lambda task: None)
+    monkeypatch.setattr(
+        inference,
+        "_run_unified_sdxl_task",
+        lambda *args, **kwargs: events.append(("legacy_load", None)) or ["image"],
+    )
+    monkeypatch.setattr(inference, "save_and_log", lambda *args, **kwargs: ["saved-path"])
+
+    task = SimpleNamespace(
+        last_stop=False,
+        steps=1,
+        height=64,
+        width=64,
+        use_expansion=False,
+    )
+    inference.process_task(
+        task_state=task,
+        task_dict={"task_seed": 1},
+        current_task_id=0,
+        total_count=1,
+        all_steps=1,
+        preparation_steps=0,
+        denoising_strength=None,
+        final_scheduler_name="karras",
+        loras=[],
+    )
+
+    assert events == [("release", legacy_key), ("legacy_load", None)]
+
+
+def test_gpu_text_legacy_bypass_fails_closed_if_owner_remains(monkeypatch):
+    from backend.sdxl_assembly import runtime_state
+    from modules.pipeline import inference
+
+    gpu_key = process_transition.ProcessKey(
+        family="sdxl",
+        process_class="standard_sdxl",
+        authoritative_identity=("checkpoint", "clip"),
+        residency_class="resident_unet_gpu_text",
+    )
+    legacy_key = process_transition.ProcessKey(
+        family="sdxl",
+        process_class="standard_sdxl",
+        authoritative_identity=("checkpoint", "clip"),
+        residency_class="full_resident",
+    )
+    decision = process_transition.ProcessTransitionDecision(
+        action="reset",
+        reason="process_posture_change",
+        reset_required=True,
+        current_key=gpu_key,
+        requested_key=legacy_key,
+    )
+
+    monkeypatch.setattr(process_transition, "get_active_process_key", lambda: gpu_key)
+    monkeypatch.setattr(inference, "resolve_unified_sdxl_process_key", lambda *args, **kwargs: legacy_key)
+    monkeypatch.setattr(process_transition, "apply_process_transition_gate", lambda key: decision)
+    monkeypatch.setattr(runtime_state, "get_active_sdxl_resident_spine_key", lambda: object())
+    monkeypatch.setattr(runtime_state, "get_active_gpu_text_key", lambda: None)
+
+    with pytest.raises(RuntimeError, match="resident_unet"):
+        inference._prepare_gpu_text_legacy_bypass_transition(
+            SimpleNamespace(),
+            loras=[],
+        )
+
+
 def test_gpu_clip_patch_count_reports_only_keys_accepted_by_patcher():
     request = _gpu_request(lora_specs=(_lora("mixed.safetensors"),))
     worker = GpuLoraWorker(request)
