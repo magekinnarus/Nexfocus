@@ -2,6 +2,15 @@ import gradio as gr
 import modules.config
 import modules.flags as flags
 import args_manager
+from backend.environment_profile import PROFILE_COLAB_FREE
+
+
+def resolve_default_sdxl_assembly_posture(profile=None):
+    """Return the Advanced-tab default without changing backend/API defaults."""
+    if profile is None:
+        profile = getattr(modules.config, 'resolved_memory_environment_profile', None)
+    profile_name = str(getattr(profile, 'name', '') or '').strip().lower()
+    return 'gpu_text' if profile_name == PROFILE_COLAB_FREE else 'auto'
 
 def build_advanced_tab():
     """
@@ -124,8 +133,8 @@ def build_debug_tab():
     results['sdxl_assembly_posture'] = gr.Radio(
         label='SDXL Assembly Posture',
         choices=['auto', 'streaming', 'gpu_text'],
-        value='auto',
-        info='Auto uses resident UNet on 8GB or higher GPUs. Use streaming to force the streaming lane on roomier hardware. gpu_text pins both resident UNet and CLIP to GPU, requiring at least 10GB VRAM.'
+        value=resolve_default_sdxl_assembly_posture(),
+        info='Colab Free defaults to gpu_text, which pins both resident UNet and CLIP to GPU and requires at least 10GB VRAM. Other profiles default to auto. Use streaming to force the streaming lane on roomier hardware.'
     )
 
     total_ram_gb = 0.0

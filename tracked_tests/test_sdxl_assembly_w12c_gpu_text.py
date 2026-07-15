@@ -32,6 +32,7 @@ from backend.sdxl_assembly.runtime_state import (
 )
 from modules.task_state import TaskState
 from modules.parameter_registry import _normalize_sdxl_assembly_posture_value
+from modules.ui_components.advanced_panel import resolve_default_sdxl_assembly_posture
 from backend import process_transition
 
 def _identity(name: str, sha: str) -> ResolvedFileIdentity:
@@ -125,6 +126,12 @@ def mock_dependencies(monkeypatch):
 def test_w12c_normalization():
     assert _normalize_sdxl_assembly_posture_value("gpu_text") == "gpu_text"
     assert _normalize_sdxl_assembly_posture_value("GPU-text") == "gpu_text"
+
+
+def test_w12c_colab_free_ui_default_is_gpu_text_only():
+    assert resolve_default_sdxl_assembly_posture(SimpleNamespace(name="colab_free")) == "gpu_text"
+    assert resolve_default_sdxl_assembly_posture(SimpleNamespace(name="colab_pro")) == "auto"
+    assert resolve_default_sdxl_assembly_posture(SimpleNamespace(name="local_normal")) == "auto"
 
 def test_w12c_eligibility_and_vram_floor(monkeypatch):
     task = TaskState()
