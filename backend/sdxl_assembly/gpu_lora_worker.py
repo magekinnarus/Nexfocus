@@ -112,15 +112,127 @@ class GpuLoraWorker:
         log_telemetry("resident_lora_compile_complete", f"device={target_device} metrics={compile_metrics}")
         return compile_metrics
 
-    def apply_clip_patches(self, clip: Any) -> int:
-        """CLIP branch of GpuLoraWorker.
-        
-        In W12a, only the UNet branch is active. This is a target-aware stub
-        allowing W12c to plug in GPU CLIP patching when GPU text encoder is active.
-        """
-        # In W12a, CPU text worker is used, which patches CLIP on CPU.
-        # This GPU CLIP branch remains inactive in W12a.
-        return 0
+    def resolve_clip_patches(self, clip: Any) -> tuple[tuple[dict, float], ...]:
+        """Parse CLIP-side patches without mutating or cloning the text encoder."""
+        if not self.request.lora_specs:
+            self.clip_patch_count = 0
+            return ()
+
+        from backend.sdxl_assembly.cpu_lora_worker import _PARSED_LORA_CACHE, _PARSED_LORA_CACHE_LIMIT
+
+        patcher = clip.patcher
+        model = patcher.model
+        key_map = backend_lora.model_lora_keys_clip(model)
+        model_class_name = model.__class__.__name__
+        resolved_patches = []
+
+        for spec in self.request.lora_specs:
+            if not spec.enabled or spec.clip_weight == 0.0:
+                continue
+
+            lora_path = str(spec.file_identity.path)
+            cache_key = (lora_path, "clip", model_class_name)
+            current_hash = spec.file_identity.sha256
+
+            patch_dict = None
+            if cache_key in _PARSED_LORA_CACHE:
+                cached_hash, cached_patch_dict = _PARSED_LORA_CACHE[cache_key]
+                if cached_hash == current_hash:
+                    patch_dict = cached_patch_dict
+                    log_telemetry("lora_cache_hit", f"path={spec.file_identity.path.name} target=clip")
+                else:
+                    _PARSED_LORA_CACHE.pop(cache_key)
+
+            if patch_dict is None:
+                log_telemetry("lora_cache_miss", f"path={spec.file_identity.path.name} target=clip")
+                header = SafeOpenHeaderOnly(lora_path)
+                patch_dict = backend_lora.load_lora(header, key_map, log_missing=False)
+                if patch_dict is None:
+                    patch_dict = {}
+                _PARSED_LORA_CACHE[cache_key] = (current_hash, patch_dict)
+                while len(_PARSED_LORA_CACHE) > _PARSED_LORA_CACHE_LIMIT:
+                    _PARSED_LORA_CACHE.pop(next(iter(_PARSED_LORA_CACHE)))
+
+            if patch_dict:
+                resolved_patches.append((patch_dict, float(spec.clip_weight)))
+
+        self.clip_patch_count = sum(len(patch_dict) for patch_dict, _weight in resolved_patches)
+        return tuple(resolved_patches)
+
+    def apply_clip_patches(
+        self,
+        clip: Any,
+        *,
+        resolved_patches: tuple[tuple[dict, float], ...] | None = None,
+    ) -> int:
+        """Parses and applies CLIP-side patches to the model patcher."""
+        if resolved_patches is None:
+            resolved_patches = self.resolve_clip_patches(clip)
+
+        if not resolved_patches:
+            self.clip_patch_count = 0
+            if self.patch_artifact is not None:
+                self.patch_artifact["clip_patch_count"] = 0
+            return 0
+
+        patcher = clip.patcher
+        patch_count = 0
+        for patch_dict, weight in resolved_patches:
+            applied_keys = patcher.add_patches(patch_dict, weight)
+            patch_count += len(applied_keys or ())
+
+        self.clip_patch_count = patch_count
+        if self.patch_artifact is not None:
+            self.patch_artifact["clip_patch_count"] = patch_count
+        return patch_count
+
+    def compile_clip_patches(self, clip: Any) -> dict[str, Any]:
+        """Runs sequential GPU compilation on the applied CLIP patcher patches."""
+        if not self.clip_patch_count:
+            metrics = {"status": "noop", "patch_count": 0, "materialized_patch_keys": 0, "host_pinned_bytes": 0}
+            self.last_compile_metrics = metrics
+            return metrics
+
+        import torch
+        from backend.gpu_compiler import GpuArtifactCompiler
+
+        target_device = torch.device(self.request.device)
+        logger.debug("[SDXL Telemetry] Compiling CLIP on GPU (device=%s)...", target_device)
+        log_telemetry("gpu_clip_lora_compile_begin", f"device={target_device}")
+
+        baseline_vram = 0
+        if target_device.type == "cuda" and torch.cuda.is_available():
+            try:
+                torch.cuda.reset_peak_memory_stats(target_device)
+                baseline_vram = torch.cuda.memory_allocated(target_device)
+            except Exception:
+                pass
+
+        compile_metrics = GpuArtifactCompiler.compile_patcher(
+            clip.patcher,
+            clean_source=None,
+            target_device=target_device,
+            intermediate_dtype=torch.float32,
+        )
+
+        if target_device.type == "cuda" and torch.cuda.is_available():
+            try:
+                peak_vram = torch.cuda.max_memory_allocated(target_device)
+                compile_metrics["cuda_temp_peak_bytes"] = int(peak_vram)
+                compile_metrics["cuda_baseline_allocated_bytes"] = int(baseline_vram)
+                compile_metrics["cuda_peak_allocated_bytes"] = int(peak_vram)
+                compile_metrics["cuda_peak_delta_bytes"] = int(peak_vram - baseline_vram)
+                compile_metrics["cuda_final_allocated_bytes"] = int(torch.cuda.memory_allocated(target_device))
+            except Exception:
+                pass
+
+        compile_metrics["cleared_patch_count"] = int(self.clip_patch_count)
+        self.last_compile_metrics = dict(compile_metrics)
+        if self.patch_artifact is not None:
+            self.patch_artifact["compile_metrics"] = dict(compile_metrics)
+
+        log_telemetry("gpu_clip_lora_compile_complete", f"device={target_device} metrics={compile_metrics}")
+        return compile_metrics
 
     def teardown_assembly_order(self) -> None:
         self.patch_artifact = None

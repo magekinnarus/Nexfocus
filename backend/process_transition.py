@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from threading import RLock
 from typing import Any, Optional
 
@@ -428,6 +428,9 @@ def classify_sdxl_process_key_changes(
     if current_key.process_class != requested_key.process_class:
         add(LifecycleChange.SPINE_POSTURE_CHANGE)
 
+    if current_key.residency_class != requested_key.residency_class:
+        add(LifecycleChange.SPINE_POSTURE_CHANGE)
+
     if current_key.authoritative_identity != requested_key.authoritative_identity:
         current_checkpoint, current_clip, current_loras = _sdxl_identity_components(current_key)
         requested_checkpoint, requested_clip, requested_loras = _sdxl_identity_components(requested_key)
@@ -515,11 +518,19 @@ def resolve_preflight_additional_loras(task_state) -> list:
 def resolve_sdxl_process_key(task_state) -> ProcessKey | None:
     from modules.pipeline.inference import resolve_unified_sdxl_process_key
 
-    return resolve_unified_sdxl_process_key(
+    key = resolve_unified_sdxl_process_key(
         task_state,
         loras=getattr(task_state, 'loras', []) or [],
         base_model_additional_loras=getattr(task_state, 'base_model_additional_loras', []) or [],
     )
+    posture = str(getattr(task_state, 'sdxl_assembly_posture', 'auto') or 'auto')
+    posture = posture.strip().lower().replace('-', '_').replace(' ', '_')
+    if key is not None and posture == 'gpu_text':
+        # The assembly selector, not the legacy runtime policy, owns this
+        # composition identity. Publishing it on the process key ensures that
+        # CPU-text <-> GPU-text switches cross a lifecycle boundary.
+        return replace(key, residency_class='resident_unet_gpu_text')
+    return key
 
 
 def resolve_flux_fill_process_key(

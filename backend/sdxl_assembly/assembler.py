@@ -33,7 +33,11 @@ class SDXLAssemblyAssembler:
     def acquire_text_encode_worker(
         request: SDXLAssemblyRequest,
         lora_worker: CpuLoraWorker | GpuLoraWorker | None = None,
-    ) -> CpuTextEncodeWorker:
+    ) -> CpuTextEncodeWorker | GpuTextEncodeWorker:
+        from backend.sdxl_assembly.contracts import TextEncoderPostureKind
+        if request.clip_posture == TextEncoderPostureKind.GPU_PINNED:
+            from backend.sdxl_assembly.gpu_text_encode_worker import GpuTextEncodeWorker
+            return GpuTextEncodeWorker(request, lora_worker=lora_worker)
         return CpuTextEncodeWorker(request, lora_worker=lora_worker)
 
     @staticmethod

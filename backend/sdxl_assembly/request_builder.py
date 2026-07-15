@@ -62,6 +62,8 @@ def _resolve_sdxl_assembly_posture(task_state: Any) -> Tuple[str, str]:
         return posture, 'streaming'
     if posture == 'streaming':
         return posture, 'streaming'
+    if posture == 'gpu_text':
+        return posture, 'resident_unet_gpu_text'
     return posture, posture
 
 
@@ -286,8 +288,16 @@ def determine_eligibility(
     # 1. Check for resident SDXL or resident ControlNet
     posture, posture_resolved = _resolve_sdxl_assembly_posture(task_state)
 
-    if posture_resolved not in {'streaming', 'resident_unet_cpu_text'}:
+    if posture_resolved not in {'streaming', 'resident_unet_cpu_text', 'resident_unet_gpu_text'}:
         return False, f"Unsupported SDXL assembly composition: {posture}"
+
+    if posture_resolved == 'resident_unet_gpu_text':
+        from backend.environment_profile import detect_total_vram_mb
+        vram_mb = detect_total_vram_mb()
+        if config.hardware_total_vram_override_mb is not None:
+            vram_mb = float(config.hardware_total_vram_override_mb)
+        if vram_mb < 10.0 * 1024:
+            return False, f"GPU-resident text and LoRA assembly requires at least 10 GB VRAM, but detected {vram_mb / 1024:.2f} GB."
 
     if force_eligible:
         return True, None
@@ -538,6 +548,11 @@ def build_assembly_request(
     if posture_resolved == 'resident_unet_cpu_text':
         unet_posture = UNetPostureKind.RESIDENT
         clip_posture = TextEncoderPostureKind.CPU_PINNED
+        vae_posture = VAEPostureKind.TRANSIENT
+        lora_posture = LoraPatchPostureKind.RESIDENT
+    elif posture_resolved == 'resident_unet_gpu_text':
+        unet_posture = UNetPostureKind.RESIDENT
+        clip_posture = TextEncoderPostureKind.GPU_PINNED
         vae_posture = VAEPostureKind.TRANSIENT
         lora_posture = LoraPatchPostureKind.RESIDENT
     elif posture_resolved == 'streaming':

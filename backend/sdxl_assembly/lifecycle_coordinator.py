@@ -234,6 +234,29 @@ def _release_model_prompt(errors: list[LifecycleReleaseError], reason: str, chan
         "text_encoder_cache",
         lambda: runtime_state.release_text_encoder_component_cache(reason=reason),
     )
+
+    should_release_gpu_text = True
+    if changes:
+        model_prompt_structural_changes = {
+            LifecycleChange.CHECKPOINT_CHANGE.value,
+            LifecycleChange.SPINE_POSTURE_CHANGE.value,
+            LifecycleChange.MODEL_CHANGE.value,
+            LifecycleChange.FAMILY_CHANGE.value,
+            LifecycleChange.MODEL_TYPE_CHANGE.value,
+            LifecycleChange.FULL_TEARDOWN.value,
+        }
+        has_structural = any(ch in model_prompt_structural_changes for ch in changes)
+        if not has_structural and LifecycleChange.LORA_STACK_CHANGE.value in changes:
+            should_release_gpu_text = False
+
+    if should_release_gpu_text:
+        _run_step(
+            errors,
+            domain,
+            "gpu_text_encoder",
+            lambda: runtime_state.release_active_gpu_text(reason=reason),
+        )
+
     _run_step(
         errors,
         domain,

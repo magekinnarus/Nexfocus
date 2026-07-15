@@ -235,3 +235,41 @@ def test_affordable_checkpoint_switch_trims_supported_host_after_release(monkeyp
     assert calls[0] == ('release', {})
     assert calls[1][0] == 'checkpoint_switch'
     assert calls[1][1]['trim_host'] is True
+
+
+def test_aggressive_linux_trim_bypasses_optional_background_trim_policy(monkeypatch):
+    monkeypatch.setattr(memory_governor.platform, 'system', lambda: 'Linux')
+    monkeypatch.setattr(
+        memory_governor.governor.policy,
+        'linux_malloc_trim_enabled',
+        False,
+    )
+
+    assert memory_governor.should_trim_host_memory(aggressive=True) is True
+    assert memory_governor.should_trim_host_memory(aggressive=False) is False
+
+
+def test_linux_malloc_trim_uses_process_handle_fallback_truthfully(monkeypatch):
+    calls = []
+
+    class FakeTrim:
+        argtypes = None
+        restype = None
+
+        def __call__(self, pad):
+            calls.append(pad)
+            return 1
+
+    class FakeLibc:
+        malloc_trim = FakeTrim()
+
+    def fake_cdll(name):
+        if name is not None:
+            raise OSError(name)
+        return FakeLibc()
+
+    monkeypatch.setattr(resources.platform, 'system', lambda: 'Linux')
+    monkeypatch.setattr(resources.ctypes, 'CDLL', fake_cdll)
+
+    assert resources._try_malloc_trim() is True
+    assert calls == [0]

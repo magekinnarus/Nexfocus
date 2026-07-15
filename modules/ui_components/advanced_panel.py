@@ -123,9 +123,9 @@ def build_debug_tab():
 
     results['sdxl_assembly_posture'] = gr.Radio(
         label='SDXL Assembly Posture',
-        choices=['auto', 'streaming'],
+        choices=['auto', 'streaming', 'gpu_text'],
         value='auto',
-        info='Auto uses resident UNet on 8GB or higher GPUs and streaming on 6GB or less. Use streaming to force the streaming lane on roomier hardware.'
+        info='Auto uses resident UNet on 8GB or higher GPUs. Use streaming to force the streaming lane on roomier hardware. gpu_text pins both resident UNet and CLIP to GPU, requiring at least 10GB VRAM.'
     )
 
     total_ram_gb = 0.0

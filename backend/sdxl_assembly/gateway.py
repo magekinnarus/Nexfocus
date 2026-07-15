@@ -354,7 +354,12 @@ def run_sdxl_assembly_task(
         from backend.sdxl_assembly.runtime_state import debug_component_cache_report
         cache_report = debug_component_cache_report()
         resident_retained = "retained" if cache_report.get("active_resident_spine") else "released/none"
+        gpu_text_retained = "retained" if cache_report.get("active_gpu_text") else "released/none"
         unet_bytes = cache_report.get("resident_unet_model_bytes", 0)
+        gpu_text_bytes = cache_report.get("gpu_text_model_bytes", 0)
+        gpu_text_patches = cache_report.get("gpu_text_actual_patch_count", 0)
+        cpu_text_entries = cache_report.get("cpu_text_component_cache_entries", 0)
+        cpu_patched_text = cache_report.get("cpu_patched_text_slot_active", False)
         clean_shadow = cache_report.get("clean_shadow_bytes", 0)
 
         output_info = ""
@@ -366,5 +371,8 @@ def run_sdxl_assembly_task(
         print(f"[SDXL RUN END] Correlation ID: {getattr(request, 'request_id', 'unknown')} | "
               f"Status: {status}{err_info} | Duration: {duration:.3f}s{output_info} | "
               f"Resident Spine Retained: {resident_retained} | "
-              f"Resident UNet Bytes: {unet_bytes} | Clean Shadow Bytes: {clean_shadow} | "
+              f"GPU Text Retained: {gpu_text_retained} | "
+              f"Resident UNet Bytes: {unet_bytes} | GPU Text Bytes: {gpu_text_bytes} | "
+              f"GPU Text Patches: {gpu_text_patches} | CPU Text Cache Entries: {cpu_text_entries} | "
+              f"CPU Patched Text Slot: {cpu_patched_text} | Clean Shadow Bytes: {clean_shadow} | "
               f"Memory: RSS={rss_end:.1f}MB, CUDA_Alloc={cuda_alloc_end:.1f}MB, CUDA_Res={cuda_reserved_end:.1f}MB, CUDA_Peak={cuda_peak_end:.1f}MB")

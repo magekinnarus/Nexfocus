@@ -47,6 +47,15 @@ class SDXLPatchedTextEncoderKey:
     clip_posture: str
     clip_lora_signature: Tuple[Tuple[str, float], ...]
 
+
+@dataclass(frozen=True)
+class SDXLGpuTextKey:
+    checkpoint_sha256: str
+    clip_posture: str
+    device: str
+    dtype: str
+    clip_lora_signature: Tuple[Tuple[str, float], ...]
+
 # In-memory clean text encoder cache. UNet ownership belongs to the streaming
 # spine, and VAE ownership is transient, so neither is cached here.
 _TEXT_ENCODER_COMPONENT_CACHE: Dict[str, Any] = {}
@@ -707,6 +716,284 @@ def release_active_sdxl_resident_spine(reason: str | None = None) -> bool:
     return _RESIDENT_RUNTIME_STATE.release(reason=reason)
 
 
+class SDXLGpuTextRuntimeState:
+    def __init__(self) -> None:
+        self._lock = RLock()
+        self._key: SDXLGpuTextKey | None = None
+        self._clip: Any | None = None
+        self._actual_patch_count = 0
+
+    @staticmethod
+    def _build_key(request: SDXLAssemblyRequest) -> SDXLGpuTextKey:
+        return SDXLGpuTextKey(
+            checkpoint_sha256=request.checkpoint.sha256,
+            clip_posture=request.clip_posture.value,
+            device=request.device,
+            dtype="float32",  # SDXL CLIP is fp32
+            clip_lora_signature=_clip_lora_signature(request),
+        )
+
+    def acquire(self, request: SDXLAssemblyRequest, *, lora_worker: Any | None = None) -> Tuple[Any, bool]:
+        requested_key = self._build_key(request)
+        stale_clip: Any | None = None
+
+        with self._lock:
+            # Case 1: Exact key match -> Reuse warm GPU CLIP immediately!
+            if self._clip is not None and self._key == requested_key:
+                logger.debug(
+                    "[SDXL Telemetry] Reusing warm GPU resident text encoder for key=%s",
+                    requested_key,
+                )
+                log_telemetry("gpu_text_warm_reuse", f"checkpoint={request.checkpoint.path.name}")
+                return self._clip, True
+
+            # Case 2: CLIP is warm, but there is a key mismatch.
+            # We check if it is ONLY a change in the CLIP-side LoRA signature.
+            if self._clip is not None and self._key is not None:
+                structural_match = (
+                    self._key.checkpoint_sha256 == requested_key.checkpoint_sha256
+                    and self._key.clip_posture == requested_key.clip_posture
+                    and self._key.device == requested_key.device
+                    and self._key.dtype == requested_key.dtype
+                )
+                if structural_match:
+                    logger.debug(
+                        "[SDXL Telemetry] In-place GPU resident CLIP reload/prepatch for LoRA signature change. "
+                        "Old key: %s, New key: %s",
+                        self._key, requested_key
+                    )
+                    log_telemetry("gpu_text_clean_reload_begin", f"checkpoint={request.checkpoint.path.name}")
+
+                    try:
+                        # Resolve the actual target set before any checkpoint
+                        # reload or compiler allocation. A requested LoRA can
+                        # legitimately contain no applicable CLIP tensors.
+                        from backend.sdxl_assembly.gpu_lora_worker import GpuLoraWorker
+                        active_lora_worker = lora_worker or GpuLoraWorker(request)
+                        resolved_patches = active_lora_worker.resolve_clip_patches(self._clip)
+
+                        # Only checkpoint-restore a model that currently holds
+                        # compiled CLIP patches. A clean resident model can move
+                        # directly to another clean/zero-patch signature.
+                        if self._actual_patch_count > 0:
+                            import torch
+                            model = self._clip.patcher.model
+                            runtime_reload = getattr(self._clip.patcher, "runtime_reload", None)
+                            if not callable(runtime_reload):
+                                raise RuntimeError("GPU text patcher missing runtime_reload callable.")
+                            target_device = torch.device(request.device)
+                            runtime_reload(model, target_device)
+                            model.device = target_device
+
+                        # Clear patcher metadata before publishing or compiling
+                        # the replacement state.
+                        self._clip.patcher.patches = {}
+                        self._clip.patcher.weight_wrapper_patches = {}
+                        self._clip.patcher.backup.clear()
+                        self._clip.patcher.object_patches_backup.clear()
+                        self._clip.patcher.model.current_weight_patches_uuid = None
+
+                        actual_patch_count = active_lora_worker.apply_clip_patches(
+                            self._clip,
+                            resolved_patches=resolved_patches,
+                        )
+                        if actual_patch_count > 0:
+                            active_lora_worker.compile_clip_patches(self._clip)
+                        else:
+                            log_telemetry("clip_lora_isolation_bypass", f"checkpoint={request.checkpoint.path.name} patches=0")
+
+                        # The compiled/no-op state is already authoritative.
+                        # Prevent legacy model management from attempting a
+                        # second patch reconciliation during prompt encode.
+                        self._clip.patcher.model.current_weight_patches_uuid = (
+                            getattr(self._clip.patcher, "patches_uuid", None)
+                        )
+
+                        # Publish the new key and actual compiled state atomically.
+                        self._key = requested_key
+                        self._actual_patch_count = int(actual_patch_count)
+                        log_telemetry("gpu_text_clean_reload_complete", f"checkpoint={request.checkpoint.path.name}")
+                        return self._clip, False
+
+                    except Exception as exc:
+                        # Reconfiguration failed -> Release clip completely.
+                        logger.error(
+                            "[SDXL Telemetry] GPU resident text reconfiguration failed! "
+                            "Releasing clip completely. Error: %s", exc
+                        )
+                        log_telemetry("gpu_text_load_failure_cleanup", f"error={exc.__class__.__name__}")
+                        stale_clip = self._clip
+                        self._clip = None
+                        self._key = None
+                        self._actual_patch_count = 0
+                        if stale_clip is not None:
+                            _release_clip_resources(stale_clip)
+                        raise
+
+            # Case 3: Structural key mismatch (checkpoint, posture, device/dtype).
+            # Release the old owner before loading the new one.
+            stale_clip = self._clip
+            self._clip = None
+            self._key = None
+            self._actual_patch_count = 0
+
+        if stale_clip is not None:
+            logger.debug("[SDXL Telemetry] Releasing stale GPU resident text encoder before replacement.")
+            _release_clip_resources(stale_clip)
+
+        # Build the new GPU resident CLIP
+        logger.debug(
+            "[SDXL Telemetry] Creating new GPU resident text encoder for key=%s",
+            requested_key,
+        )
+        log_telemetry("gpu_text_load_begin", f"checkpoint={request.checkpoint.path.name}")
+
+        # Load sequentially into target CUDA model
+        from backend import loader
+        from backend.defs import sdxl as sdxl_def
+        import torch
+
+        cuda_device = torch.device(request.device)
+        checkpoint_path = str(request.checkpoint.path)
+
+        clip = None
+        try:
+            # We measure memory
+            if cuda_device.type == "cuda" and torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats(cuda_device)
+                baseline_vram = torch.cuda.memory_allocated(cuda_device)
+                baseline_reserved = torch.cuda.memory_reserved(cuda_device)
+                baseline_free = torch.cuda.mem_get_info(cuda_device)[0]
+                logger.debug(
+                    "[SDXL Telemetry] VRAM before GPU text load: allocated=%d bytes, reserved=%d bytes, free=%d bytes",
+                    baseline_vram, baseline_reserved, baseline_free
+                )
+
+            # Load CLIP directly to GPU
+            clip = loader.load_sdxl_clip(
+                checkpoint_path,
+                checkpoint_path,
+                load_device=cuda_device,
+                offload_device=cuda_device,
+                dtype=torch.float32,  # fp32 SDXL CLIP contract
+                reload_source_l=checkpoint_path,
+                reload_source_g=checkpoint_path,
+                reload_prefixes_l=sdxl_def.PREFIXES["clip_l"],
+                reload_prefixes_g=sdxl_def.PREFIXES["clip_g"],
+            )
+
+            # Check if there are CLIP-side patches
+            from backend.sdxl_assembly.gpu_lora_worker import GpuLoraWorker
+            active_lora_worker = lora_worker or GpuLoraWorker(request)
+
+            resolved_patches = active_lora_worker.resolve_clip_patches(clip)
+            actual_patch_count = active_lora_worker.apply_clip_patches(
+                clip,
+                resolved_patches=resolved_patches,
+            )
+            if actual_patch_count > 0:
+                active_lora_worker.compile_clip_patches(clip)
+            else:
+                log_telemetry("clip_lora_isolation_bypass", f"checkpoint={request.checkpoint.path.name} patches=0")
+
+            clip.patcher.model.current_weight_patches_uuid = getattr(clip.patcher, "patches_uuid", None)
+
+            if cuda_device.type == "cuda" and torch.cuda.is_available():
+                final_vram = torch.cuda.memory_allocated(cuda_device)
+                final_reserved = torch.cuda.memory_reserved(cuda_device)
+                final_free = torch.cuda.mem_get_info(cuda_device)[0]
+                logger.debug(
+                    "[SDXL Telemetry] VRAM after GPU text load: allocated=%d bytes, reserved=%d bytes, free=%d bytes",
+                    final_vram, final_reserved, final_free
+                )
+
+            with self._lock:
+                self._clip = clip
+                self._key = requested_key
+                self._actual_patch_count = int(actual_patch_count)
+            log_telemetry("gpu_text_load_complete", f"checkpoint={request.checkpoint.path.name}")
+            return clip, False
+        except Exception as exc:
+            log_telemetry("gpu_text_load_failure_cleanup", f"error={exc.__class__.__name__}")
+            if clip is not None:
+                _release_clip_resources(clip)
+            raise
+
+    def release(self, *, reason: str | None = None) -> bool:
+        with self._lock:
+            clip = self._clip
+            key = self._key
+            self._clip = None
+            self._key = None
+            self._actual_patch_count = 0
+
+        if clip is None:
+            return False
+
+        logger.debug(
+            "[SDXL Telemetry] Releasing active GPU resident text encoder reason=%s key=%s",
+            reason,
+            key,
+        )
+        log_telemetry("gpu_text_release_begin", f"reason={reason or 'unspecified'}")
+        _release_clip_resources(clip)
+        log_telemetry("gpu_text_release_complete", f"reason={reason or 'unspecified'}")
+        return True
+
+    def get_active_key(self) -> SDXLGpuTextKey | None:
+        with self._lock:
+            return self._key
+
+    def get_actual_patch_count(self) -> int:
+        with self._lock:
+            return self._actual_patch_count
+
+
+_GPU_TEXT_RUNTIME_STATE = SDXLGpuTextRuntimeState()
+
+
+def acquire_active_gpu_text(
+    request: SDXLAssemblyRequest,
+    *,
+    lora_worker: Any | None = None,
+) -> Tuple[Any, bool]:
+    return _GPU_TEXT_RUNTIME_STATE.acquire(request, lora_worker=lora_worker)
+
+
+def release_active_gpu_text(reason: str | None = None) -> bool:
+    return _GPU_TEXT_RUNTIME_STATE.release(reason=reason)
+
+
+def _release_clip_resources(clip: Any) -> None:
+    import torch
+    import gc
+    if hasattr(clip, "patcher") and clip.patcher is not None:
+        patcher = clip.patcher
+        if callable(getattr(patcher, "detach", None)):
+            try:
+                from backend import legacy_governor
+
+                legacy_governor.eject_model(patcher)
+            except Exception:
+                logger.debug("Failed to eject GPU text patcher during release.", exc_info=True)
+        clip.patcher.patches = {}
+        clip.patcher.weight_wrapper_patches = {}
+        clip.patcher.backup.clear()
+        clip.patcher.object_patches_backup.clear()
+        if hasattr(clip.patcher, "model") and clip.patcher.model is not None:
+            clip.patcher.model.current_weight_patches_uuid = None
+            # Drop the CUDA owner directly. Moving the fp32 text model through
+            # CPU during teardown would create exactly the multi-GB host-RAM
+            # spike that this posture exists to avoid.
+            clip.patcher.model = None
+    if hasattr(clip, "cond_stage_model"):
+        clip.cond_stage_model = None
+    del clip
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def _module_tensor_inventory(module: Any) -> dict[str, Any]:
     inventory: dict[str, Any] = {
         "parameter_devices": {},
@@ -769,6 +1056,15 @@ def debug_component_cache_report() -> Dict[str, Any]:
         "resident_unet_parameter_bytes": 0,
         "resident_unet_buffer_bytes": 0,
         "resident_unet_model_bytes": 0,
+        "active_gpu_text": False,
+        "gpu_text_parameter_devices": {},
+        "gpu_text_buffer_devices": {},
+        "gpu_text_parameter_bytes": 0,
+        "gpu_text_buffer_bytes": 0,
+        "gpu_text_model_bytes": 0,
+        "gpu_text_actual_patch_count": 0,
+        "cpu_text_component_cache_entries": 0,
+        "cpu_patched_text_slot_active": False,
     }
 
     with _STREAMING_RUNTIME_STATE._lock:
@@ -849,6 +1145,25 @@ def debug_component_cache_report() -> Dict[str, Any]:
                     report["patched_text_cache_mb"] = float(model_size()) / (1024 * 1024)
                 except Exception:
                     pass
+
+    with _GPU_TEXT_RUNTIME_STATE._lock:
+        gpu_clip = _GPU_TEXT_RUNTIME_STATE._clip
+        if gpu_clip is not None:
+            report["active_gpu_text"] = True
+            report["gpu_text_actual_patch_count"] = _GPU_TEXT_RUNTIME_STATE._actual_patch_count
+            patcher = getattr(gpu_clip, "patcher", None)
+            if patcher is not None and hasattr(patcher, "model"):
+                inventory = _module_tensor_inventory(patcher.model)
+                report["gpu_text_parameter_devices"] = inventory["parameter_devices"]
+                report["gpu_text_buffer_devices"] = inventory["buffer_devices"]
+                report["gpu_text_parameter_bytes"] = inventory["parameter_bytes"]
+                report["gpu_text_buffer_bytes"] = inventory["buffer_bytes"]
+                report["gpu_text_model_bytes"] = inventory["model_bytes"]
+
+    with _TEXT_ENCODER_COMPONENT_CACHE_LOCK:
+        report["cpu_text_component_cache_entries"] = len(_TEXT_ENCODER_COMPONENT_CACHE)
+    with _PATCHED_TEXT_ENCODER_COMPONENT_SLOT_LOCK:
+        report["cpu_patched_text_slot_active"] = _PATCHED_TEXT_ENCODER_COMPONENT_SLOT is not None
 
     return report
 

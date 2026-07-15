@@ -188,7 +188,7 @@ def _try_windows_empty_working_set():
 def _try_malloc_trim():
     system_name = platform.system()
     if system_name == 'Linux':
-        for library_name in ('libc.so.6', 'libc.so'):
+        for library_name in ('libc.so.6', 'libc.so', None):
             try:
                 libc = ctypes.CDLL(library_name)
             except OSError:

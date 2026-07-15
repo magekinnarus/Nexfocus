@@ -563,12 +563,12 @@ class MemoryGovernor:
         return not affordance.allowed
 
     def should_trim_host_memory(self, snapshot: MemorySnapshot | None = None, *, aggressive: bool = False):
-        if not self.policy.linux_malloc_trim_enabled:
-            return False
         if platform.system() != 'Linux':
             return False
         if aggressive:
             return True
+        if not self.policy.linux_malloc_trim_enabled:
+            return False
         snapshot = snapshot or self.capture_snapshot()
         return snapshot.free_ram_mb is not None and snapshot.free_ram_mb < self.policy.linux_malloc_trim_trigger_mb
 

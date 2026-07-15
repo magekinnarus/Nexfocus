@@ -99,7 +99,7 @@ Compile sanity on the authoritative runtime surfaces:
 
 ```powershell
 $fluxV3Files = Get-ChildItem backend\flux_fill_v3\*.py | ForEach-Object { $_.FullName }
-.\venv\Scripts\python.exe -m py_compile @fluxV3Files backend\memory_governor.py backend\resources.py backend\sdxl_runtime_policy.py backend\sdxl_streaming_runtime.py backend\sdxl_unified_runtime.py backend\staging_manager.py backend\sdxl_assembly\cpu_text_encode_worker.py backend\sdxl_assembly\progress.py backend\sdxl_assembly\runtime_state.py modules\async_worker.py modules\objr_engine.py modules\parameter_registry.py modules\pipeline\inference.py modules\pipeline\routes.py modules\pipeline\tiled_refinement.py modules\runtime_surface_state.py modules\runtime_surface_api.py modules\task_state.py modules\ui_components\advanced_panel.py modules\ui_logic.py webui.py tools\check_validation_env.py tracked_tests\test_memory_residency.py tracked_tests\test_pipeline_routes.py tracked_tests\test_pipeline_stage_runtime.py tracked_tests\test_sdxl_assembly_w03_regression.py tracked_tests\test_sdxl_assembly_w04_regression.py tracked_tests\test_sdxl_assembly_w10b_lifecycle_coordinator.py tracked_tests\test_sdxl_assembly_w12b_production_resident.py tests\test_runtime_surface_api.py tests\test_sdxl_assembly_w10d.py tests\test_sdxl_outer_wiring_w10c.py
+.\venv\Scripts\python.exe -m py_compile @fluxV3Files backend\memory_governor.py backend\process_transition.py backend\resources.py backend\sdxl_runtime_policy.py backend\sdxl_streaming_runtime.py backend\sdxl_unified_runtime.py backend\staging_manager.py backend\sdxl_assembly\assembler.py backend\sdxl_assembly\director.py backend\sdxl_assembly\gateway.py backend\sdxl_assembly\cpu_text_encode_worker.py backend\sdxl_assembly\gpu_lora_worker.py backend\sdxl_assembly\gpu_text_encode_worker.py backend\sdxl_assembly\lifecycle_coordinator.py backend\sdxl_assembly\progress.py backend\sdxl_assembly\request_builder.py backend\sdxl_assembly\runtime_state.py modules\async_worker.py modules\objr_engine.py modules\parameter_registry.py modules\pipeline\inference.py modules\pipeline\routes.py modules\pipeline\tiled_refinement.py modules\runtime_surface_state.py modules\runtime_surface_api.py modules\task_state.py modules\ui_components\advanced_panel.py modules\ui_logic.py webui.py tools\check_validation_env.py tracked_tests\test_memory_residency.py tracked_tests\test_pipeline_routes.py tracked_tests\test_pipeline_stage_runtime.py tracked_tests\test_sdxl_assembly_w03_regression.py tracked_tests\test_sdxl_assembly_w04_regression.py tracked_tests\test_sdxl_assembly_w10b_lifecycle_coordinator.py tracked_tests\test_sdxl_assembly_w12b_production_resident.py tracked_tests\test_sdxl_assembly_w12c_gpu_text.py tests\test_runtime_surface_api.py tests\test_sdxl_assembly_w10d.py tests\test_sdxl_outer_wiring_w10c.py
 ```
 
 ## Regression Matrix
@@ -148,7 +148,7 @@ Covers:
 ### 4. Worker-Centric SDXL Lifecycle / Queue-Boundary / Interrupt Regressions
 
 ```powershell
-.\venv\Scripts\python.exe -m pytest tests\test_sdxl_assembly_w10b.py tests\test_sdxl_assembly_w10d.py tests\test_sdxl_outer_wiring_w10c.py tracked_tests\test_sdxl_assembly_w03_regression.py tracked_tests\test_sdxl_assembly_w10b_lifecycle_coordinator.py tracked_tests\test_sdxl_assembly_w12b_production_resident.py -q
+.\venv\Scripts\python.exe -m pytest tests\test_sdxl_assembly_w10b.py tests\test_sdxl_assembly_w10d.py tests\test_sdxl_outer_wiring_w10c.py tracked_tests\test_sdxl_assembly_w03_regression.py tracked_tests\test_sdxl_assembly_w10b_lifecycle_coordinator.py tracked_tests\test_sdxl_assembly_w12b_production_resident.py tracked_tests\test_sdxl_assembly_w12c_gpu_text.py -q
 .\venv\Scripts\python.exe -m pytest tracked_tests\test_sdxl_assembly_w04_regression.py -k "assembly_progress_callback_preserves_interrupt_processing_exception or assembly_progress_callback_throttles_full_memory_telemetry" -q
 .\venv\Scripts\python.exe -m pytest tests\test_runtime_surface_api.py -k "runtime_surface_skip_action_interrupts_active_task" -q
 ```
@@ -305,14 +305,16 @@ Expected result:
 
 Current field status (2026-07-15): the original five L4 `auto` resident runs,
 resident outpaint, and the Issues10 `SDXL inpaint -> Flux inpaint -> SDXL
-inpaint` round trip passed. The remaining steps below are still required for
-W12b acceptance, together with one host-reclaim round-trip replay. New runs
-must show truthful
+inpaint` round trip passed. The Director accepts W12b with the remaining field
+items transferred rather than erased. The host-reclaim round trip moves to
+W12c on Colab Free T4; final broad route and Skip replay moves to W12d. New runs
+must continue to show truthful
 `inpaint_assembly` / `outpaint_assembly` route IDs,
 `spatial_compose_complete ... blend=morphological_sin2`, and run-local
 `CUDA_Peak` values.
 
-Run this exact UI sequence on Colab L4 for W12b acceptance:
+Retain this UI sequence as the W12d parity checklist; completed items need not
+be repeated solely to reopen W12b:
 
 1. `SDXL Assembly Posture = streaming`, `Txt2Img`
 2. `SDXL Assembly Posture = auto`, `Txt2Img (cold)`
@@ -349,8 +351,42 @@ Expected result:
 - Report CPU RSS, CUDA allocated/reserved/peak, output success/path, resident
   spine retention/release, and any failure/interrupt status in the same
   issue/outcome style as `.agent/temp/P4-M18-W11e_issues4.md`.
-- Full Colab Free T4 stress, including the GPU text worker default and
+- Full Colab Free T4 stress, including the explicit GPU text composition and
   three-LoRA/three-ControlNet headroom where assets permit, begins in W12c.
+
+### 6.1 SDXL W12c GPU-Text Colab Free T4 Replay
+
+Use a Colab Free T4-class session with approximately 12.7 GB host RAM and
+explicitly select `gpu_text` (`resident_unet_gpu_text`). Do not count an L4 or a
+CPU-text run as field acceptance for this composition.
+
+Required sequence:
+
+1. Cold Txt2Img without LoRA.
+2. Prompt-only change with the same checkpoint and stack.
+3. One preflighted LoRA with a proven non-empty CLIP patch dictionary; repeat it.
+4. CLIP-only change, UNet-only change, combined change, and LoRA removal.
+5. A requested CLIP LoRA that resolves to zero actual patches and bypasses compilation.
+6. Inpaint with transient VAE encode/decode.
+7. Three LoRAs plus three ControlNets, including structural and PuLID where assets permit.
+8. `SDXL -> Flux disk-paged T5 -> SDXL` using the Issues10 transition sequence.
+9. Explicit full release.
+
+Expected evidence:
+
+- one authoritative CUDA CLIP-L/CLIP-G owner, zero retained CPU/GPU clean
+  shadow, and separate resident UNet/text byte inventories;
+- compile baseline, peak, peak delta, final allocation, patch count, cleared
+  patch count, and zero retained host-pinned adapter bytes;
+- prompt/same-stack reuse, side-specific LoRA invalidation, checkpoint-backed
+  in-place CLIP restoration, and zero-patch bypass truth;
+- resident UNet + GPU text coexistence through transient VAE and selected CN
+  windows without hidden eviction, fallback, or OOM;
+- materially lower process RSS than the comparable W12b CPU-text composition;
+- `checkpoint_switch ... trim_host=True` and cleanup
+  `proc_rss_before`/`proc_rss_after` evidence with no stepwise family-transition
+  RSS growth; and
+- no Hugging Face fallback for the CivitAI-only FP16 Flux T5.
 
 ### 7. Color Enhancement Local Replay
 

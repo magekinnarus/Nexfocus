@@ -51,6 +51,8 @@ def _normalize_sdxl_assembly_posture_value(value: Any) -> str:
     normalized = str(value or 'auto').strip().lower().replace('-', '_').replace(' ', '_')
     if normalized == 'streaming':
         return 'streaming'
+    if normalized == 'gpu_text':
+        return 'gpu_text'
     return 'auto'
 
 

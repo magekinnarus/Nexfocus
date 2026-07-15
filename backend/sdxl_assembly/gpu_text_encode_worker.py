@@ -1,9 +1,132 @@
+from __future__ import annotations
+
+import time
+import logging
+from typing import Any, Dict
+
 from backend.sdxl_assembly.contracts import SDXLAssemblyRequest
+from backend.sdxl_assembly.gpu_lora_worker import GpuLoraWorker
+from backend.sdxl_assembly.progress import log_telemetry
+from backend.sdxl_assembly.runtime_state import (
+    acquire_active_gpu_text,
+    lookup_prompt_conditioning,
+    remember_prompt_conditioning,
+    release_active_gpu_text,
+)
+
+logger = logging.getLogger(__name__)
+
 
 class GpuTextEncodeWorker:
-    """Worker representing GpuTextEncodeWorker (CLIP-L and CLIP-G on GPU).
-    
-    Deferred to W08+.
-    """
-    def __init__(self, request: SDXLAssemblyRequest) -> None:
-        raise NotImplementedError("GPU-pinned text encoder worker posture is deferred to W08+ and not supported in W02.")
+    """Worker representing GpuTextEncodeWorker (CLIP-L and CLIP-G on GPU)."""
+
+    def __init__(self, request: SDXLAssemblyRequest, lora_worker: GpuLoraWorker | None = None) -> None:
+        self.request = request
+        self.lora_worker = lora_worker or GpuLoraWorker(request)
+
+    def get_conditioning(self) -> Dict[str, Any]:
+        """Encode positive and negative prompts on the resident CUDA CLIP."""
+        log_telemetry("prompt_encode_begin")
+
+        # 1. Check prompt cache first
+        cached_cond = lookup_prompt_conditioning(self.request)
+        if cached_cond is not None:
+            log_telemetry("prompt_encode_complete", "cache_hit=True")
+            return cached_cond
+
+        # 2. Cache MISS: Acquire the current patched GPU CLIP and encode.
+        start_time = time.perf_counter()
+        clip = None
+        try:
+            import torch
+            device = torch.device(self.request.device)
+
+            if device.type == "cuda" and torch.cuda.is_available():
+                try:
+                    vram_before = torch.cuda.memory_allocated(device)
+                    vram_reserved_before = torch.cuda.memory_reserved(device)
+                    logger.debug(
+                        "[SDXL Telemetry] GpuTextEncodeWorker: acquire text start. "
+                        "VRAM allocated=%d, reserved=%d", vram_before, vram_reserved_before
+                    )
+                except Exception:
+                    pass
+
+            clip, reused = acquire_active_gpu_text(
+                self.request,
+                lora_worker=self.lora_worker,
+            )
+
+            if device.type == "cuda" and torch.cuda.is_available():
+                try:
+                    vram_after = torch.cuda.memory_allocated(device)
+                    vram_reserved_after = torch.cuda.memory_reserved(device)
+                    logger.debug(
+                        "[SDXL Telemetry] GpuTextEncodeWorker: acquire text done (reused=%s). "
+                        "VRAM allocated=%d, reserved=%d", reused, vram_after, vram_reserved_after
+                    )
+                except Exception:
+                    pass
+
+            from backend import conditioning
+
+            # Respect clip layer skip
+            if hasattr(clip, "clip_layer"):
+                clip.clip_layer(self.request.clip_layer)
+
+            # Perform prompt encoding on CUDA
+            encoded_prompt_pair = conditioning.encode_prompt_pair_sdxl(
+                clip,
+                self.request.prompt,
+                self.request.negative_prompt,
+                positive_texts=self.request.positive_texts,
+                negative_texts=self.request.negative_texts,
+                use_explicit_residency=True,
+            )
+
+            # Build ADM Scale Pair
+            adm_pair = conditioning.build_sdxl_adm_pair(
+                encoded_prompt_pair,
+                self.request.width,
+                self.request.height,
+                target_width=self.request.width,
+                target_height=self.request.height,
+                adm_scale_positive=self.request.adm_scaler_positive,
+                adm_scale_negative=self.request.adm_scaler_negative,
+            )
+
+            # Format for sampler
+            positive = [[
+                encoded_prompt_pair["positive"]["cond"],
+                {
+                    "pooled_output": encoded_prompt_pair["positive"]["pooled"],
+                    "model_conds": {"y": adm_pair["positive"]},
+                },
+            ]]
+            negative = [[
+                encoded_prompt_pair["negative"]["cond"],
+                {
+                    "pooled_output": encoded_prompt_pair["negative"]["pooled"],
+                    "model_conds": {"y": adm_pair["negative"]},
+                },
+            ]]
+
+            conditioning_payload = {
+                "positive": positive,
+                "negative": negative,
+            }
+
+            remember_prompt_conditioning(self.request, conditioning_payload)
+
+            duration = time.perf_counter() - start_time
+            log_telemetry("prompt_encode_complete", f"cache_hit=False duration={duration:.3f}s")
+            return conditioning_payload
+        finally:
+            clip = None
+            import gc
+            gc.collect()
+
+    def teardown_assembly_order(self) -> None:
+        """Extension point for tracking teardown order."""
+        if bool(self.request.metadata.get("release_text_encoder_after_task", False)):
+            release_active_gpu_text(reason="assembly_close")
