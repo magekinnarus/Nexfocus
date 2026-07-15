@@ -16,6 +16,26 @@ from modules.pipeline.output import build_image_wall, yield_result
 from modules.pipeline.routes import build_generation_route, describe_route
 from modules.pipeline.stage_runtime import PipelineRouteContext, PipelineStageRunner
 
+
+def discard_inactive_controlnet_tasks(task_state):
+    """Drop hidden slot values when the queue-frozen route does not admit CN."""
+    from modules.route_intent import resolve_route_intent
+
+    if resolve_route_intent(task_state).expects_controlnet:
+        return 0
+
+    discarded = sum(len(tasks) for tasks in task_state.cn_tasks.values())
+    if discarded:
+        for cn_type in list(task_state.cn_tasks.keys()):
+            task_state.cn_tasks[cn_type] = []
+        task_state.ensure_cn_task_maps()
+        print(
+            f'[ControlNet] Ignoring {discarded} inactive hidden slot input(s) '
+            f'for route {getattr(task_state, "requested_route_id", "") or "unknown"}.'
+        )
+    return discarded
+
+
 class AsyncTask:
     callback_steps: float = 0.0
 
@@ -116,6 +136,8 @@ class AsyncTask:
             cn_start = args.get(f'cn_{i}_start', 0.0)
             if cn_type is None or not s.add_cn_task(cn_type, [cn_img, cn_stop, cn_weight, cn_start, i]):
                 print(f'[ControlNet] Skipping unsupported guidance type: {raw_cn_type!r}')
+
+        discard_inactive_controlnet_tasks(s)
 
     @property
     def generate_image_grid(self): return self.state.generate_image_grid

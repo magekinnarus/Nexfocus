@@ -409,6 +409,46 @@ def test_gpu_text_process_identity_comes_from_assembly_selector(monkeypatch):
     assert [change.value for change in changes] == ["spine_posture_change"]
 
 
+def test_gpu_text_posture_change_precedes_simultaneous_lora_reuse():
+    registry = process_transition.SharedProcessRegistry()
+    gpu_key = process_transition.ProcessKey(
+        family="sdxl",
+        process_class="standard_sdxl",
+        authoritative_identity=("checkpoint", "clip", "lora-a"),
+        residency_class="resident_unet_gpu_text",
+    )
+    legacy_key = process_transition.ProcessKey(
+        family="sdxl",
+        process_class="standard_sdxl",
+        authoritative_identity=("checkpoint", "clip", "lora-b"),
+        residency_class="full_resident",
+    )
+
+    registry.set_active_key(gpu_key)
+    decision = registry.evaluate_transition(legacy_key)
+
+    assert decision.reset_required is True
+    assert decision.reason == "residency_class_change"
+
+
+def test_inactive_outpaint_controlnet_slots_are_discarded():
+    from modules import flags
+    from modules.async_worker import AsyncTask
+
+    queued = AsyncTask({
+        "input_image_checkbox": True,
+        "current_tab": "outpaint",
+        "requested_route_id": "outpaint",
+        "requested_route_family": "image_input",
+        "outpaint_input_image": object(),
+        "mixing_image_prompt_and_outpaint": False,
+        "cn_0_image": object(),
+        "cn_0_type": flags.cn_cpds,
+    })
+
+    assert all(not tasks for tasks in queued.state.cn_tasks.values())
+
+
 def test_gpu_text_legacy_bypass_releases_before_legacy_load(monkeypatch):
     from backend.sdxl_assembly import gateway
     from backend.sdxl_assembly import runtime_state

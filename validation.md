@@ -307,13 +307,14 @@ Current field status (2026-07-15): the original five L4 `auto` resident runs,
 resident outpaint, and the Issues10 `SDXL inpaint -> Flux inpaint -> SDXL
 inpaint` round trip passed. The Director accepts W12b with the remaining field
 items transferred rather than erased. The host-reclaim round trip moves to
-W12c on Colab Free T4; final broad route and Skip replay moves to W12d. New runs
+W12c on Colab Free T4; final broad route and Skip replay moves to W12e after
+the W12d workflow-plan correction. New runs
 must continue to show truthful
 `inpaint_assembly` / `outpaint_assembly` route IDs,
 `spatial_compose_complete ... blend=morphological_sin2`, and run-local
 `CUDA_Peak` values.
 
-Retain this UI sequence as the W12d parity checklist; completed items need not
+Retain this UI sequence as the W12e parity checklist; completed items need not
 be repeated solely to reopen W12b:
 
 1. `SDXL Assembly Posture = streaming`, `Txt2Img`
@@ -385,11 +386,53 @@ Expected evidence:
 - if a same-family request is assembly-ineligible and enters the legacy SDXL
   runtime, `assembly_route_legacy_transition` must precede legacy checkpoint
   loading and the retained assembly UNet/GPU-text inventories must be released;
+- an Outpaint request with ControlNet mixing disabled must ignore populated
+  hidden CN slot values and must not report CPDS or another inactive CN as its
+  reason for leaving the assembly lane;
 - materially lower process RSS than the comparable W12b CPU-text composition;
 - `checkpoint_switch ... trim_host=True` and cleanup
   `proc_rss_before`/`proc_rss_after` evidence with no stepwise family-transition
   RSS growth; and
 - no Hugging Face fallback for the CivitAI-only FP16 Flux T5.
+
+### 6.2 SDXL W12d Queue-Frozen Workflow Plan and ControlNet Overlay Replay
+
+W12d is a pipeline-wide outer-layer correction, not a GPU-text worker feature.
+Run the local truth-table suite across streaming, resident CPU text, and
+resident GPU text. Then run the narrow physical replay on Colab Free T4 with
+`gpu_text` selected.
+
+Required truth table:
+
+1. Normal Generate surface with hidden populated CN controls -> `txt2img`, CN overlay off.
+2. ControlNet tab with one supported active slot -> `txt2img`, CN overlay on.
+3. ControlNet tab with inpaint/outpaint mixing checkboxes set -> still `txt2img`, CN overlay determined only by active slots.
+4. Inpaint tab, mixing off, hidden populated slots -> `inpaint`, CN overlay off.
+5. Inpaint tab, mixing on, one supported slot -> `inpaint`, CN overlay on.
+6. Outpaint tab, mixing off, hidden populated slots -> `outpaint`, CN overlay off.
+7. Outpaint tab, mixing on, one supported slot -> `outpaint`, CN overlay on.
+8. Remove, Upscale, Color Enhancement, and Super-Upscale surfaces -> selected base route, CN overlay off regardless of hidden slot values.
+
+Expected evidence:
+
+- one immutable plan record identifies base route, route family, overlay
+  activation/source, literal active slots/types, and ordered stages;
+- later route, asset, admission, and transition records agree with that plan;
+- overlay-off inpaint/outpaint plans contain no ControlNet support,
+  structural-preprocess, or contextual-preprocess stage;
+- inactive slots cause no support-asset resolution/download, assembly
+  rejection, transition, or active-CN telemetry;
+- queued execution remains unchanged after later UI tab, checkbox, image, or
+  slot edits;
+- an actually unsupported active CN request still fails closed and preserves
+  release-before-legacy-load behavior; and
+- the T4 replay shows no hidden-CPDS bypass, duplicate UNet/CLIP owner, or
+  route-induced OOM.
+
+W12d evidence may satisfy the matching route/transition items in W12c, but
+does not replace W12c's positive CLIP-LoRA, RSS comparison,
+`SDXL -> Flux -> SDXL`, or explicit full-release evidence. Broad Color
+Enhancement, Super-Upscale, Skip, and cross-route parity remain W12e.
 
 ### 7. Color Enhancement Local Replay
 

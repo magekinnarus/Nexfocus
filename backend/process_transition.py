@@ -232,6 +232,10 @@ class SharedProcessRegistry:
             reason = "family_change"
         elif current.process_class != requested.process_class:
             reason = "process_class_change"
+        elif current.residency_class != requested.residency_class:
+            # A posture boundary is structural even when the same request also
+            # changes its LoRA stack. Never let LoRA-only reuse mask release.
+            reason = "residency_class_change"
         elif current.authoritative_identity != requested.authoritative_identity:
             is_same_base_components = False
             if current.family == PROCESS_FAMILY_SDXL and requested.family == PROCESS_FAMILY_SDXL:
