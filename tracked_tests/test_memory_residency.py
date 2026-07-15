@@ -197,3 +197,41 @@ def test_cleanup_memory_dispatches_residency_handlers_by_target_phase(monkeypatc
     assert ('pulid', 'destroy') in calls
     assert ('contextual', 'destroy', 'destroy', 'destroy') in calls
     assert any(name == 'soft_empty_cache' for name, *_ in calls)
+
+
+def test_affordable_checkpoint_switch_trims_supported_host_after_release(monkeypatch):
+    calls = []
+    trim_requests = []
+
+    monkeypatch.setattr(
+        resources.memory_governor,
+        'can_afford',
+        lambda **kwargs: SimpleNamespace(allowed=True, reason='headroom_ok'),
+    )
+    monkeypatch.setattr(
+        resources.memory_governor,
+        'should_trim_host_memory',
+        lambda *, aggressive=False, **kwargs: trim_requests.append(aggressive) or aggressive,
+    )
+    monkeypatch.setattr(
+        resources,
+        'cleanup_memory',
+        lambda reason, **kwargs: calls.append((reason, kwargs)) or {'done': True},
+    )
+    monkeypatch.setattr(
+        resources.memory_governor.governor.policy,
+        'aggressive_checkpoint_switch_reclaim',
+        False,
+    )
+
+    result = resources.prepare_for_checkpoint_switch(
+        current_model='sdxl.safetensors',
+        next_model='flux.safetensors',
+        release_callback=lambda: calls.append(('release', {})),
+    )
+
+    assert result == {'done': True}
+    assert trim_requests == [True]
+    assert calls[0] == ('release', {})
+    assert calls[1][0] == 'checkpoint_switch'
+    assert calls[1][1]['trim_host'] is True

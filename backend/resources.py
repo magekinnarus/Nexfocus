@@ -212,12 +212,21 @@ def _try_malloc_trim():
 
     return False
 
+
+def _process_rss_mb():
+    try:
+        return float(psutil.Process().memory_info().rss) / (1024 * 1024)
+    except Exception:
+        return None
+
+
 def cleanup_memory(reason, *, unload_models=False, force_cache=False, gc_collect=True, trim_host=None, notes=None, target_phase=None, task=None):
     cleanup_notes = dict(notes or {})
     cleanup_notes['reason'] = reason
     cleanup_phase = normalize_memory_phase(target_phase) if target_phase is not None else current_memory_phase()
     cleanup_notes['target_phase'] = cleanup_phase
     before = capture_memory_snapshot(notes={**cleanup_notes, 'stage': 'before_cleanup'})
+    process_rss_before_mb = _process_rss_mb()
     residency_plan = _residency_plan_for_phase(target_phase=cleanup_phase, task=task)
 
     if unload_models:
@@ -239,6 +248,7 @@ def cleanup_memory(reason, *, unload_models=False, force_cache=False, gc_collect
     # so the trim attempt has reclaimable pages to work with.
     soft_empty_cache(force=force_cache or unload_models or bool(trim_host) or bool(support_actions))
     trimmed = _try_malloc_trim() if trim_host else False
+    process_rss_after_mb = _process_rss_mb()
 
     after = capture_memory_snapshot(notes={
         **cleanup_notes,
@@ -250,7 +260,8 @@ def cleanup_memory(reason, *, unload_models=False, force_cache=False, gc_collect
 
     logging.info(
         '[Nex-Memory] cleanup reason=%s unload_models=%s force_cache=%s target_phase=%s trimmed=%s '
-        'ram_before=%sMB ram_after=%sMB vram_before=%sMB vram_after=%sMB',
+        'ram_before=%sMB ram_after=%sMB vram_before=%sMB vram_after=%sMB '
+        'proc_rss_before=%sMB proc_rss_after=%sMB',
         reason,
         unload_models,
         force_cache,
@@ -260,6 +271,8 @@ def cleanup_memory(reason, *, unload_models=False, force_cache=False, gc_collect
         'n/a' if after.free_ram_mb is None else f'{after.free_ram_mb:.1f}',
         'n/a' if before.free_vram_mb is None else f'{before.free_vram_mb:.1f}',
         'n/a' if after.free_vram_mb is None else f'{after.free_vram_mb:.1f}',
+        'n/a' if process_rss_before_mb is None else f'{process_rss_before_mb:.1f}',
+        'n/a' if process_rss_after_mb is None else f'{process_rss_after_mb:.1f}',
     )
     return after
 
@@ -270,13 +283,22 @@ def prepare_for_checkpoint_switch(*, current_model=None, next_model=None, releas
         notes=notes,
     )
     aggressive = memory_governor.governor.policy.aggressive_checkpoint_switch_reclaim or not affordance.allowed
+    # A checkpoint/family switch is an explicit ownership boundary.  Once the
+    # departing runtime has released its objects, return reclaimable glibc
+    # arenas even when the host still has generous free-RAM headroom.  The
+    # ordinary pressure threshold is appropriate for phase-local cleanup, but
+    # it otherwise leaves large SDXL preprocessor/PuLID allocations charged to
+    # the process across SDXL -> Flux -> SDXL transitions.
+    full_release_trim = memory_governor.should_trim_host_memory(aggressive=True)
+    trim_host = bool(aggressive or full_release_trim)
 
     logging.info(
-        '[Nex-Memory] checkpoint_switch current=%s next=%s allowed=%s aggressive=%s detail=%s',
+        '[Nex-Memory] checkpoint_switch current=%s next=%s allowed=%s aggressive=%s trim_host=%s detail=%s',
         current_model,
         next_model,
         affordance.allowed,
         aggressive,
+        trim_host,
         affordance.reason,
     )
 
@@ -288,7 +310,7 @@ def prepare_for_checkpoint_switch(*, current_model=None, next_model=None, releas
         unload_models=True,
         force_cache=True,
         gc_collect=True,
-        trim_host=aggressive,
+        trim_host=trim_host,
         target_phase=MemoryPhase.MODEL_REFRESH,
         notes={
             'current_model': current_model,

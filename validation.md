@@ -303,10 +303,11 @@ Expected result:
 
 ### 6. SDXL W12b Auto/Streaming Resident Replay
 
-Current field status (2026-07-13): five L4 `auto` resident runs passed for
-Txt2Img cold, three LoRAs, warm inpaint, inpaint with two structural controls
-plus PuLID, and checkpoint change with warm CN artifacts. The remaining steps
-below are still required for W12b acceptance. New runs must show truthful
+Current field status (2026-07-15): the original five L4 `auto` resident runs,
+resident outpaint, and the Issues10 `SDXL inpaint -> Flux inpaint -> SDXL
+inpaint` round trip passed. The remaining steps below are still required for
+W12b acceptance, together with one host-reclaim round-trip replay. New runs
+must show truthful
 `inpaint_assembly` / `outpaint_assembly` route IDs,
 `spatial_compose_complete ... blend=morphological_sin2`, and run-local
 `CUDA_Peak` values.
@@ -339,6 +340,12 @@ Expected result:
   inside prompt encoding. For the CivitAI-only FP16 T5 asset, an authentication
   redirect must report the `CIVITAI_TOKEN` requirement; it must not fall back to
   Hugging Face automatically.
+- On supported Colab Linux profiles, each checkpoint/family switch reports
+  `checkpoint_switch ... trim_host=True` followed by
+  `cleanup ... trimmed=True ... proc_rss_before=... proc_rss_after=...`.
+  Repeat `SDXL -> Flux -> SDXL`; the next-family entry RSS must fall materially
+  after each departing-family release and must not show a stepwise baseline
+  increase across the round trip. Same-stack SDXL warm reuse remains retained.
 - Report CPU RSS, CUDA allocated/reserved/peak, output success/path, resident
   spine retention/release, and any failure/interrupt status in the same
   issue/outcome style as `.agent/temp/P4-M18-W11e_issues4.md`.
