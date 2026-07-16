@@ -11,6 +11,7 @@ from PIL import Image
 import os
 import io
 import base64
+import json
 import uuid
 import modules.config
 
@@ -623,6 +624,7 @@ def reset_inpaint_prepared_assets():
         gr.update(value=""),
         gr.update(value=""),
         gr.update(value=""),
+        gr.update(value=""),
         gr.update(value=False)
     )
 
@@ -663,6 +665,7 @@ def compute_inpaint_step1_context(base_image_path, base_workspace_id, context_wo
         gr.update(value=mask_workspace_id or ""),
         gr.update(),
         gr.update(value=""),
+        gr.update(value=json.dumps(tuple(int(v) for v in ctx.bb))),
         gr.update(value=True)
     )
 
@@ -676,6 +679,7 @@ def refresh_inpaint_bb_image(base_image_path, base_workspace_id, context_image_p
             gr.update(value=""),
             gr.update(value=mask_workspace_id or ""),
             gr.update(value=""),
+            gr.update(),
             gr.update()
         )
 
@@ -687,6 +691,7 @@ def refresh_inpaint_bb_image(base_image_path, base_workspace_id, context_image_p
             gr.update(value=""),
             gr.update(value=mask_workspace_id or ""),
             gr.update(value=""),
+            gr.update(),
             gr.update()
         )
 
@@ -710,6 +715,7 @@ def refresh_inpaint_bb_image(base_image_path, base_workspace_id, context_image_p
             gr.update(value=""),
             gr.update(value=mask_workspace_id or ""),
             gr.update(value=""),
+            gr.update(),
             gr.update()
         )
 
@@ -729,6 +735,7 @@ def refresh_inpaint_bb_image(base_image_path, base_workspace_id, context_image_p
         gr.update(value=""),
         gr.update(value=mask_workspace_id or ""),
         gr.update(value=""),
+        gr.update(value=json.dumps(tuple(int(v) for v in ctx.bb))),
         gr.update(value=True)
     )
 

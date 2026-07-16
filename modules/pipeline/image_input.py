@@ -1,5 +1,6 @@
 import numpy as np
 import hashlib
+import json
 from collections import OrderedDict
 import modules.config as config
 import modules.core as core
@@ -24,6 +25,139 @@ class EarlyReturnException(BaseException):
         self.payload = payload
 
 
+def _parse_frozen_inpaint_bbox(value):
+    if value in (None, ''):
+        return None
+    try:
+        parsed = json.loads(value) if isinstance(value, str) else value
+        bbox = tuple(int(v) for v in parsed)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError('Prepared Inpaint bbox is invalid; rerun Step 1 before generating.') from exc
+    if len(bbox) != 4:
+        raise ValueError('Prepared Inpaint bbox must contain (y1, y2, x1, x2).')
+    return bbox
+
+
+def _has_inpaint_asset(value):
+    return value is not None and (not isinstance(value, str) or bool(value.strip()))
+
+
+def _resolve_inpaint_context(task_state, inpaint_image, inpaint_mask):
+    """Resolve one authoritative spatial context for SDXL and Flux Inpaint."""
+    from modules.pipeline.inpaint import InpaintContext, InpaintPipeline
+
+    raw_input_image = getattr(task_state, 'inpaint_input_image', None)
+    raw_context_mask = getattr(task_state, 'inpaint_context_mask_image', None)
+    raw_bb_image = getattr(task_state, 'inpaint_bb_image', None)
+    raw_bb_mask = getattr(task_state, 'inpaint_mask_image', None)
+
+    resolved_input = mask_proc.unpack_gradio_data(raw_input_image) if _has_inpaint_asset(raw_input_image) else None
+    input_image = resolved_input if resolved_input is not None else inpaint_image
+
+    context_mask = None
+    if _has_inpaint_asset(raw_context_mask):
+        context_mask = mask_proc.unpack_gradio_data(raw_context_mask)
+    if context_mask is None:
+        context_mask = getattr(task_state, 'context_mask', None)
+    if context_mask is None:
+        context_mask = inpaint_mask
+    if context_mask is not None:
+        context_mask = mask_proc.to_binary_mask(mask_proc.ensure_numpy(context_mask))
+
+    bb_img_data = mask_proc.unpack_gradio_data(raw_bb_image)
+    if bb_img_data is not None:
+        bb_img_data = HWC3(bb_img_data)
+    bb_mask_2d = mask_proc.combine_masks(
+        mask_proc.unpack_gradio_data(raw_bb_mask),
+        mask_proc.extract_mask_from_layers(raw_bb_image) if isinstance(raw_bb_image, dict) else None,
+    )
+
+    inpaint = InpaintPipeline()
+    if bool(getattr(task_state, 'inpaint_step2_checkbox', False)):
+        bbox = _parse_frozen_inpaint_bbox(getattr(task_state, 'inpaint_bbox', ''))
+        if bbox is None:
+            raise ValueError('Prepared Inpaint bbox is missing; rerun Step 1 before generating.')
+        if input_image is None:
+            raise ValueError('Prepared Inpaint source image is missing; rerun Step 1 before generating.')
+        if bb_img_data is None:
+            raise ValueError('Prepared Inpaint BB image is missing; rerun Step 1 before generating.')
+        if bb_mask_2d is None:
+            raise ValueError('Prepared Inpaint BB mask is missing; complete Step 2 before generating.')
+
+        original_image = HWC3(mask_proc.ensure_numpy(input_image))
+        height, width = original_image.shape[:2]
+        y1, y2, x1, x2 = bbox
+        if not (0 <= y1 < y2 <= height and 0 <= x1 < x2 <= width):
+            raise ValueError(
+                f'Prepared Inpaint bbox {bbox!r} is outside source image {width}x{height}; rerun Step 1.'
+            )
+        if context_mask is None or context_mask.shape[:2] != (height, width):
+            original_mask = np.zeros((height, width), dtype=np.uint8)
+        else:
+            original_mask = context_mask
+        target_h, target_w = bb_img_data.shape[:2]
+        ctx = InpaintContext(
+            original_image=original_image,
+            original_mask=original_mask,
+            bb=bbox,
+            bb_image=bb_img_data,
+            bb_mask=bb_mask_2d,
+            target_w=target_w,
+            target_h=target_h,
+            blend_mask=None,
+        )
+        print(f'[Debug] Using frozen Inpaint bbox: {bbox!r}')
+    elif input_image is not None and context_mask is not None:
+        ctx = inpaint.prepare(
+            image=input_image,
+            mask=context_mask,
+            extend_factor=1.2,
+            generate_blend_mask=False,
+        )
+        print(f'[Debug] Context derived from {input_image.shape[1]}x{input_image.shape[0]} image via context mask.')
+    else:
+        ctx = inpaint.prepare(
+            image=inpaint_image,
+            mask=inpaint_mask,
+            extend_factor=1.2,
+            generate_blend_mask=False,
+        )
+        print('[Debug] Context derived from standard inpaint inputs.')
+
+    if bb_img_data is not None:
+        ctx.bb_image = bb_img_data
+        ctx.target_h, ctx.target_w = bb_img_data.shape[:2]
+        print(f'[Debug] Using resolved BB image: {ctx.target_w}x{ctx.target_h}')
+    if bb_mask_2d is not None:
+        ctx.bb_mask = bb_mask_2d
+        print('[Debug] Using resolved BB mask.')
+    return inpaint, ctx
+
+
+def _finalize_inpaint_context(inpaint, ctx):
+    if ctx.bb_image is None:
+        raise ValueError('Inpaint BB image is required before inference')
+    if ctx.bb_mask is None:
+        raise ValueError('Inpaint BB mask is required before inference')
+
+    ctx.bb_image = HWC3(mask_proc.ensure_numpy(ctx.bb_image))
+    ctx.bb_mask = mask_proc.to_binary_mask(mask_proc.ensure_numpy(ctx.bb_mask))
+    ctx.bb_image = resample_image(ctx.bb_image, width=ctx.target_w, height=ctx.target_h)
+    ctx.bb_mask = resample_image(ctx.bb_mask, width=ctx.target_w, height=ctx.target_h)
+
+    y1, y2, x1, x2 = ctx.bb
+    full_mask = np.zeros_like(ctx.original_image[:, :, 0])
+    height, width = full_mask.shape
+    patch_mask_resized = resample_image(ctx.bb_mask, width=x2 - x1, height=y2 - y1)
+    iy1, iy2 = max(0, y1), min(height, y2)
+    ix1, ix2 = max(0, x1), min(width, x2)
+    cy1, cy2 = iy1 - y1, iy2 - y1
+    cx1, cx2 = ix1 - x1, ix2 - x1
+    full_mask[iy1:iy2, ix1:ix2] = patch_mask_resized[cy1:cy2, cx1:cx2]
+    ctx.blend_mask = inpaint._morphological_open(full_mask)
+    return ctx
+
+
 def _reset_preprocessor_metrics_once(task_state):
     if getattr(task_state, "_nex_preprocessor_metrics_started", False):
         return
@@ -42,68 +176,8 @@ def prepare_flux_inpaint_context(task_state, inpaint_image, inpaint_mask):
     """
     denoising_strength = getattr(task_state, 'inpaint_strength', 1.0)
 
-    raw_input_image = getattr(task_state, 'inpaint_input_image', None)
-    raw_context_mask = getattr(task_state, 'inpaint_context_mask_image', None)
-    raw_bb_image = getattr(task_state, 'inpaint_bb_image', None)
-    raw_bb_mask = getattr(task_state, 'inpaint_mask_image', None)
-
-    input_image = mask_proc.unpack_gradio_data(raw_input_image) if raw_input_image is not None else inpaint_image
-    prepared_context_mask = getattr(task_state, 'context_mask', None)
-    if raw_context_mask is not None:
-        context_mask = mask_proc.unpack_gradio_data(raw_context_mask)
-    elif prepared_context_mask is not None:
-        context_mask = prepared_context_mask
-    else:
-        context_mask = inpaint_mask
-    if context_mask is not None:
-        context_mask = mask_proc.to_binary_mask(mask_proc.ensure_numpy(context_mask))
-
-    bb_img_data = mask_proc.unpack_gradio_data(raw_bb_image)
-    if bb_img_data is not None:
-        bb_img_data = HWC3(bb_img_data)
-    bb_mask_2d = mask_proc.combine_masks(
-        mask_proc.unpack_gradio_data(raw_bb_mask),
-        mask_proc.extract_mask_from_layers(raw_bb_image) if isinstance(raw_bb_image, dict) else None,
-    )
-
-    from modules.pipeline.inpaint import InpaintPipeline
-
-    inpaint = InpaintPipeline()
-    if input_image is not None and context_mask is not None:
-        ctx = inpaint.prepare(image=input_image, mask=context_mask, extend_factor=1.2, generate_blend_mask=False)
-    else:
-        ctx = inpaint.prepare(image=inpaint_image, mask=inpaint_mask, extend_factor=1.2, generate_blend_mask=False)
-
-    if bb_img_data is not None:
-        # Flux Inpaint reuses the SDXL bucket selected by prepare() so BB edits
-        # still resolve to the same native inference canvas.
-        ctx.bb_image = bb_img_data
-
-    if bb_mask_2d is not None:
-        ctx.bb_mask = bb_mask_2d
-
-    if ctx.bb_image is None:
-        raise ValueError('Inpaint BB image is required before inference')
-    if ctx.bb_mask is None:
-        raise ValueError('Inpaint BB mask is required before inference')
-
-    ctx.bb_image = HWC3(mask_proc.ensure_numpy(ctx.bb_image))
-    ctx.bb_mask = mask_proc.to_binary_mask(mask_proc.ensure_numpy(ctx.bb_mask))
-    ctx.bb_image = resample_image(ctx.bb_image, width=ctx.target_w, height=ctx.target_h)
-    ctx.bb_mask = resample_image(ctx.bb_mask, width=ctx.target_w, height=ctx.target_h)
-
-    y1, y2, x1, x2 = ctx.bb
-    full_mask = np.zeros_like(ctx.original_image[:, :, 0])
-    H, W = full_mask.shape
-    patch_mask_resized = resample_image(ctx.bb_mask, width=x2 - x1, height=y2 - y1)
-
-    iy1, iy2 = max(0, y1), min(H, y2)
-    ix1, ix2 = max(0, x1), min(W, x2)
-    cy1, cy2 = iy1 - y1, iy2 - y1
-    cx1, cx2 = ix1 - x1, ix2 - x1
-
-    full_mask[iy1:iy2, ix1:ix2] = patch_mask_resized[cy1:cy2, cx1:cx2]
-    ctx.blend_mask = inpaint._morphological_open(full_mask)
+    inpaint, ctx = _resolve_inpaint_context(task_state, inpaint_image, inpaint_mask)
+    ctx = _finalize_inpaint_context(inpaint, ctx)
 
     task_state.inpaint_context = ctx
     task_state.width = ctx.target_w
@@ -196,81 +270,8 @@ def apply_inpaint(task_state, inpaint_image, inpaint_mask,
     """
     denoising_strength = getattr(task_state, 'inpaint_strength', 1.0)
 
-    raw_input_image = getattr(task_state, 'inpaint_input_image', None)
-    raw_context_mask = getattr(task_state, 'inpaint_context_mask_image', None)
-    raw_bb_image = getattr(task_state, 'inpaint_bb_image', None)
-    raw_bb_mask = getattr(task_state, 'inpaint_mask_image', None)
-
-    input_image = mask_proc.unpack_gradio_data(raw_input_image) if raw_input_image is not None else inpaint_image
-    prepared_context_mask = getattr(task_state, 'context_mask', None)
-    if raw_context_mask is not None:
-        context_mask = mask_proc.unpack_gradio_data(raw_context_mask)
-    elif prepared_context_mask is not None:
-        context_mask = prepared_context_mask
-    else:
-        context_mask = inpaint_mask
-    if context_mask is not None:
-        context_mask = mask_proc.to_binary_mask(mask_proc.ensure_numpy(context_mask))
-
-    bb_img_data = mask_proc.unpack_gradio_data(raw_bb_image)
-    if bb_img_data is not None:
-        bb_img_data = HWC3(bb_img_data)
-    bb_mask_2d = mask_proc.combine_masks(
-        mask_proc.unpack_gradio_data(raw_bb_mask),
-        mask_proc.extract_mask_from_layers(raw_bb_image) if isinstance(raw_bb_image, dict) else None
-    )
-
-    from modules.pipeline.inpaint import InpaintPipeline
-    inpaint = InpaintPipeline()
-
-    if input_image is not None and context_mask is not None:
-        ctx = inpaint.prepare(
-            image=input_image,
-            mask=context_mask,
-            extend_factor=1.2,
-            generate_blend_mask=False
-        )
-        print(f"[Debug] Context derived from {input_image.shape[1]}x{input_image.shape[0]} image via context mask.")
-    else:
-        ctx = inpaint.prepare(
-            image=inpaint_image,
-            mask=inpaint_mask,
-            extend_factor=1.2,
-            generate_blend_mask=False
-        )
-        print(f"[Debug] Context derived from standard inpaint inputs.")
-
-    if bb_img_data is not None:
-        ctx.bb_image = bb_img_data
-        ctx.target_h, ctx.target_w = bb_img_data.shape[:2]
-        print(f"[Debug] Using resolved BB image: {ctx.target_w}x{ctx.target_h}")
-
-    if bb_mask_2d is not None:
-        ctx.bb_mask = bb_mask_2d
-        print(f"[Debug] Using resolved BB mask.")
-
-    if ctx.bb_image is None:
-        raise ValueError('Inpaint BB image is required before inference')
-    if ctx.bb_mask is None:
-        raise ValueError('Inpaint BB mask is required before inference')
-
-    ctx.bb_image = HWC3(mask_proc.ensure_numpy(ctx.bb_image))
-    ctx.bb_mask = mask_proc.to_binary_mask(mask_proc.ensure_numpy(ctx.bb_mask))
-    ctx.bb_image = resample_image(ctx.bb_image, width=ctx.target_w, height=ctx.target_h)
-    ctx.bb_mask = resample_image(ctx.bb_mask, width=ctx.target_w, height=ctx.target_h)
-
-    y1, y2, x1, x2 = ctx.bb
-    full_mask = np.zeros_like(ctx.original_image[:, :, 0])
-    H, W = full_mask.shape
-    patch_mask_resized = resample_image(ctx.bb_mask, width=x2-x1, height=y2-y1)
-
-    iy1, iy2 = max(0, y1), min(H, y2)
-    ix1, ix2 = max(0, x1), min(W, x2)
-    cy1, cy2 = iy1 - y1, iy2 - y1
-    cx1, cx2 = ix1 - x1, ix2 - x1
-
-    full_mask[iy1:iy2, ix1:ix2] = patch_mask_resized[cy1:cy2, cx1:cx2]
-    ctx.blend_mask = inpaint._morphological_open(full_mask)
+    inpaint, ctx = _resolve_inpaint_context(task_state, inpaint_image, inpaint_mask)
+    ctx = _finalize_inpaint_context(inpaint, ctx)
 
     task_state.width = ctx.target_w
     task_state.height = ctx.target_h

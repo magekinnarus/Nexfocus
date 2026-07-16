@@ -1242,7 +1242,7 @@ def register_all_events(ctrls_dict, currentTask_component, ui_elements):
     inpaint_input_image_path.change(
         mask_proc.reset_inpaint_prepared_assets,
         inputs=[],
-        outputs=[inpaint_context_mask_image_path, inpaint_context_mask_workspace_id, inpaint_bb_image_path, inpaint_bb_workspace_id, inpaint_mask_image_path, inpaint_mask_workspace_id, inpaint_context_mask_data, inpaint_bb_mask_data, inpaint_step2_checkbox],
+        outputs=[inpaint_context_mask_image_path, inpaint_context_mask_workspace_id, inpaint_bb_image_path, inpaint_bb_workspace_id, inpaint_mask_image_path, inpaint_mask_workspace_id, inpaint_context_mask_data, inpaint_bb_mask_data, inpaint_bbox, inpaint_step2_checkbox],
         queue=False,
         show_progress=False
     )
@@ -1250,7 +1250,7 @@ def register_all_events(ctrls_dict, currentTask_component, ui_elements):
     inpaint_context_mask_data.change(
         mask_proc.compute_inpaint_step1_context,
         inputs=[inpaint_input_image_path, inpaint_input_workspace_id, inpaint_context_mask_workspace_id, inpaint_bb_workspace_id, inpaint_mask_workspace_id, inpaint_context_mask_data],
-        outputs=[inpaint_context_mask_image_path, inpaint_context_mask_workspace_id, inpaint_bb_image_path, inpaint_bb_workspace_id, inpaint_mask_image_path, inpaint_mask_workspace_id, inpaint_context_mask_data, inpaint_bb_mask_data, inpaint_step2_checkbox],
+        outputs=[inpaint_context_mask_image_path, inpaint_context_mask_workspace_id, inpaint_bb_image_path, inpaint_bb_workspace_id, inpaint_mask_image_path, inpaint_mask_workspace_id, inpaint_context_mask_data, inpaint_bb_mask_data, inpaint_bbox, inpaint_step2_checkbox],
         queue=False,
         show_progress=False
     )
@@ -1258,7 +1258,7 @@ def register_all_events(ctrls_dict, currentTask_component, ui_elements):
     inpaint_replace_bb_nonce.change(
         mask_proc.refresh_inpaint_bb_image,
         inputs=[inpaint_input_image_path, inpaint_input_workspace_id, inpaint_context_mask_image_path, inpaint_context_mask_workspace_id, inpaint_bb_workspace_id, inpaint_mask_workspace_id, inpaint_context_mask_data],
-        outputs=[inpaint_bb_image_path, inpaint_bb_workspace_id, inpaint_mask_image_path, inpaint_mask_workspace_id, inpaint_bb_mask_data, inpaint_step2_checkbox],
+        outputs=[inpaint_bb_image_path, inpaint_bb_workspace_id, inpaint_mask_image_path, inpaint_mask_workspace_id, inpaint_bb_mask_data, inpaint_bbox, inpaint_step2_checkbox],
         queue=False,
         show_progress=False
     ).then(

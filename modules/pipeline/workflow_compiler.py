@@ -94,9 +94,7 @@ def _execution_declaration(
     if route_id == "color_enhanced_upscale":
         return FrozenExecutionDeclaration(
             main_family=MAIN_FAMILY_SDXL,
-            ordered_auxiliary_requirements=(AUXILIARY_GAN_UPSCALE,),
             ordered_steps=(
-                FrozenExecutionStep("gan_upscale", EXECUTION_KIND_AUXILIARY, AUXILIARY_GAN_UPSCALE),
                 FrozenExecutionStep("sdxl_color_pass", EXECUTION_KIND_MAIN, MAIN_FAMILY_SDXL),
             ),
         )

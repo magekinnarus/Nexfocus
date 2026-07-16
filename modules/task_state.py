@@ -48,6 +48,7 @@ class TaskState:
     outpaint_additional_prompt: str = ""
     inpaint_input_image: Optional[Union[np.ndarray, Dict[str, np.ndarray]]] = None
     inpaint_context_mask_image: Optional[np.ndarray] = None
+    inpaint_bbox: str = ""
     inpaint_additional_prompt: str = ""
     inpaint_mask_image: Optional[np.ndarray] = None
     inpaint_bb_image: Optional[np.ndarray] = None

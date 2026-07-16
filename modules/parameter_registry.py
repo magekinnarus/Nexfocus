@@ -144,6 +144,7 @@ PARAM_REGISTRY: List[ParamDef] = [
     # --- Inpaint ---
     ParamDef('inpaint_input_image', 'inpaint_input_image', None),
     ParamDef('inpaint_context_mask_image', 'inpaint_context_mask_image', None),
+    ParamDef('inpaint_bbox', 'inpaint_bbox', '', str),
     ParamDef('inpaint_additional_prompt', 'inpaint_additional_prompt', '', str),
     ParamDef('inpaint_mask_image', 'inpaint_mask_image', None),
     ParamDef('inpaint_bb_image', 'inpaint_bb_image', None),

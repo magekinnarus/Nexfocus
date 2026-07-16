@@ -440,6 +440,7 @@ with shared.gradio_root:
                                 inpaint_context_mask_image = gr.Image(label='Context Mask', sources='upload', type='filepath', height=500, elem_id='inpaint_context_mask_image_bridge', elem_classes=['nex-image-slot-bridge'])
                                 inpaint_context_mask_image_path = gr.Textbox(value='', visible=True, elem_id='inpaint_context_mask_image_path', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
                                 inpaint_context_mask_workspace_id = gr.Textbox(value='', visible=True, elem_id='inpaint_context_mask_workspace_id', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
+                                inpaint_bbox = gr.Textbox(value='', visible=True, elem_id='inpaint_bbox', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
                                 gr.HTML(make_nex_image_slot('inpaint_bb_canvas', 'inpaint_bb_image_bridge', 'BB Image', 'data-upload-mode="api" data-path-field-id="inpaint_bb_image_path" data-workspace-field-id="inpaint_bb_workspace_id" data-tool-group="inpaint-bb"'))
                                 inpaint_bb_image = gr.Image(label='BB Image', sources='upload', type='filepath', height=500, elem_id='inpaint_bb_image_bridge', elem_classes=['nex-image-slot-bridge'])
                                 inpaint_bb_image_path = gr.Textbox(value='', visible=True, elem_id='inpaint_bb_image_path', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
@@ -599,6 +600,7 @@ with shared.gradio_root:
             'outpaint_additional_prompt': outpaint_additional_prompt,
             'inpaint_input_image': inpaint_input_image_path,
             'inpaint_context_mask_image': inpaint_context_mask_image_path,
+            'inpaint_bbox': inpaint_bbox,
             'inpaint_additional_prompt': inpaint_additional_prompt,
             'inpaint_mask_image': inpaint_mask_image_path,
             'inpaint_bb_image': inpaint_bb_image_path,
@@ -722,6 +724,7 @@ with shared.gradio_root:
             'inpaint_input_workspace_id': inpaint_input_workspace_id,
             'inpaint_context_mask_image_path': inpaint_context_mask_image_path,
             'inpaint_context_mask_workspace_id': inpaint_context_mask_workspace_id,
+            'inpaint_bbox': inpaint_bbox,
             'inpaint_bb_image_path': inpaint_bb_image_path,
             'inpaint_bb_workspace_id': inpaint_bb_workspace_id,
             'inpaint_mask_image_path': inpaint_mask_image_path,

@@ -879,6 +879,7 @@ def test_color_enhanced_upscale_stage_execution(monkeypatch) -> None:
 
 def test_color_route_does_not_run_generic_prompt_stage() -> None:
     from modules.pipeline.routes import build_generation_route, describe_route
+    from modules.pipeline.workflow_legacy_adapter import bind_legacy_workflow_plan
 
     state = SimpleNamespace(
         current_tab="uov",
@@ -888,6 +889,7 @@ def test_color_route_does_not_run_generic_prompt_stage() -> None:
         cn_tasks={},
         goals=[],
     )
+    bind_legacy_workflow_plan(state)
     route = build_generation_route(state)
     assert route.route_id == "color_enhanced_upscale"
     assert describe_route(route) == ["image_input_prepare", "color_enhanced_upscale"]

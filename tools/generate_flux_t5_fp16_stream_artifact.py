@@ -114,6 +114,9 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
+    # Backend imports initialize the application argument manager. Do not let
+    # this worker's private CLI flags leak into that independent parser.
+    sys.argv = [sys.argv[0]]
     prompt_text = str(args.prompt or "").strip()
     if not prompt_text:
         raise ValueError("--prompt must be a non-empty string.")

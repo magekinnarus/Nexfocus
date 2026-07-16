@@ -458,6 +458,17 @@ def determine_eligibility(
 
     return True, None
 
+def _resolve_lora_channel_weights(input_loras, additional_loras):
+    """Return (path, UNet weight, CLIP weight) with explicit channel authority."""
+    return tuple(
+        (lora_path, float(weight), float(weight))
+        for lora_path, weight in input_loras
+    ) + tuple(
+        (lora_path, float(weight), 0.0)
+        for lora_path, weight in additional_loras
+    )
+
+
 def build_assembly_request(
     task_state: Any,
     task_dict: Dict[str, Any],
@@ -514,11 +525,14 @@ def build_assembly_request(
         or _task_attr_or_none(task_state, 'base_model_additional_loras')
         or []
     )
-    all_lora_tuples = resolved_input_loras + resolved_additional
     lora_specs_list = []
-    
-    # We resolve lookup path for each LoRA
-    for lora_path, weight in all_lora_tuples:
+
+    # User LoRAs may target both model branches. Additional base-model LoRAs
+    # (including the Fooocus Inpaint patch) are an explicit UNet-only channel.
+    all_lora_tuples = _resolve_lora_channel_weights(resolved_input_loras, resolved_additional)
+
+    # We resolve lookup path for each LoRA.
+    for lora_path, weight, clip_weight in all_lora_tuples:
         candidate = str(lora_path).strip()
         if candidate in {'', 'None'}:
             continue
@@ -531,7 +545,7 @@ def build_assembly_request(
         lora_specs_list.append(SDXLLoraSpec(
             file_identity=spec_identity,
             unet_weight=float(weight),
-            clip_weight=float(weight), # default to same weight for CLIP
+            clip_weight=clip_weight,
         ))
         
     lora_specs = tuple(lora_specs_list)

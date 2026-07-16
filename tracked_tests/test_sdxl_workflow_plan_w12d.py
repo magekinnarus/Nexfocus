@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import sys
+from argparse import Namespace
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -28,6 +32,21 @@ from modules.task_state import TaskState
 
 def _cn_image():
     return np.zeros((8, 8, 3), dtype=np.uint8)
+
+
+def _prepared_inpaint_state(*, bbox):
+    source = np.zeros((96, 128, 3), dtype=np.uint8)
+    return SimpleNamespace(
+        inpaint_input_image=source,
+        inpaint_context_mask_image=None,
+        inpaint_bb_image=np.full((64, 64, 3), 40, dtype=np.uint8),
+        inpaint_mask_image=np.full((64, 64), 255, dtype=np.uint8),
+        inpaint_bbox=json.dumps(bbox) if bbox is not None else '',
+        inpaint_step2_checkbox=True,
+        context_mask=None,
+        inpaint_strength=0.85,
+        debugging_inpaint_preprocessor=False,
+    ), source
 
 
 def _state(surface: str, *, mixing: bool = False, cn: bool = True) -> TaskState:
@@ -158,8 +177,8 @@ def test_truth_table_freezes_base_route_and_exact_overlay_stages(
         (
             FrozenWorkflowSelection("color_enhanced_upscale"),
             "color_enhanced_upscale", MAIN_FAMILY_SDXL,
-            (AUXILIARY_GAN_UPSCALE,),
-            ("gan_upscale", "sdxl_color_pass"),
+            (),
+            ("sdxl_color_pass",),
         ),
         (
             FrozenWorkflowSelection("super_upscale"),
@@ -511,3 +530,58 @@ def test_tiled_refinement_registration_uses_central_plan_aware_publisher(monkeyp
         "route_owner": "super_upscale",
         "safe_to_retain": False,
     })]
+
+
+def test_prepared_inpaint_uses_frozen_source_bbox_and_fails_closed_without_it():
+    from modules.pipeline.image_input import apply_inpaint
+    from modules.pipeline.inpaint import InpaintPipeline
+
+    bbox = (16, 80, 32, 96)
+    state, source = _prepared_inpaint_state(bbox=bbox)
+    apply_inpaint(state, source, np.zeros(source.shape[:2], dtype=np.uint8))
+    assert state.inpaint_context.bb == bbox
+
+    generated = np.full((64, 64, 3), 200, dtype=np.uint8)
+    stitched = InpaintPipeline().paste_back(state.inpaint_context, generated)
+    assert np.all(stitched[16:80, 32:96] == 200)
+    assert np.all(stitched[:16] == 0)
+    assert np.all(stitched[:, :32] == 0)
+
+    missing_bbox_state, source = _prepared_inpaint_state(bbox=None)
+    with pytest.raises(ValueError, match='bbox is missing'):
+        apply_inpaint(missing_bbox_state, source, np.zeros(source.shape[:2], dtype=np.uint8))
+
+
+def test_additional_lora_channel_is_unet_only():
+    from backend.sdxl_assembly.request_builder import _resolve_lora_channel_weights
+
+    assert _resolve_lora_channel_weights(
+        [('user.safetensors', 0.7)],
+        [('inpaint_v26.fooocus.patch', 1.0)],
+    ) == (
+        ('user.safetensors', 0.7, 0.7),
+        ('inpaint_v26.fooocus.patch', 1.0, 0.0),
+    )
+
+
+def test_flux_artifact_worker_isolates_private_cli_before_backend_import(monkeypatch):
+    from tools import generate_flux_t5_fp16_stream_artifact as worker
+
+    monkeypatch.setattr(
+        worker,
+        '_parse_args',
+        lambda: Namespace(
+            prompt='',
+            output='unused.pt',
+            clip_l='clip.safetensors',
+            fp16_t5='t5.safetensors',
+            embedding_directory=None,
+            metrics_json=None,
+            disk_paged_t5_gc_interval=None,
+            traceback=False,
+        ),
+    )
+    monkeypatch.setattr(sys, 'argv', ['worker.py', '--prompt', 'private flag'])
+    with pytest.raises(ValueError, match='non-empty'):
+        worker.main()
+    assert sys.argv == ['worker.py']
