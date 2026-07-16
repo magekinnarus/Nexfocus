@@ -52,6 +52,14 @@ def _resolve_completed_global_steps(current_task_id, completed_steps, total_step
     return max(1, min(resolved_all_steps, completed_global_steps))
 
 
+def _resolve_preview_stitch_context(task_state, workflow_plan):
+    """Keep Inpaint previews crop-local while Outpaint previews show the canvas."""
+    route_id = str(getattr(workflow_plan, 'route_id', '') or '').strip().lower()
+    if route_id == 'inpaint':
+        return None
+    return getattr(task_state, 'inpaint_context', None)
+
+
 def get_sampling_callback(
     task_state,
     progressbar_callback,
@@ -577,7 +585,7 @@ def _run_unified_sdxl_task(
             all_steps,
             preview_transform=preview_transform,
             disable_pbar=False,
-            preview_stitch_context=getattr(task_state, 'inpaint_context', None),
+            preview_stitch_context=_resolve_preview_stitch_context(task_state, workflow_plan),
         )
 
         denoise_result = runtime.denoise_prepared_inputs(
@@ -695,7 +703,7 @@ def process_task(task_state, task_dict, current_task_id, total_count, all_steps,
             all_steps,
             preview_transform=preview_transform,
             disable_pbar=False,
-            preview_stitch_context=getattr(task_state, 'inpaint_context', None),
+            preview_stitch_context=_resolve_preview_stitch_context(task_state, workflow_plan),
         )
         if getattr(task_state, 'disable_preview', False):
             setattr(callback, "_sdxl_forward_text_only", True)

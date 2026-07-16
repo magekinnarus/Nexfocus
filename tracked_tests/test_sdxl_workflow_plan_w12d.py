@@ -508,6 +508,99 @@ def test_central_runtime_publisher_attaches_plan_composition_identity(monkeypatc
     }]
 
 
+def test_composition_only_transition_reuses_sdxl_model_residency():
+    from backend import process_transition
+
+    registry = process_transition.SharedProcessRegistry()
+    current = process_transition.build_process_key(
+        family=process_transition.PROCESS_FAMILY_SDXL,
+        process_class=process_transition.PROCESS_CLASS_STANDARD_SDXL,
+        authoritative_identity=('checkpoint', 'clip', 'user-lora', 'inpaint-patch'),
+        residency_class='resident_unet_gpu_text',
+        composition_identity=('outpaint', False),
+    )
+    requested = process_transition.build_process_key(
+        family=process_transition.PROCESS_FAMILY_SDXL,
+        process_class=process_transition.PROCESS_CLASS_STANDARD_SDXL,
+        authoritative_identity=('checkpoint', 'clip', 'user-lora', 'inpaint-patch'),
+        residency_class='resident_unet_gpu_text',
+        composition_identity=('inpaint', True, 'depth', 'cpds', 'pulid'),
+    )
+
+    registry.set_active_key(current)
+    decision = registry.evaluate_transition(requested)
+
+    assert decision.action == 'reuse'
+    assert decision.reset_required is False
+    assert decision.reason == 'workflow_composition_change'
+
+
+def test_model_identity_change_wins_over_simultaneous_composition_change():
+    from backend import process_transition
+
+    registry = process_transition.SharedProcessRegistry()
+    current = process_transition.build_process_key(
+        family=process_transition.PROCESS_FAMILY_SDXL,
+        process_class=process_transition.PROCESS_CLASS_STANDARD_SDXL,
+        authoritative_identity=('checkpoint-a', 'clip'),
+        composition_identity=('outpaint', False),
+    )
+    requested = process_transition.build_process_key(
+        family=process_transition.PROCESS_FAMILY_SDXL,
+        process_class=process_transition.PROCESS_CLASS_STANDARD_SDXL,
+        authoritative_identity=('checkpoint-b', 'clip'),
+        composition_identity=('inpaint', True),
+    )
+
+    registry.set_active_key(current)
+    decision = registry.evaluate_transition(requested)
+
+    assert decision.action == 'reset'
+    assert decision.reset_required is True
+    assert decision.reason == 'identity_change'
+
+
+def test_composition_only_release_boundary_is_a_noop(monkeypatch):
+    from backend import process_transition
+
+    current = process_transition.build_process_key(
+        family=process_transition.PROCESS_FAMILY_SDXL,
+        process_class=process_transition.PROCESS_CLASS_STANDARD_SDXL,
+        authoritative_identity=('checkpoint', 'clip', 'inpaint-patch'),
+        composition_identity=('outpaint', False),
+    )
+    requested = process_transition.build_process_key(
+        family=process_transition.PROCESS_FAMILY_SDXL,
+        process_class=process_transition.PROCESS_CLASS_STANDARD_SDXL,
+        authoritative_identity=('checkpoint', 'clip', 'inpaint-patch'),
+        composition_identity=('inpaint', True, 'depth'),
+    )
+    monkeypatch.setattr(
+        'backend.resources.prepare_for_checkpoint_switch',
+        lambda **_kwargs: pytest.fail('composition-only transition reached model release'),
+    )
+
+    result = process_transition.release_process_boundary(current, requested)
+
+    assert result['released'] is False
+    assert result['reason'] == 'no_model_boundary'
+
+
+def test_preview_stitching_is_disabled_only_for_inpaint_route():
+    from modules.pipeline.inference import _resolve_preview_stitch_context
+
+    context = object()
+    inpaint_state = _state('inpaint', cn=False)
+    inpaint_state.inpaint_context = context
+    inpaint_plan = _compile_state(inpaint_state)
+    outpaint_state = _state('outpaint', cn=False)
+    outpaint_state.inpaint_context = context
+    outpaint_plan = _compile_state(outpaint_state)
+
+    assert _resolve_preview_stitch_context(inpaint_state, inpaint_plan) is None
+    assert _resolve_preview_stitch_context(outpaint_state, outpaint_plan) is context
+
+
 def test_tiled_refinement_registration_uses_central_plan_aware_publisher(monkeypatch):
     from backend import process_transition
     from modules.pipeline import tiled_refinement

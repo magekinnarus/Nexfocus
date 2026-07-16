@@ -246,8 +246,6 @@ class SharedProcessRegistry:
             # A posture boundary is structural even when the same request also
             # changes its LoRA stack. Never let LoRA-only reuse mask release.
             reason = "residency_class_change"
-        elif current.composition_identity != requested.composition_identity:
-            reason = "workflow_composition_change"
         elif current.authoritative_identity != requested.authoritative_identity:
             is_same_base_components = False
             if current.family == PROCESS_FAMILY_SDXL and requested.family == PROCESS_FAMILY_SDXL:
@@ -269,6 +267,18 @@ class SharedProcessRegistry:
                     requested_key=requested,
                 )
             reason = "identity_change"
+        elif current.composition_identity != requested.composition_identity:
+            # Workflow composition identifies the request graph, not the
+            # resident model spine. Route and ControlNet overlay changes are
+            # released/rebuilt by their owning request domains and must not
+            # evict an otherwise identical SDXL model/LoRA/text residency.
+            return ProcessTransitionDecision(
+                action="reuse",
+                reason="workflow_composition_change",
+                reset_required=False,
+                current_key=current,
+                requested_key=requested,
+            )
         else:
             reason = "same_process_identity"
             return ProcessTransitionDecision(
@@ -746,6 +756,17 @@ def release_process_boundary(current_key: ProcessKey | None, requested_key: Proc
     if current_key.family == PROCESS_FAMILY_SDXL:
         import backend.resources as resources
         from backend import sdxl_unified_runtime
+        from backend.sdxl_assembly.lifecycle_coordinator import release_for_changes
+
+        changes = classify_sdxl_process_key_changes(current_key, requested_key)
+        if not changes:
+            return {
+                'released': False,
+                'reason': 'no_model_boundary',
+                'hard_reset': False,
+                'current_process_key': current_key,
+                'next_process_key': requested_key,
+            }
 
         current_model_name = _resolve_process_checkpoint_label(current_key)
         next_model_name = _resolve_process_checkpoint_label(requested_key)
@@ -764,10 +785,6 @@ def release_process_boundary(current_key: ProcessKey | None, requested_key: Proc
             except Exception:
                 pass
             try:
-                from backend.sdxl_assembly.lifecycle_coordinator import release_for_changes, LifecycleChange
-                changes = classify_sdxl_process_key_changes(current_key, requested_key)
-                if not changes:
-                    changes.append(LifecycleChange.MODEL_CHANGE)
                 release_for_changes(changes, reason='route_transition')
             except Exception:
                 pass
