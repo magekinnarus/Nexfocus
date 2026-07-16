@@ -93,6 +93,8 @@ def test_production_eligibility_gate_admits_supported_image_inputs(tmp_path, mon
     state.inpaint_input_image = np.zeros((64, 64, 3))
     state.inpaint_mask_image = np.zeros((64, 64))
     state.goals = ["inpaint"]
+    from modules.pipeline.workflow_legacy_adapter import bind_legacy_workflow_plan
+    bind_legacy_workflow_plan(state)
     eligible, reason = is_eligible_for_sdxl_assembly(
         task_state=state,
         loras=[],

@@ -38,9 +38,13 @@ from modules.sdxl_styles import legal_style_names
 from modules.private_logger import get_current_html_path
 from modules.ui_gradio_extensions import javascript_html, css_html
 from modules.auth import auth_enabled, check_auth
+from modules.lora_channel_policy import (
+    PRESET_SPEED_LORAS,
+    build_explicit_lora_channel_overrides,
+)
 from modules.route_intent import normalize_current_tab
 from modules.pipeline.workflow_legacy_adapter import capture_workflow_selection
-from modules.util import is_json
+from modules.util import get_enabled_loras, is_json
 CompletedTaskRecord = runtime_surface_state.CompletedTaskRecord
 completed_tasks_history = runtime_surface_state.completed_tasks_history
 _last_rendered_completed_queue_html = None
@@ -851,13 +855,6 @@ def update_style_label(selections):
 
     return gr.update(label=label)
 
-PRESET_SPEED_LORAS = {
-    'sdxl_lcm_lora.safetensors',
-    'sdxl_lightning_4step_lora.safetensors',
-    'sdxl_lightning_8step_lora.safetensors',
-}
-
-
 def _parse_lora_metadata(raw_value):
     parts = str(raw_value).split(' : ')
     enabled = True
@@ -1338,6 +1335,11 @@ def register_all_events(ctrls_dict, currentTask_component, ui_elements):
         .then(fn=enqueue_tasks, inputs=[current_tasks_state], outputs=[currentTask]) \
         .then(fn=update_history_link, outputs=history_link)
 
+    release_cn_cache_btn.click(
+        fn=release_controlnet_cache_clicked,
+        outputs=[currentTask]
+    )
+
     def handle_reconnect_click(task):
         worker.request_interrupt('stop', task)
 
@@ -1386,6 +1388,19 @@ def get_tasks(*args):
     task_args['generate_image_grid'] = False
     task_args['current_tab'] = normalize_current_tab(task_args.get('current_tab'))
 
+    lora_data = []
+    for i in range(modules.config.default_max_lora_number):
+        lora_data.append(
+            (
+                bool(task_args.get(f'lora_{i}_enabled', False)),
+                str(task_args.get(f'lora_{i}_model', 'None')),
+                float(task_args.get(f'lora_{i}_weight', 1.0)),
+            )
+        )
+    task_args['lora_channel_overrides'] = build_explicit_lora_channel_overrides(
+        get_enabled_loras(lora_data)
+    )
+
     # Freeze the selected UI surface only.  The complete route and ControlNet
     # overlay are compiled after AsyncTask has parsed the raw CN slots; doing
     # route inference here would observe an intentionally empty CN map.
@@ -1412,6 +1427,17 @@ def prepare_generate_surface(current_tab):
         gr.update(visible=True),
         gr.update(visible=False),
     )
+
+
+def release_controlnet_cache_clicked():
+    task = worker.AsyncTask(args={})
+    task.is_valid = True
+    task.is_utility = True
+    task.utility_action = "release_controlnet_cache"
+    worker.async_tasks.append(task)
+    if worker.get_active_task() is None:
+        runtime_surface_state.set_progress_state(visible=True, number=1, text='Waiting for task to start ...')
+    return task
 
 
 def enqueue_tasks(tasks, *_legacy_route_inputs):

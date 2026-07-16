@@ -21,6 +21,13 @@ from backend.sdxl_assembly.request_builder import build_assembly_request
 from modules.pipeline import inference
 
 
+def _bind_plan(state):
+    from modules.pipeline.workflow_compiler import compile_workflow_plan
+    from modules.pipeline.workflow_legacy_adapter import capture_workflow_selection
+    state.workflow_plan = compile_workflow_plan(capture_workflow_selection(state))
+    return state
+
+
 def _task_state(**overrides):
     state = SimpleNamespace(
         last_stop=False,
@@ -51,7 +58,7 @@ def _task_state(**overrides):
     )
     for key, value in overrides.items():
         setattr(state, key, value)
-    return state
+    return _bind_plan(state)
 
 
 def _task_dict():

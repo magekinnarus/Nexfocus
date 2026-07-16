@@ -22,6 +22,10 @@ from modules.pipeline.workflow_legacy_adapter import (
     capture_controlnet_slot_inputs,
     capture_workflow_selection,
 )
+from modules.lora_channel_policy import (
+    build_explicit_lora_channel_overrides,
+    merge_lora_channel_overrides,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -117,6 +121,10 @@ class AsyncTask:
             weight = float(args.get(f'lora_{i}_weight', 1.0))
             lora_data.append((enabled, name, weight))
         s.loras = get_enabled_loras(lora_data)
+        s.lora_channel_overrides = merge_lora_channel_overrides(
+            build_explicit_lora_channel_overrides(s.loras),
+            args.get("lora_channel_overrides"),
+        )
 
         if not getattr(args_manager.args, 'disable_metadata', False):
             s.save_metadata_to_images = args.get('save_metadata_to_images', False)
@@ -266,9 +274,34 @@ def _release_route_runtime_state(task_state):
 @torch.inference_mode()
 def handler(async_task: AsyncTask):
     async_task.last_stop = False
+    task_state = async_task.state
+
+    if getattr(async_task, "is_utility", False):
+        task_state.processing = True
+        task_state.current_progress = 0
+        action = getattr(async_task, "utility_action", "")
+        if action == "release_controlnet_cache":
+            print("[ControlNet] Manual cache release request received. Executing...")
+            task_state.current_status_text = "Releasing ControlNet Caches..."
+            task_state.yields.append(['preview', (10, "Releasing ControlNet Caches...", None)])
+
+            from backend.sdxl_assembly.lifecycle_coordinator import release_domains
+            from backend.sdxl_assembly.runtime_state import LifecycleDomain
+
+            release_domains(
+                (LifecycleDomain.STRUCTURAL_CN, LifecycleDomain.CONTEXTUAL_CN),
+                reason="manual_release"
+            )
+
+            task_state.current_progress = 100
+            task_state.current_status_text = "ControlNet Caches Released."
+            task_state.yields.append(['preview', (100, "ControlNet Caches Released.", None)])
+
+        task_state.processing = False
+        return
+
     import backend.resources as resources_backend
     resources_backend.interrupt_current_processing(False)
-    task_state = async_task.state
     task_state.processing = True
     task_state.current_progress = 0
     resources.begin_memory_phase('task', notes={'goals': list(task_state.goals)})

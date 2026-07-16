@@ -329,6 +329,7 @@ with shared.gradio_root:
                             controlnet_softness = control_panel_result['controlnet_softness']
                             canny_low_threshold = control_panel_result['canny_low_threshold']
                             canny_high_threshold = control_panel_result['canny_high_threshold']
+                            release_cn_cache_btn = gr.Button(value="Release ControlNet Cache", variant="secondary", elem_id="release_cn_cache_btn")
 
                         gr.HTML('* "Controlnet" is powered by Fooocus Image Mixture Engine (v1.0.1). <a href="https://github.com/lllyasviel/Fooocus/discussions/557" target="_blank">Documentation</a>')
 
@@ -753,6 +754,7 @@ with shared.gradio_root:
             'remove_mask_state': remove_mask_state,
             'queue_tab': queue_tab,
             'current_tasks_state': current_tasks_state,
+            'release_cn_cache_btn': release_cn_cache_btn,
         }
 
         if not args_manager.args.disable_preset_selection:

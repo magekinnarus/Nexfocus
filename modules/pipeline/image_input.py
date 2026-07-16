@@ -19,6 +19,12 @@ _STRUCTURAL_PREPROCESS_CACHE: OrderedDict[tuple, np.ndarray] = OrderedDict()
 _STRUCTURAL_PREPROCESS_CACHE_LIMIT = 8
 
 
+def clear_structural_preprocess_cache() -> int:
+    cleared = len(_STRUCTURAL_PREPROCESS_CACHE)
+    _STRUCTURAL_PREPROCESS_CACHE.clear()
+    return cleared
+
+
 class EarlyReturnException(BaseException):
     def __init__(self, payload=None):
         super().__init__()

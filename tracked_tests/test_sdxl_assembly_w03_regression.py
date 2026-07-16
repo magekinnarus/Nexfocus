@@ -437,6 +437,8 @@ def test_process_task_keeps_unified_runtime_until_w04(monkeypatch):
         use_expansion=False,
         disable_intermediate_results=True,
     )
+    from modules.pipeline.workflow_legacy_adapter import bind_legacy_workflow_plan
+    bind_legacy_workflow_plan(task_state)
     task_dict = {'task_seed': 123}
 
     monkeypatch.setattr(gateway, 'is_eligible_for_sdxl_assembly', lambda **_kwargs: (True, None))

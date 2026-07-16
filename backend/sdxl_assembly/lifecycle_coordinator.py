@@ -304,9 +304,31 @@ def _release_structural_cn(errors: list[LifecycleReleaseError]) -> None:
 
         StreamingStructuralControlWorker.clear_support_cache()
 
+    def clear_outer_structural_preprocess_cache() -> None:
+        from modules.pipeline.image_input import clear_structural_preprocess_cache
+
+        clear_structural_preprocess_cache()
+
+    def clear_compatibility_preprocessors() -> None:
+        try:
+            from backend.preprocessors.runtime import apply_residency_policy
+            apply_residency_policy(mode="destroy")
+        except Exception as e:
+            logger.warning(f"Failed to clear compatibility preprocessors: {e}")
+
+    def clear_compatibility_controlnets() -> None:
+        try:
+            from backend.controlnet_registry import apply_controlnet_residency
+            apply_controlnet_residency(mode="destroy")
+        except Exception as e:
+            logger.warning(f"Failed to clear compatibility controlnets: {e}")
+
     domain = LifecycleDomain.STRUCTURAL_CN
     _run_step(errors, domain, "structural_preprocess_cache", clear_preprocess_cache)
     _run_step(errors, domain, "structural_support_cache", clear_support_cache)
+    _run_step(errors, domain, "compat_outer_structural_preprocess_cache", clear_outer_structural_preprocess_cache)
+    _run_step(errors, domain, "compatibility_preprocessors", clear_compatibility_preprocessors)
+    _run_step(errors, domain, "compatibility_controlnets", clear_compatibility_controlnets)
 
 
 def _release_contextual_cn(errors: list[LifecycleReleaseError]) -> None:
@@ -320,9 +342,80 @@ def _release_contextual_cn(errors: list[LifecycleReleaseError]) -> None:
 
         StreamingContextualControlWorker.clear_support_cache()
 
+    def clear_compatibility_contextual_ip() -> None:
+        try:
+            from backend.ip_adapter import apply_contextual_residency, clear_contextual_payload_cache
+            apply_contextual_residency(mode="destroy", clip_vision_action="destroy", insightface_action="destroy")
+            clear_contextual_payload_cache()
+        except Exception as e:
+            logger.warning(f"Failed to clear compatibility contextual IP: {e}")
+
+    def clear_compatibility_contextual_pulid() -> None:
+        try:
+            from backend.pulid_runtime import apply_contextual_residency
+            apply_contextual_residency(mode="destroy")
+        except Exception as e:
+            logger.warning(f"Failed to clear compatibility contextual PuLID: {e}")
+
     domain = LifecycleDomain.CONTEXTUAL_CN
     _run_step(errors, domain, "contextual_payload_cache", clear_payload_cache)
     _run_step(errors, domain, "contextual_support_cache", clear_support_cache)
+    _run_step(errors, domain, "compatibility_contextual_ip", clear_compatibility_contextual_ip)
+    _run_step(errors, domain, "compatibility_contextual_pulid", clear_compatibility_contextual_pulid)
+
+
+def _get_cn_cache_counts(domain: LifecycleDomain) -> dict[str, int]:
+    counts = {}
+    if domain == LifecycleDomain.STRUCTURAL_CN:
+        try:
+            from backend.sdxl_assembly.stream_st_preprocess_worker import StreamingStructuralPreprocessWorker
+            counts["st_preprocess"] = len(StreamingStructuralPreprocessWorker._PREPROCESS_CACHE)
+        except Exception:
+            pass
+        try:
+            from backend.sdxl_assembly.stream_st_cn_worker import StreamingStructuralControlWorker
+            counts["st_support"] = len(StreamingStructuralControlWorker._SUPPORT_MODEL_CACHE)
+        except Exception:
+            pass
+        try:
+            from modules.pipeline.image_input import _STRUCTURAL_PREPROCESS_CACHE
+            counts["compat_outer_structural_preprocess"] = len(_STRUCTURAL_PREPROCESS_CACHE)
+        except Exception:
+            pass
+        try:
+            from backend.preprocessors.runtime import _MODEL_CACHE
+            counts["compat_preprocessors"] = sum(1 for e in _MODEL_CACHE.values() if e.get("model") is not None)
+        except Exception:
+            pass
+        try:
+            from backend.controlnet_registry import _LOADED_CONTROLNETS
+            counts["compat_controlnets"] = len(_LOADED_CONTROLNETS)
+        except Exception:
+            pass
+    elif domain == LifecycleDomain.CONTEXTUAL_CN:
+        try:
+            from backend.sdxl_assembly.stream_ctx_cn_worker import StreamingContextualControlWorker
+            counts["ctx_payload"] = len(StreamingContextualControlWorker._PAYLOAD_CACHE)
+            counts["ctx_models"] = len(StreamingContextualControlWorker._CONTEXTUAL_MODELS)
+            counts["ctx_clip_vision"] = len(StreamingContextualControlWorker._CLIP_VISION_MODELS)
+            counts["ctx_ip_negatives"] = len(StreamingContextualControlWorker._IP_NEGATIVES)
+            counts["ctx_eva_clip"] = len(StreamingContextualControlWorker._EVA_CLIP_MODELS)
+            counts["ctx_face_parsers"] = len(StreamingContextualControlWorker._FACE_PARSERS)
+            counts["ctx_insightface"] = len(StreamingContextualControlWorker._INSIGHTFACE_APPS)
+        except Exception:
+            pass
+        try:
+            from backend.ip_adapter import contextual_models, _CONTEXTUAL_PAYLOAD_CACHE
+            counts["compat_ctx_models"] = len(contextual_models)
+            counts["compat_ctx_payload"] = len(_CONTEXTUAL_PAYLOAD_CACHE)
+        except Exception:
+            pass
+        try:
+            from backend.pulid_runtime import eva_clip_models, face_parsers
+            counts["compat_pulid_models"] = len(eva_clip_models) + len(face_parsers)
+        except Exception:
+            pass
+    return counts
 
 
 def release_domains(
@@ -354,6 +447,19 @@ def release_domains(
     )
     errors: list[LifecycleReleaseError] = []
 
+    import psutil
+    process = psutil.Process()
+    rss_before = process.memory_info().rss / (1024 * 1024)
+
+    before_counts = {}
+    for d in plan.domains:
+        if d in (LifecycleDomain.STRUCTURAL_CN, LifecycleDomain.CONTEXTUAL_CN):
+            before_counts[d.value] = _get_cn_cache_counts(d)
+
+    print(f"[SDXL LIFECYCLE RELEASE BEGIN] Domains: {[d.value for d in plan.domains]} | "
+          f"Reason: {clear_reason} | Before RSS: {rss_before:.1f} MB | Counts: {before_counts}")
+    log_telemetry("release_begin", f"domains={[d.value for d in plan.domains]} reason={clear_reason} rss_before={rss_before:.1f}")
+
     for domain in plan.domains:
         logger.debug("[SDXL Telemetry] Releasing domain %s, reason=%s", domain.value, clear_reason)
         log_telemetry("release_domain", f"domain={domain.value} reason={clear_reason}")
@@ -379,6 +485,17 @@ def release_domains(
             flush_pinned_host_cache()
         except Exception as exc:
             logger.debug("[SDXL Telemetry] Failed to flush pinned host cache: %s", exc)
+
+    rss_after = process.memory_info().rss / (1024 * 1024)
+    after_counts = {}
+    for d in plan.domains:
+        if d in (LifecycleDomain.STRUCTURAL_CN, LifecycleDomain.CONTEXTUAL_CN):
+            after_counts[d.value] = _get_cn_cache_counts(d)
+
+    print(f"[SDXL LIFECYCLE RELEASE END] Domains: {[d.value for d in plan.domains]} | "
+          f"Reason: {clear_reason} | After RSS: {rss_after:.1f} MB | Counts: {after_counts} | "
+          f"Delta RSS: {rss_after - rss_before:.1f} MB (Note: memory allocator or OS page cache may retain pages immediately after references are dropped)")
+    log_telemetry("release_end", f"domains={[d.value for d in plan.domains]} reason={clear_reason} rss_after={rss_after:.1f}")
 
     result = LifecycleReleaseResult(plan=plan, errors=tuple(errors))
     if raise_on_error and errors:

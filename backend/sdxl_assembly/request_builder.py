@@ -13,6 +13,7 @@ import torch
 
 import modules.config as config
 import modules.flags as flags
+from modules.lora_channel_policy import resolve_lora_channel_override
 import modules.mask_processing as mask_processing
 import modules.model_taxonomy as model_taxonomy
 from modules.util import HWC3, get_file_from_folder_list
@@ -458,15 +459,25 @@ def determine_eligibility(
 
     return True, None
 
-def _resolve_lora_channel_weights(input_loras, additional_loras):
+def _resolve_lora_channel_weights(input_loras, additional_loras, *, lora_channel_overrides=None):
     """Return (path, UNet weight, CLIP weight) with explicit channel authority."""
-    return tuple(
-        (lora_path, float(weight), float(weight))
-        for lora_path, weight in input_loras
-    ) + tuple(
-        (lora_path, float(weight), 0.0)
-        for lora_path, weight in additional_loras
-    )
+    def resolve_weights(lora_path, weight, default_clip_weight):
+        override = resolve_lora_channel_override(lora_channel_overrides, lora_path)
+        if isinstance(override, dict) and str(override.get("target", "")).strip().lower() == "unet_only":
+            return float(weight), float(override.get("clip_weight", 0.0) or 0.0)
+        return float(weight), float(default_clip_weight)
+
+    resolved = []
+    for lora_path, weight in input_loras:
+        u_w, c_w = resolve_weights(lora_path, weight, weight)
+        resolved.append((lora_path, u_w, c_w))
+
+    for lora_path, weight in additional_loras:
+        u_w, c_w = resolve_weights(lora_path, weight, 0.0)
+        resolved.append((lora_path, u_w, c_w))
+
+    return tuple(resolved)
+
 
 
 def build_assembly_request(
@@ -529,7 +540,11 @@ def build_assembly_request(
 
     # User LoRAs may target both model branches. Additional base-model LoRAs
     # (including the Fooocus Inpaint patch) are an explicit UNet-only channel.
-    all_lora_tuples = _resolve_lora_channel_weights(resolved_input_loras, resolved_additional)
+    all_lora_tuples = _resolve_lora_channel_weights(
+        resolved_input_loras,
+        resolved_additional,
+        lora_channel_overrides=_task_attr_or_none(task_state, 'lora_channel_overrides') or None,
+    )
 
     # We resolve lookup path for each LoRA.
     for lora_path, weight, clip_weight in all_lora_tuples:

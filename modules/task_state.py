@@ -27,6 +27,7 @@ class TaskState:
     vae_name: str = ""
     clip_model_name: str = ""
     loras: List[Any] = field(default_factory=list)
+    lora_channel_overrides: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     base_model_additional_loras: List[Any] = field(default_factory=list)
     input_image_checkbox: bool = False
     current_tab: str = "uov"
