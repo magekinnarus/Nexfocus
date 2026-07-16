@@ -15,11 +15,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import modules.model_taxonomy as model_taxonomy
 from backend import resources
 from backend.sdxl_assembly.assembly import SDXLAssembly
-from backend.sdxl_assembly.contracts import ResolvedFileIdentity, SDXLAssemblyRequest
+from backend.sdxl_assembly.contracts import ResolvedFileIdentity, SDXLAssemblyRequest, SDXLLoraSpec
 from backend.sdxl_assembly.gateway import run_sdxl_assembly_task
 from backend.sdxl_assembly.progress import SDXLAssemblyProgressCallback
 from backend.sdxl_assembly.request_builder import build_assembly_request
 from modules.pipeline import inference
+from modules.pipeline.workflow_compiler import compile_workflow_plan
+from modules.pipeline.workflow_contracts import FrozenWorkflowSelection
 
 
 def _task_state(**overrides):
@@ -54,6 +56,8 @@ def _task_state(**overrides):
     )
     for key, value in overrides.items():
         setattr(state, key, value)
+    if getattr(state, 'workflow_plan', None) is None:
+        state.workflow_plan = compile_workflow_plan(FrozenWorkflowSelection("normal_generate"))
     return state
 
 
@@ -208,6 +212,70 @@ def test_run_sdxl_assembly_task_preserves_interrupts(monkeypatch):
         )
 
     assert close_calls == ['closed']
+
+
+def test_run_sdxl_assembly_task_logs_additional_unet_only_loras(tmp_path, monkeypatch, capsys):
+    import backend.sdxl_assembly.gateway as gateway
+
+    checkpoint_path = tmp_path / 'checkpoint.safetensors'
+    checkpoint_path.write_bytes(b'checkpoint')
+    user_lora_path = tmp_path / 'user_lora.safetensors'
+    user_lora_path.write_bytes(b'user-lora')
+    patch_lora_path = tmp_path / 'inpaint_v26.fooocus.patch'
+    patch_lora_path.write_bytes(b'patch-lora')
+
+    request = SimpleNamespace(
+        request_id='req_lora_admission',
+        route_id='inpaint_assembly',
+        seed=123,
+        width=64,
+        height=64,
+        steps=3,
+        checkpoint=_identity(checkpoint_path, 'checkpoint_sha'),
+        vae=None,
+        unet_posture=SimpleNamespace(value='resident'),
+        clip_posture=SimpleNamespace(value='gpu_pinned'),
+        vae_posture=SimpleNamespace(value='transient'),
+        lora_posture=SimpleNamespace(value='resident'),
+        lora_stack_hash='lora_hash',
+        prompt_payload_hash='prompt_hash',
+        spatial_context=None,
+        structural_controls=(),
+        contextual_controls=(),
+        lora_specs=(
+            SDXLLoraSpec(file_identity=_identity(user_lora_path, 'user_sha'), unet_weight=0.7, clip_weight=0.7),
+            SDXLLoraSpec(file_identity=_identity(patch_lora_path, 'patch_sha'), unet_weight=1.0, clip_weight=0.0),
+        ),
+    )
+
+    class FakeAssembly:
+        def execute(self, _request, callback=None):
+            return SimpleNamespace(output_image=np.zeros((1, 1, 3), dtype=np.uint8))
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(gateway, '_LAST_REQUEST_STATE', None)
+    monkeypatch.setattr(gateway, 'build_assembly_request', lambda *args, **kwargs: request)
+    monkeypatch.setattr(gateway.SDXLAssemblyDirector, 'select_assembly', lambda _request: FakeAssembly())
+
+    output = run_sdxl_assembly_task(
+        _task_state(),
+        _task_dict(),
+        current_task_id=0,
+        total_count=1,
+        all_steps=3,
+        preparation_steps=0,
+        denoising_strength=1.0,
+        final_scheduler_name='karras',
+        loras=[],
+    )
+
+    captured = capsys.readouterr().out
+    assert output.shape == (1, 1, 3)
+    assert '[SDXL LORA ADMISSION]' in captured
+    assert 'Additional UNet-only LoRAs (1)' in captured
+    assert 'inpaint_v26.fooocus.patch@1' in captured
 
 
 def test_sdxl_assembly_execute_preserves_interrupts(tmp_path):

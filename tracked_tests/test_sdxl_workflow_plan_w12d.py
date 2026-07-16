@@ -694,6 +694,48 @@ def test_additional_lora_channel_is_unet_only():
     )
 
 
+def test_preflight_additional_loras_outpaint_uses_outpaint_engine_only(monkeypatch):
+    from backend import process_transition
+
+    state = _state('outpaint', cn=False)
+    plan = _compile_state(state)
+    state.set_workflow_plan(plan)
+    state.inpaint_engine = flags.INPAINT_ENGINE_NONE
+    state.outpaint_engine = flags.INPAINT_ENGINE_V26
+
+    monkeypatch.setattr(
+        'modules.config.downloading_inpaint_models',
+        lambda engine: f'{engine}-patch.safetensors',
+    )
+
+    assert process_transition.resolve_preflight_additional_loras(state) == [
+        (f'{flags.INPAINT_ENGINE_V26}-patch.safetensors', 1.0),
+    ]
+
+
+def test_preflight_additional_loras_inpaint_uses_inpaint_engine_only(monkeypatch):
+    from backend import process_transition
+
+    state = _state('inpaint', cn=False)
+    plan = _compile_state(state)
+    state.set_workflow_plan(plan)
+
+    monkeypatch.setattr(
+        'modules.config.downloading_inpaint_models',
+        lambda engine: f'{engine}-patch.safetensors',
+    )
+
+    state.inpaint_engine = flags.INPAINT_ENGINE_NONE
+    state.outpaint_engine = flags.INPAINT_ENGINE_V26
+    assert process_transition.resolve_preflight_additional_loras(state) == []
+
+    state.inpaint_engine = flags.INPAINT_ENGINE_V26
+    state.outpaint_engine = flags.INPAINT_ENGINE_NONE
+    assert process_transition.resolve_preflight_additional_loras(state) == [
+        (f'{flags.INPAINT_ENGINE_V26}-patch.safetensors', 1.0),
+    ]
+
+
 def test_flux_artifact_worker_isolates_private_cli_before_backend_import(monkeypatch):
     from tools import generate_flux_t5_fp16_stream_artifact as worker
 

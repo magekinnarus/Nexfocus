@@ -40,6 +40,31 @@ def _freeze_value(value: Any) -> Any:
     return value
 
 
+def _resolved_file_label(file_identity: Any) -> str:
+    path = getattr(file_identity, "path", None)
+    if path is not None:
+        try:
+            return path.name
+        except Exception:
+            return str(path)
+    return str(getattr(file_identity, "sha256", "unknown"))
+
+
+def _summarize_additional_unet_only_loras(lora_specs: Any) -> list[str]:
+    summary: list[str] = []
+    for spec in tuple(lora_specs or ()):
+        if not bool(getattr(spec, "enabled", True)):
+            continue
+        unet_weight = float(getattr(spec, "unet_weight", 0.0) or 0.0)
+        clip_weight = float(getattr(spec, "clip_weight", 0.0) or 0.0)
+        if unet_weight == 0.0 or clip_weight != 0.0:
+            continue
+        summary.append(
+            f"{_resolved_file_label(getattr(spec, 'file_identity', None))}@{unet_weight:g}"
+        )
+    return summary
+
+
 def _spatial_context_signature(spatial_context: Any) -> Any:
     if spatial_context is None:
         return None
@@ -285,8 +310,14 @@ def run_sdxl_assembly_task(
     lora_specs = getattr(request, 'lora_specs', [])
     unet_lora_count = sum(1 for spec in lora_specs if getattr(spec, 'unet_weight', 0.0) != 0.0)
     clip_lora_count = sum(1 for spec in lora_specs if getattr(spec, 'clip_weight', 0.0) != 0.0)
+    additional_unet_only_loras = _summarize_additional_unet_only_loras(lora_specs)
 
     cn_count = len(getattr(request, 'structural_controls', ())) + len(getattr(request, 'contextual_controls', ()))
+
+    print(
+        f"[SDXL LORA ADMISSION] Route/Workflow: {route_id} | "
+        f"Additional UNet-only LoRAs ({len(additional_unet_only_loras)}): {additional_unet_only_loras}"
+    )
 
     print(f"[SDXL RUN BEGIN] Correlation ID: {req_id} | "
           f"Composition: {composition} | "
