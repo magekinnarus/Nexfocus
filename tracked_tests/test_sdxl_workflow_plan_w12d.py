@@ -601,6 +601,43 @@ def test_preview_stitching_is_disabled_only_for_inpaint_route():
     assert _resolve_preview_stitch_context(outpaint_state, outpaint_plan) is context
 
 
+def test_process_task_assembly_inpaint_uses_bound_workflow_plan_for_preview_setup(monkeypatch):
+    from modules.pipeline import inference
+
+    state = _state('inpaint', cn=False)
+    plan = _compile_state(state)
+    state.set_workflow_plan(plan)
+    state.steps = 3
+    monkeypatch.setattr(
+        'backend.sdxl_assembly.gateway.is_eligible_for_sdxl_assembly',
+        lambda **_kwargs: (True, None),
+    )
+    monkeypatch.setattr(
+        'backend.sdxl_assembly.gateway.run_sdxl_assembly_task',
+        lambda *args, **kwargs: np.zeros((1, 1, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(inference, 'save_and_log', lambda *args, **kwargs: ['saved-path'])
+
+    imgs, paths, progress = inference.process_task(
+        task_state=state,
+        task_dict={'task_seed': 1},
+        current_task_id=0,
+        total_count=1,
+        all_steps=3,
+        preparation_steps=0,
+        denoising_strength=1.0,
+        final_scheduler_name='karras',
+        loras=[],
+        controlnet_paths={},
+        contextual_assets={},
+        image_input_result={},
+    )
+
+    assert imgs[0].shape == (1, 1, 3)
+    assert paths == ['saved-path']
+    assert progress == 100
+
+
 def test_tiled_refinement_registration_uses_central_plan_aware_publisher(monkeypatch):
     from backend import process_transition
     from modules.pipeline import tiled_refinement

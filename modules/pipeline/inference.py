@@ -669,6 +669,7 @@ def process_task(task_state, task_dict, current_task_id, total_count, all_steps,
     from backend.sdxl_assembly.progress import log_telemetry
 
     controlnet_paths = controlnet_paths or {}
+    workflow_plan = require_workflow_plan(task_state)
     
     assembly_eligible, assembly_reason = is_eligible_for_sdxl_assembly(
         task_state=task_state,
