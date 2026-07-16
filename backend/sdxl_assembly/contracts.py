@@ -365,6 +365,9 @@ class SDXLAssemblyRequest:
     adm_scaler_negative: float = 0.8
     adm_scaler_end: float = 0.3
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Layer 1 authority carried through the family-local request.  The field
+    # is optional only for historical direct/probe constructors.
+    workflow_plan: Any = None
 
     # Explicit future extension descriptors for ControlNet/adapters/spatial inputs
     # left empty/unsupported in W02 so later streaming ControlNet slices can attach.
@@ -398,6 +401,21 @@ class SDXLAssemblyRequest:
             raise SDXLAssemblyValidationError(f"Prefetch chunk MB must be >= 1, got {self.prefetch_chunk_mb}")
         if self.width <= 0 or self.height <= 0:
             raise SDXLAssemblyValidationError(f"Width and Height must be positive, got {self.width}x{self.height}")
+        if self.workflow_plan is not None:
+            try:
+                self.workflow_plan.validate()
+            except Exception as exc:
+                raise SDXLAssemblyValidationError(f"Invalid frozen workflow plan: {exc}") from exc
+            plan_route = str(getattr(self.workflow_plan, "route_id", "") or "")
+            accepted_request_routes = {
+                plan_route,
+                f"{plan_route}_assembly",
+                "color_enhancement" if plan_route == "color_enhanced_upscale" else "",
+            }
+            if plan_route and self.route_id not in accepted_request_routes:
+                raise SDXLAssemblyValidationError(
+                    f"Request route {self.route_id!r} contradicts frozen plan route {plan_route!r}"
+                )
 
         import modules.flags as flags
         for desc in self.structural_controls:

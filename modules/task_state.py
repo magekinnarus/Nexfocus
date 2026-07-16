@@ -118,6 +118,13 @@ class TaskState:
     # --- Runtime State ---
     requested_route_id: str = ""
     requested_route_family: str = ""
+    # Layer 0/1 queue-frozen workflow truth.  Raw UI ControlNet maps remain
+    # available as a compatibility shell, but execution must use this plan.
+    requested_source_surface: str = ""
+    workflow_selection: Any = None
+    workflow_plan: Any = None
+    planned_cn_tasks: Dict[str, List[Any]] = field(default_factory=dict)
+    planned_cn_tasks_by_channel: Dict[str, Dict[str, List[Any]]] = field(default_factory=dict)
     runtime_route_id: str = ""
     runtime_route_family: str = ""
     runtime_route_display_name: str = ""
@@ -174,6 +181,44 @@ class TaskState:
             flags.cn_contextual: {cn_type: list(self.cn_tasks[cn_type]) for cn_type in flags.cn_contextual_types},
         }
 
+    def set_workflow_plan(self, plan):
+        """Bind the immutable plan and create only a worker-owned task mirror.
+
+        The mirror preserves the established worker payload shape and may be
+        enriched with prepared tensors.  Its slot/type membership is copied
+        from the immutable plan and cannot be used to admit a new slot.
+        """
+        from modules import flags
+
+        plan.validate()
+        existing = getattr(self, "workflow_plan", None)
+        if existing is not None:
+            if existing is plan:
+                return existing
+            raise RuntimeError("Workflow plan is already bound; queued workflow truth cannot be replaced")
+        self.workflow_plan = plan
+        self.planned_cn_tasks = plan.materialize_cn_tasks()
+        self.planned_cn_tasks_by_channel = {
+            flags.cn_structural: {
+                cn_type: list(self.planned_cn_tasks.get(cn_type, []))
+                for cn_type in flags.cn_structural_types
+            },
+            flags.cn_contextual: {
+                cn_type: list(self.planned_cn_tasks.get(cn_type, []))
+                for cn_type in flags.cn_contextual_types
+            },
+        }
+        return plan
+
+    def _active_plan_slot_keys(self):
+        plan = getattr(self, "workflow_plan", None)
+        if plan is None:
+            return None
+        return {
+            (item.control_type, int(item.ui_slot_index))
+            for item in plan.controlnet_overlay.active_slot_descriptors
+        }
+
     def add_cn_task(self, cn_type, task):
         from modules import flags
 
@@ -215,9 +260,24 @@ class TaskState:
                 task_list.append(len(normalized_list))
             normalized_list.append(task_list)
 
+        plan_slot_keys = self._active_plan_slot_keys()
+        if plan_slot_keys is not None:
+            # Prepared workers can replace payloads for planned slots, but
+            # cannot add a slot/type that the queue-frozen plan did not admit.
+            normalized_list = [
+                task_list for task_list in normalized_list
+                if len(task_list) >= 5
+                and (normalized_type, int(task_list[4])) in plan_slot_keys
+            ]
+            self.planned_cn_tasks[normalized_type] = normalized_list
+            self.planned_cn_tasks_by_channel[channel][normalized_type] = list(normalized_list)
+            return True
+
         self.cn_tasks[normalized_type] = normalized_list
         self.cn_tasks_by_channel[channel][normalized_type] = list(normalized_list)
         return True
 
     def get_cn_tasks_for_channel(self, channel):
+        if getattr(self, "workflow_plan", None) is not None:
+            return self.planned_cn_tasks_by_channel.get(channel, {})
         return self.cn_tasks_by_channel.get(channel, {})

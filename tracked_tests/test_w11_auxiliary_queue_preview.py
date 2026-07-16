@@ -16,12 +16,18 @@ from backend.process_transition import (
 )
 from backend import process_transition
 from modules.pipeline.routes import build_generation_route
+from modules.pipeline.workflow_legacy_adapter import bind_legacy_workflow_plan
 from modules.task_state import TaskState
 from modules.upscale_engine import NexUpscaleEngine
 from modules.upscale_tile_policy import normalize_gan_tile_size
 import backend.resources as resources
 from modules.flux_fill_surface import OBJR_ENGINE_FLUX_FILL, OBJR_ENGINE_MAT
 import modules.async_worker as async_worker
+
+
+def _build_planned_route(state):
+    bind_legacy_workflow_plan(state)
+    return build_generation_route(state)
 
 
 def test_route_intent_flux_removal():
@@ -60,7 +66,7 @@ def test_build_generation_route_flux_removal():
         remove_obj_enabled=True,
         objr_engine=OBJR_ENGINE_FLUX_FILL,
     )
-    route = build_generation_route(state)
+    route = _build_planned_route(state)
     assert route.route_id == "flux_removal"
     assert route.family == "flux_fill"
     assert route.display_name == "Flux Remove"
@@ -103,7 +109,7 @@ def test_process_transition_flux_removal():
         remove_obj_enabled=True,
         objr_engine=OBJR_ENGINE_FLUX_FILL,
     )
-    route = build_generation_route(state)
+    route = _build_planned_route(state)
     
     # Resolving process key for flux_removal route should expect a flux process
     key = resolve_requested_process_key(state, route)
@@ -134,7 +140,7 @@ def test_color_enhancement_ignores_stale_flux_removal_engine_for_process_key(mon
         remove_obj_enabled=True,
         sdxl_execution_policy=SimpleNamespace(enabled=True),
     )
-    route = build_generation_route(state)
+    route = _build_planned_route(state)
 
     key = resolve_requested_process_key(state, route)
 

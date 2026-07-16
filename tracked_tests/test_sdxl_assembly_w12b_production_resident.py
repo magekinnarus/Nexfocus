@@ -23,13 +23,19 @@ from backend.sdxl_assembly.request_builder import (
     determine_eligibility,
     build_assembly_request,
 )
-from backend.sdxl_assembly.gateway import run_sdxl_assembly_task
+from backend.sdxl_assembly.gateway import run_sdxl_assembly_task as _run_sdxl_assembly_task
 from backend.sdxl_assembly.lifecycle_coordinator import (
     release_domains,
     LifecycleDomain,
 )
 from modules.task_state import TaskState
+from modules.pipeline.workflow_legacy_adapter import bind_legacy_workflow_plan
 from modules.parameter_registry import _normalize_sdxl_assembly_posture_value
+
+
+def run_sdxl_assembly_task(task_state, *args, **kwargs):
+    bind_legacy_workflow_plan(task_state)
+    return _run_sdxl_assembly_task(task_state, *args, **kwargs)
 
 def _identity(name: str, sha: str) -> ResolvedFileIdentity:
     return ResolvedFileIdentity(

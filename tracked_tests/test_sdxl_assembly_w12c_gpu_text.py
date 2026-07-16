@@ -31,6 +31,7 @@ from backend.sdxl_assembly.runtime_state import (
     release_active_gpu_text,
 )
 from modules.task_state import TaskState
+from modules.pipeline.workflow_legacy_adapter import bind_legacy_workflow_plan
 from modules.parameter_registry import _normalize_sdxl_assembly_posture_value
 from modules.ui_components.advanced_panel import resolve_default_sdxl_assembly_posture
 from backend import process_transition
@@ -504,6 +505,7 @@ def test_gpu_text_legacy_bypass_releases_before_legacy_load(monkeypatch):
         width=64,
         use_expansion=False,
     )
+    bind_legacy_workflow_plan(task)
     inference.process_task(
         task_state=task,
         task_dict={"task_seed": 1},
@@ -516,7 +518,13 @@ def test_gpu_text_legacy_bypass_releases_before_legacy_load(monkeypatch):
         loras=[],
     )
 
-    assert events == [("release", legacy_key), ("legacy_load", None)]
+    assert [event[0] for event in events] == ["release", "legacy_load"]
+    released_key = events[0][1]
+    assert released_key.family == legacy_key.family
+    assert released_key.process_class == legacy_key.process_class
+    assert released_key.authoritative_identity == legacy_key.authoritative_identity
+    assert released_key.residency_class == legacy_key.residency_class
+    assert released_key.composition_identity == task.workflow_plan.identity()
 
 
 def test_gpu_text_legacy_bypass_fails_closed_if_owner_remains(monkeypatch):
@@ -550,8 +558,10 @@ def test_gpu_text_legacy_bypass_fails_closed_if_owner_remains(monkeypatch):
     monkeypatch.setattr(runtime_state, "get_active_gpu_text_key", lambda: None)
 
     with pytest.raises(RuntimeError, match="resident_unet"):
+        task = SimpleNamespace()
+        bind_legacy_workflow_plan(task)
         inference._prepare_gpu_text_legacy_bypass_transition(
-            SimpleNamespace(),
+            task,
             loras=[],
         )
 

@@ -7,8 +7,14 @@ sys.argv = [sys.argv[0]]
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import modules.flags as flags
-from modules.pipeline.routes import build_generation_route, describe_route
+from modules.pipeline.routes import build_generation_route as _build_generation_route, describe_route
+from modules.pipeline.workflow_legacy_adapter import bind_legacy_workflow_plan
 from modules.task_state import TaskState
+
+
+def build_generation_route(task_state):
+    bind_legacy_workflow_plan(task_state)
+    return _build_generation_route(task_state)
 
 
 def test_build_generation_route_maps_default_txt2img_path():
@@ -32,7 +38,6 @@ def test_build_generation_route_maps_inpaint_family():
     assert route.route_id == 'inpaint'
     assert describe_route(route) == [
         'image_input_prepare',
-        'controlnet_support_load',
         'inpaint_prepare',
         'prompt_encode',
         'diffusion_batch',
@@ -72,7 +77,6 @@ def test_build_generation_route_maps_controlnet_extensions_explicitly():
         'controlnet_support_load',
         'prompt_encode',
         'structural_controlnet',
-        'contextual_controlnet',
         'diffusion_batch',
     ]
 
@@ -152,7 +156,7 @@ def test_build_generation_route_outpaint_with_controlnet_when_checkbox_on():
 
     assert route.route_id == 'outpaint'
     assert 'structural_controlnet' in describe_route(route)
-    assert 'contextual_controlnet' in describe_route(route)
+    assert 'contextual_controlnet' not in describe_route(route)
 
 
 def test_build_generation_route_inpaint_no_controlnet_when_checkbox_off():
@@ -184,5 +188,4 @@ def test_build_generation_route_inpaint_with_controlnet_when_checkbox_on():
 
     assert route.route_id == 'inpaint'
     assert 'structural_controlnet' in describe_route(route)
-    assert 'contextual_controlnet' in describe_route(route)
-
+    assert 'contextual_controlnet' not in describe_route(route)

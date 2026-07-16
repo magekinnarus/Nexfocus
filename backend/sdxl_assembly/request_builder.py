@@ -29,6 +29,8 @@ from backend.sdxl_assembly.contracts import (
     SpatialContextDescriptor,
     SDXLStructuralControlDescriptor,
 )
+from modules.pipeline.workflow_contracts import FrozenWorkflowPlan, require_workflow_plan
+from modules.pipeline.workflow_legacy_adapter import bind_legacy_workflow_plan
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +147,8 @@ def _make_control_image_descriptor(raw_img: Any, label: str):
         raise SDXLAssemblyEligibilityError(f"{label} is missing its input image asset.")
 
     candidate = str(raw_img) if isinstance(raw_img, os.PathLike) else raw_img
+    if isinstance(candidate, np.ndarray) and not candidate.flags.writeable:
+        candidate = candidate.copy()
     if not isinstance(candidate, (torch.Tensor, np.ndarray, list, tuple)):
         unpacked = mask_processing.unpack_gradio_data(candidate)
         if unpacked is None:
@@ -161,34 +165,21 @@ def _make_control_image_descriptor(raw_img: Any, label: str):
         ) from exc
 
 
-def _active_cn_task_types(
-    task_state: Any,
-    prepared_structural: Dict[str, Any],
-    prepared_contextual: Dict[str, Any],
-) -> Tuple[set[str], set[str], set[str]]:
-    structural_types: set[str] = set()
-    contextual_types: set[str] = set()
-    all_types: set[str] = set()
-
-    def remember(cn_type: Any, tasks: Any) -> None:
-        if not _has_active_tasks(tasks):
-            return
-        normalized_type = flags.resolve_cn_type(cn_type, default=cn_type)
-        all_types.add(normalized_type)
-        channel = flags.get_cn_channel(normalized_type)
-        if channel == flags.cn_structural:
-            structural_types.add(normalized_type)
-        elif channel == flags.cn_contextual:
-            contextual_types.add(normalized_type)
-
-    for cn_type, tasks in _dict_or_empty(getattr(task_state, "cn_tasks", {}) or {}).items():
-        remember(cn_type, tasks)
-    for cn_type, tasks in prepared_structural.items():
-        remember(cn_type, tasks)
-    for cn_type, tasks in prepared_contextual.items():
-        remember(cn_type, tasks)
-
-    return structural_types, contextual_types, all_types
+def _active_cn_task_types(plan: FrozenWorkflowPlan) -> Tuple[set[str], set[str], set[str]]:
+    """Return only types admitted by the immutable overlay."""
+    active_types = {
+        flags.resolve_cn_type(item.control_type, default=item.control_type)
+        for item in plan.controlnet_overlay.active_slot_descriptors
+    }
+    structural_types = {
+        cn_type for cn_type in active_types
+        if flags.get_cn_channel(cn_type) == flags.cn_structural
+    }
+    contextual_types = {
+        cn_type for cn_type in active_types
+        if flags.get_cn_channel(cn_type) == flags.cn_contextual
+    }
+    return structural_types, contextual_types, active_types
 
 
 def _structural_preprocessor_required(task_state: Any, cn_type: str) -> bool:
@@ -246,6 +237,8 @@ def determine_eligibility(
     image_input_result: Optional[Dict[str, Any]] = None,
     *,
     force_eligible: bool = False,
+    workflow_plan: Optional[FrozenWorkflowPlan] = None,
+    allow_legacy_adapter: bool = True,
 ) -> Tuple[bool, Optional[str]]:
     """Determines if a generation request is eligible for the new SDXL assembly lane.
     
@@ -257,33 +250,79 @@ def determine_eligibility(
     Rejects: FaceID V2, FaceSwap, MLSD (retired); Resident SDXL/ControlNet (deferred);
              Flux Fill, removal, upscale, tiled refinement, non-SDXL base models.
     """
-    # 0. Check for retired FaceID V2 / FaceSwap
+    # Gateway/production callers pass the already-bound plan and disable the
+    # compatibility adapter. Direct historical probes may opt into the named
+    # adapter while migration tests remain available.
+    plan = workflow_plan
+    if plan is None:
+        try:
+            plan = require_workflow_plan(task_state)
+        except (RuntimeError, ValueError) as exc:
+            if not allow_legacy_adapter:
+                return False, f"Invalid frozen workflow plan: {exc}"
+            plan = None
+
+    legacy_direct_call = plan is None
+    if legacy_direct_call:
+        # W09 callers supplied only the mutable CN map. Preserve their
+        # explicit rejection diagnostics while queue-bound tasks use the
+        # immutable plan exclusively.
+        raw_cn_tasks = _dict_or_empty(getattr(task_state, "cn_tasks", {}) or {})
+        for raw_type, tasks in raw_cn_tasks.items():
+            if not _has_active_tasks(tasks):
+                continue
+            normalized_type = flags.resolve_cn_type(raw_type, default=None)
+            if raw_type in {"FaceID V2", "FaceSwap", "cn_faceid", "cn_ip_face"}:
+                return False, "FaceID V2 / FaceSwap is explicitly retired on the new assembly path."
+            if raw_type in {"MLSD", "cn_mlsd"}:
+                return False, "MLSD is explicitly retired on the active ControlNet path."
+            if normalized_type is None:
+                return False, f"ControlNet type '{raw_type}' is not supported on the new assembly lane"
+
+        try:
+            raw_maps = _dict_or_empty(getattr(task_state, "cn_tasks", {}) or {})
+            active_raw_slots = any(_has_active_tasks(tasks) for tasks in raw_maps.values())
+            plan = bind_legacy_workflow_plan(
+                task_state,
+                source_surface="controlnet" if active_raw_slots else None,
+            )
+        except (RuntimeError, ValueError) as exc:
+            return False, f"Invalid frozen workflow plan: {exc}"
+    plan.validate()
+
+    # Runtime-lane admission remains a Layer 3 composition decision.  It is
+    # independent of workflow-route compilation, but it must use the frozen
+    # route instead of re-reading the mutable UI tab.
+    execution_mode = str(
+        getattr(getattr(task_state, "sdxl_execution_policy", None), "execution_mode", "") or ""
+    ).strip().lower()
+    posture_selection = str(getattr(task_state, "sdxl_assembly_posture", "") or "").strip().lower()
+    if (
+        execution_mode == "resident"
+        and posture_selection in {"", "auto"}
+        and plan.route_id not in {"direct_upscale", "color_enhanced_upscale", "super_upscale"}
+    ):
+        return False, "Resident SDXL posture is not eligible for the assembly path."
+
+    # 0. Check for retired FaceID V2 / FaceSwap, using planned slots only.
     resolved_controlnet_paths = _resolve_controlnet_paths(controlnet_paths, image_input_result)
     resolved_contextual_assets = _resolve_contextual_assets(contextual_assets, image_input_result)
     contextual_model_paths = _normalize_cn_path_map(
         resolved_contextual_assets.get('contextual_model_paths', {})
     )
     structural_preprocessor_paths = _resolve_structural_preprocessor_paths(image_input_result)
-    prepared_ctx = _dict_or_empty(getattr(task_state, 'prepared_contextual_cn_tasks', {}) or {})
-    cn_tasks = _dict_or_empty(getattr(task_state, 'cn_tasks', {}) or {})
+    active_descriptors = plan.controlnet_overlay.active_slot_descriptors
+    active_names = {item.control_type for item in active_descriptors}
     for name in ["FaceID V2", "FaceSwap", "cn_faceid", "cn_ip_face"]:
-        if name in contextual_model_paths or name in prepared_ctx or name in cn_tasks:
+        if name in active_names:
             return False, "FaceID V2 / FaceSwap is explicitly retired on the new assembly path."
 
     # 0.5. Check for retired MLSD
-    prepared_structural = _dict_or_empty(getattr(task_state, 'prepared_structural_cn_tasks', {}) or {})
     for name in ["MLSD", "cn_mlsd"]:
-        if name in resolved_controlnet_paths or name in prepared_structural or name in cn_tasks:
+        if name in active_names:
             return False, "MLSD is explicitly retired on the active ControlNet path."
 
-    # 4. Resolve Route Intent
-    from modules.route_intent import (
-        normalize_current_tab,
-        resolve_route_intent,
-        route_family_for_route_id,
-    )
-    intent = resolve_route_intent(task_state)
-    target_route = intent.route_id
+    target_route = plan.route_id
 
     # 1. Check for resident SDXL or resident ControlNet
     posture, posture_resolved = _resolve_sdxl_assembly_posture(task_state)
@@ -311,24 +350,6 @@ def determine_eligibility(
         return False, "Spatial latent / initial_latent is active"
 
     # 5. Route check
-    if target_route == "txt2img":
-        requested_route_id = str(getattr(task_state, "requested_route_id", "") or "").strip().lower()
-        requested_route_family = str(getattr(task_state, "requested_route_family", "") or "").strip().lower()
-        requested_route_family = route_family_for_route_id(requested_route_id) or requested_route_family or ""
-        goals = {
-            str(goal or "").strip().lower()
-            for goal in (getattr(task_state, "goals", []) or [])
-        }
-        current_tab = normalize_current_tab(getattr(task_state, "current_tab", ""))
-        input_image_active = bool(getattr(task_state, "input_image_checkbox", False))
-
-        if requested_route_family == "image_input" and requested_route_id in {"inpaint", "outpaint"}:
-            target_route = requested_route_id
-        elif input_image_active and ("inpaint" in goals or current_tab == "inpaint"):
-            target_route = "inpaint"
-        elif input_image_active and ("outpaint" in goals or current_tab == "outpaint"):
-            target_route = "outpaint"
-
     if target_route == "super_upscale":
         provided_target = getattr(task_state, 'upscale_gan_output_image', None)
         if provided_target is None:
@@ -375,34 +396,17 @@ def determine_eligibility(
         if _is_invalid_asset(img):
             return False, "Outpaint route requires valid outpaint image asset"
 
-    # 5.6. Fail-closed ControlNet input image checks
-    for cn_type, tasks in cn_tasks.items():
-        if _has_active_tasks(tasks):
-            for t in tasks:
-                if not t or _is_invalid_asset(t[0]):
-                    return False, f"ControlNet '{cn_type}' is enabled but missing its input image asset"
-
-    for cn_type, tasks in prepared_structural.items():
-        if _has_active_tasks(tasks):
-            for t in tasks:
-                if not t or _is_invalid_asset(t[0]):
-                    return False, f"Structural ControlNet '{cn_type}' is enabled but missing its input image asset"
-
-    for cn_type, tasks in prepared_ctx.items():
-        if _has_active_tasks(tasks):
-            for t in tasks:
-                if not t or _is_invalid_asset(t[0]):
-                    return False, f"Contextual ControlNet '{cn_type}' is enabled but missing its input image asset"
+    # 5.6. Fail-closed only for active planned descriptors.  Hidden raw and
+    # prepared maps are deliberately ignored here.
+    for descriptor in active_descriptors:
+        if _is_invalid_asset(descriptor.input_image):
+            return False, (
+                f"ControlNet '{descriptor.control_type}' slot {descriptor.ui_slot_index} "
+                "is enabled but missing its input image asset"
+            )
 
     # 6. Check for active ControlNet types and the resolved assets needed to execute them.
-    active_structural_types, active_contextual_types, active_task_types = _active_cn_task_types(
-        task_state,
-        prepared_structural,
-        prepared_ctx,
-    )
-    active_cn_types = set(active_task_types)
-    active_cn_types.update(resolved_controlnet_paths.keys())
-    active_cn_types.update(contextual_model_paths.keys())
+    active_structural_types, active_contextual_types, active_cn_types = _active_cn_task_types(plan)
 
     for cn_type in active_cn_types:
         normalized_type = flags.resolve_cn_type(cn_type, default=cn_type)
@@ -470,6 +474,8 @@ def build_assembly_request(
     base_model_additional_loras: Optional[List[Tuple[str, float]]] = None,
     image_input_result: Optional[Dict[str, Any]] = None,
     force_eligible: bool = False,
+    workflow_plan: Optional[FrozenWorkflowPlan] = None,
+    allow_legacy_adapter: bool = True,
 ) -> SDXLAssemblyRequest:
     """Builds a frozen per-image SDXLAssemblyRequest from input parameters."""
     eligible, reason = determine_eligibility(
@@ -479,10 +485,13 @@ def build_assembly_request(
         contextual_assets=contextual_assets,
         image_input_result=image_input_result,
         force_eligible=force_eligible,
+        workflow_plan=workflow_plan,
+        allow_legacy_adapter=allow_legacy_adapter,
     )
 
     if not eligible:
         raise SDXLAssemblyEligibilityError(f"Request is not eligible for SDXL Assembly: {reason}")
+    plan = workflow_plan or require_workflow_plan(task_state)
 
     # Resolve Checkpoint
     model_name = str(getattr(task_state, 'base_model_name', '') or '').strip()
@@ -607,13 +616,11 @@ def build_assembly_request(
             )
         ),
     }
-    from modules.route_intent import resolve_route_intent
-    intent = resolve_route_intent(task_state)
-    if intent.route_id == "color_enhanced_upscale":
+    if plan.route_id == "color_enhanced_upscale":
         execution_metadata["workflow_contract"] = {
             "workflow_id": "color_enhanced_upscale",
             "workflow_name": "Color Enhancement",
-            "workflow_family": str(intent.route_family or ""),
+            "workflow_family": str(plan.route_family or ""),
             "assembly_route_id": "color_enhancement",
             "assembly_variant": "sdxl_color_enhancement",
             "source_policy": "strict_original",
@@ -623,11 +630,11 @@ def build_assembly_request(
             "steps_policy": "inherit_user_selection",
             "cfg_policy": "fixed_1_5",
         }
-    elif intent.route_id == "super_upscale":
+    elif plan.route_id == "super_upscale":
         execution_metadata["workflow_contract"] = {
             "workflow_id": "super_upscale",
             "workflow_name": "Super Upscale",
-            "workflow_family": str(intent.route_family or ""),
+            "workflow_family": str(plan.route_family or ""),
             "assembly_route_id": "super_upscale",
             "assembly_variant": "sdxl_super_upscale_tiled_refine",
             "target_policy": "strict_provided_upscaled_target",
@@ -642,94 +649,76 @@ def build_assembly_request(
     adm_neg = float(getattr(task_state, 'adm_scaler_negative', 0.8))
     adm_end = float(getattr(task_state, 'adm_scaler_end', 0.3))
 
-    # Resolve structural ControlNets
+    # Resolve only the literal slots admitted by the immutable overlay.
     structural_controls_list = []
-    if hasattr(task_state, 'get_cn_tasks_for_channel'):
-        struct_tasks_dict = task_state.get_cn_tasks_for_channel(flags.cn_structural)
-    else:
-        struct_tasks_dict = {}
-
     structural_preprocessor_paths = _resolve_structural_preprocessor_paths(image_input_result)
     cn_paths = _resolve_controlnet_paths(controlnet_paths, image_input_result)
 
-    for cn_type in getattr(flags, 'cn_structural_types', []):
-        tasks = struct_tasks_dict.get(cn_type, [])
-        for task in tasks:
-            raw_img, cn_stop, cn_weight = task[:3]
-            cn_start = task[3] if len(task) >= 4 else 0.0
-            ckpt_path_str = _require_existing_path(
-                cn_paths.get(cn_type),
-                f"Structural ControlNet '{cn_type}' checkpoint path",
+    for planned_slot in plan.controlnet_overlay.structural_descriptors:
+        cn_type = planned_slot.control_type
+        cn_stop = planned_slot.end_percent
+        cn_weight = planned_slot.weight
+        cn_start = planned_slot.start_percent
+        ckpt_path_str = _require_existing_path(
+            cn_paths.get(cn_type),
+            f"Structural ControlNet '{cn_type}' checkpoint path",
+        )
+
+        controlnet_identity = get_file_identity(ckpt_path_str)
+        checkpoint_type = determine_controlnet_type(ckpt_path_str)
+        image_desc = _make_control_image_descriptor(
+            planned_slot.input_image,
+            f"Structural ControlNet '{cn_type}' slot {planned_slot.ui_slot_index}",
+        )
+
+        preprocessor_id = cn_type
+        if getattr(task_state, 'skipping_cn_preprocessor', False):
+            preprocessor_id = "None"
+
+        preprocessor_path = None
+        preprocessor_path_str = structural_preprocessor_paths.get(cn_type)
+        if _structural_preprocessor_required(task_state, cn_type):
+            preprocessor_path_str = _require_existing_path(
+                preprocessor_path_str,
+                f"Structural ControlNet '{cn_type}' preprocessor path",
             )
+        if preprocessor_path_str:
+            preprocessor_path = Path(preprocessor_path_str)
 
-            controlnet_identity = get_file_identity(ckpt_path_str)
-            checkpoint_type = determine_controlnet_type(ckpt_path_str)
+        preprocessor_params = {}
+        if cn_type == flags.cn_canny:
+            preprocessor_params = {
+                "low_threshold": int(getattr(task_state, 'canny_low_threshold', 64)),
+                "high_threshold": int(getattr(task_state, 'canny_high_threshold', 128))
+            }
 
-            # Accept either already-prepared tensors or unresolved UI-backed image payloads.
-            image_desc = _make_control_image_descriptor(
-                raw_img,
-                f"Structural ControlNet '{cn_type}'",
-            )
+        target_width = int(getattr(task_state, 'width', 1024))
+        target_height = int(getattr(task_state, 'height', 1024))
+        unsupported_mode_errors = []
+        if not controlnet_identity.path.exists():
+            unsupported_mode_errors.append(f"Checkpoint path does not exist: {controlnet_identity.path}")
 
-            # Resolve preprocessor
-            preprocessor_id = cn_type
-            if getattr(task_state, 'skipping_cn_preprocessor', False):
-                preprocessor_id = "None"
+        structural_controls_list.append(SDXLStructuralControlDescriptor(
+            slot_index=int(planned_slot.ui_slot_index),
+            control_type=cn_type,
+            image_pixels=image_desc.pixels,
+            image_fingerprint=image_desc.fingerprint,
+            preprocessor_id=preprocessor_id,
+            preprocessor_path=preprocessor_path,
+            preprocessor_params=preprocessor_params,
+            target_width=target_width,
+            target_height=target_height,
+            checkpoint_path=Path(ckpt_path_str),
+            checkpoint_sha256=controlnet_identity.sha256,
+            checkpoint_type=checkpoint_type,
+            weight=float(cn_weight),
+            start_percent=float(cn_start),
+            end_percent=float(cn_stop),
+            unsupported_mode_errors=tuple(unsupported_mode_errors)
+        ))
 
-            preprocessor_path = None
-            preprocessor_path_str = structural_preprocessor_paths.get(cn_type)
-            if _structural_preprocessor_required(task_state, cn_type):
-                preprocessor_path_str = _require_existing_path(
-                    preprocessor_path_str,
-                    f"Structural ControlNet '{cn_type}' preprocessor path",
-                )
-            if preprocessor_path_str:
-                preprocessor_path = Path(preprocessor_path_str)
-
-            # Params
-            preprocessor_params = {}
-            if cn_type == flags.cn_canny:
-                preprocessor_params = {
-                    "low_threshold": int(getattr(task_state, 'canny_low_threshold', 64)),
-                    "high_threshold": int(getattr(task_state, 'canny_high_threshold', 128))
-                }
-
-            # Target resolution
-            target_width = int(getattr(task_state, 'width', 1024))
-            target_height = int(getattr(task_state, 'height', 1024))
-
-            unsupported_mode_errors = []
-            if not controlnet_identity.path.exists():
-                unsupported_mode_errors.append(f"Checkpoint path does not exist: {controlnet_identity.path}")
-
-            slot_index = int(task[4]) if len(task) >= 5 else len(structural_controls_list)
-            desc = SDXLStructuralControlDescriptor(
-                slot_index=slot_index,
-                control_type=cn_type,
-                image_pixels=image_desc.pixels,
-                image_fingerprint=image_desc.fingerprint,
-                preprocessor_id=preprocessor_id,
-                preprocessor_path=preprocessor_path,
-                preprocessor_params=preprocessor_params,
-                target_width=target_width,
-                target_height=target_height,
-                checkpoint_path=Path(ckpt_path_str),
-                checkpoint_sha256=controlnet_identity.sha256,
-                checkpoint_type=checkpoint_type,
-                weight=float(cn_weight),
-                start_percent=float(cn_start),
-                end_percent=float(cn_stop),
-                unsupported_mode_errors=tuple(unsupported_mode_errors)
-            )
-            structural_controls_list.append(desc)
-
-    # Resolve contextual ControlNets
+    # Resolve contextual ControlNets from planned slots only.
     contextual_controls_list = []
-    if hasattr(task_state, 'get_cn_tasks_for_channel'):
-        contextual_tasks_dict = task_state.get_cn_tasks_for_channel(flags.cn_contextual)
-    else:
-        contextual_tasks_dict = {}
-
     contextual_assets_resolved = _resolve_contextual_assets(contextual_assets, image_input_result)
 
     contextual_model_paths = _normalize_cn_path_map(contextual_assets_resolved.get('contextual_model_paths', {}))
@@ -750,99 +739,91 @@ def build_assembly_request(
     if eva_clip_path_str and os.path.exists(eva_clip_path_str):
         eva_clip_identity = get_file_identity(eva_clip_path_str)
 
-    for cn_type in getattr(flags, 'cn_contextual_types', []):
-        tasks = contextual_tasks_dict.get(cn_type, [])
-        for idx, task in enumerate(tasks):
-            raw_img = task[0]
-            cn_stop = task[1]
-            cn_weight = task[2]
-            cn_start = task[3] if len(task) >= 4 else 0.0
+    for planned_slot in plan.controlnet_overlay.contextual_descriptors:
+        cn_type = planned_slot.control_type
+        raw_img = planned_slot.input_image
+        cn_stop = planned_slot.end_percent
+        cn_weight = planned_slot.weight
+        cn_start = planned_slot.start_percent
+        ui_slot_index = int(planned_slot.ui_slot_index)
 
-            if len(task) < 5:
-                raise SDXLAssemblyEligibilityError(
-                    "Contextual direct/probe requests require an explicit ui_slot_index; "
-                    "the live TaskState grouping path still does not preserve truthful slot continuity."
-                )
-
-            ui_slot_index = int(task[4])
-            
-            model_path_str = _require_existing_path(
-                contextual_model_paths.get(cn_type),
-                f"Contextual ControlNet '{cn_type}' model path",
+        model_path_str = _require_existing_path(
+            contextual_model_paths.get(cn_type),
+            f"Contextual ControlNet '{cn_type}' model path",
+        )
+        if cn_type == flags.cn_ip:
+            clip_vision_path_str = _require_existing_path(
+                clip_vision_path_str,
+                "ImagePrompt CLIP vision path",
             )
-            if cn_type == flags.cn_ip:
-                clip_vision_path_str = _require_existing_path(
-                    clip_vision_path_str,
-                    "ImagePrompt CLIP vision path",
-                )
-                ip_negative_path_str = _require_existing_path(
-                    ip_negative_path_str,
-                    "ImagePrompt IP negative path",
-                )
-                if clip_vision_identity is None:
-                    clip_vision_identity = get_file_identity(clip_vision_path_str)
-                if ip_negative_identity is None:
-                    ip_negative_identity = get_file_identity(ip_negative_path_str)
-            elif cn_type == flags.cn_pulid:
-                eva_clip_path_str = _require_existing_path(
-                    eva_clip_path_str,
-                    "PuLID EVA-CLIP path",
-                )
-                if eva_clip_identity is None:
-                    eva_clip_identity = get_file_identity(eva_clip_path_str)
-
-            model_identity = get_file_identity(model_path_str)
-
-            # Accept either already-prepared tensors or unresolved UI-backed image payloads.
-            image_desc = _make_control_image_descriptor(
-                raw_img,
-                f"Contextual ControlNet '{cn_type}'",
+            ip_negative_path_str = _require_existing_path(
+                ip_negative_path_str,
+                "ImagePrompt IP negative path",
             )
-
-            source_image_role = "face_image" if cn_type == flags.cn_pulid else "image_prompt"
-
-            preprocess_params = {}
-            if cn_type == flags.cn_ip:
-                preprocess_params = {"resize_to": 224}
-            elif cn_type == flags.cn_pulid:
-                preprocess_params = {"resize_to": 512, "crop": "norm_crop"}
-
-            unsupported_mode_errors = []
-            if not model_identity.path.exists():
-                unsupported_mode_errors.append(f"Model path does not exist: {model_identity.path}")
-
-            from backend.sdxl_assembly.contracts import SDXLContextualControlDescriptor
-            desc = SDXLContextualControlDescriptor(
-                ui_slot_index=ui_slot_index,
-                control_type=cn_type,
-                image_pixels=image_desc.pixels,
-                image_fingerprint=image_desc.fingerprint,
-                source_image_role=source_image_role,
-                model_path=Path(model_path_str),
-                model_sha256=model_identity.sha256,
-                clip_vision_path=Path(clip_vision_path_str) if clip_vision_path_str else None,
-                clip_vision_sha256=clip_vision_identity.sha256 if clip_vision_identity else None,
-                ip_negative_path=Path(ip_negative_path_str) if ip_negative_path_str else None,
-                ip_negative_sha256=ip_negative_identity.sha256 if ip_negative_identity else None,
-                eva_clip_path=Path(eva_clip_path_str) if eva_clip_path_str else None,
-                eva_clip_sha256=eva_clip_identity.sha256 if eva_clip_identity else None,
-                insightface_model_names=tuple(insightface_model_names),
-                preprocess_params=preprocess_params,
-                weight=float(cn_weight),
-                start_percent=float(cn_start),
-                end_percent=float(cn_stop),
-                unsupported_mode_errors=tuple(unsupported_mode_errors)
+            if clip_vision_identity is None:
+                clip_vision_identity = get_file_identity(clip_vision_path_str)
+            if ip_negative_identity is None:
+                ip_negative_identity = get_file_identity(ip_negative_path_str)
+        elif cn_type == flags.cn_pulid:
+            eva_clip_path_str = _require_existing_path(
+                eva_clip_path_str,
+                "PuLID EVA-CLIP path",
             )
-            contextual_controls_list.append(desc)
+            if eva_clip_identity is None:
+                eva_clip_identity = get_file_identity(eva_clip_path_str)
+
+        model_identity = get_file_identity(model_path_str)
+
+        # Accept either already-prepared tensors or unresolved UI-backed image payloads.
+        image_desc = _make_control_image_descriptor(
+            raw_img,
+            f"Contextual ControlNet '{cn_type}'",
+        )
+
+        source_image_role = "face_image" if cn_type == flags.cn_pulid else "image_prompt"
+
+        preprocess_params = {}
+        if cn_type == flags.cn_ip:
+            preprocess_params = {"resize_to": 224}
+        elif cn_type == flags.cn_pulid:
+            preprocess_params = {"resize_to": 512, "crop": "norm_crop"}
+
+        unsupported_mode_errors = []
+        if not model_identity.path.exists():
+            unsupported_mode_errors.append(f"Model path does not exist: {model_identity.path}")
+
+        from backend.sdxl_assembly.contracts import SDXLContextualControlDescriptor
+        desc = SDXLContextualControlDescriptor(
+            ui_slot_index=ui_slot_index,
+            control_type=cn_type,
+            image_pixels=image_desc.pixels,
+            image_fingerprint=image_desc.fingerprint,
+            source_image_role=source_image_role,
+            model_path=Path(model_path_str),
+            model_sha256=model_identity.sha256,
+            clip_vision_path=Path(clip_vision_path_str) if clip_vision_path_str else None,
+            clip_vision_sha256=clip_vision_identity.sha256 if clip_vision_identity else None,
+            ip_negative_path=Path(ip_negative_path_str) if ip_negative_path_str else None,
+            ip_negative_sha256=ip_negative_identity.sha256 if ip_negative_identity else None,
+            eva_clip_path=Path(eva_clip_path_str) if eva_clip_path_str else None,
+            eva_clip_sha256=eva_clip_identity.sha256 if eva_clip_identity else None,
+            insightface_model_names=tuple(insightface_model_names),
+            preprocess_params=preprocess_params,
+            weight=float(cn_weight),
+            start_percent=float(cn_start),
+            end_percent=float(cn_stop),
+            unsupported_mode_errors=tuple(unsupported_mode_errors)
+        )
+        contextual_controls_list.append(desc)
 
     # Build color extraction spec if route matches
     color_extraction_spec = None
-    if intent.route_id == "color_enhanced_upscale":
+    if plan.route_id == "color_enhanced_upscale":
         from backend.sdxl_assembly.contracts import ColorExtractionSpec
         color_extraction_spec = ColorExtractionSpec(enabled=True)
 
     tiled_refinement_spec = None
-    if intent.route_id == "super_upscale":
+    if plan.route_id == "super_upscale":
         from backend.sdxl_assembly.contracts import TiledRefinementSpec, make_spatial_image_descriptor
         target_img = getattr(task_state, 'upscale_gan_output_image', None)
         if target_img is None:
@@ -871,6 +852,8 @@ def build_assembly_request(
         assembly_route_id = "color_enhancement"
     elif tiled_refinement_spec is not None:
         assembly_route_id = "super_upscale"
+    elif plan.route_id in {"inpaint", "outpaint"}:
+        assembly_route_id = f"{plan.route_id}_assembly"
     elif spatial_context_descriptor is not None:
         spatial_mode = str(spatial_context_descriptor.mode or "image").strip().lower()
         if spatial_mode in {"inpaint", "outpaint"}:
@@ -915,6 +898,7 @@ def build_assembly_request(
         adm_scaler_negative=adm_neg,
         adm_scaler_end=adm_end,
         metadata=execution_metadata,
+        workflow_plan=plan,
         spatial_context=spatial_context_descriptor,
         structural_controls=tuple(structural_controls_list),
         contextual_controls=tuple(contextual_controls_list),
@@ -961,23 +945,29 @@ def build_spatial_context_descriptor(
             return None
         return val
 
-    goals = set(getattr(task_state, 'goals', []) or [])
+    plan = require_workflow_plan(task_state)
     image_input_result = image_input_result or {}
     
     mode = None
     source_pixels = None
     source_mask = None
     
-    if 'outpaint' in goals:
+    if plan.route_id == "outpaint":
         mode = "outpaint"
         source_pixels = image_input_result.get('outpaint_image')
         source_mask = image_input_result.get('outpaint_mask')
-    elif 'inpaint' in goals:
+        if source_pixels is None:
+            source_pixels = getattr(task_state, 'outpaint_input_image', None)
+    elif plan.route_id == "inpaint":
         mode = "inpaint"
         source_pixels = image_input_result.get('inpaint_image')
         source_mask = getattr(task_state, 'context_mask', None)
         if _clean_mock(source_mask) is None:
             source_mask = image_input_result.get('inpaint_mask')
+        if source_pixels is None:
+            source_pixels = getattr(task_state, 'inpaint_input_image', None)
+        if source_mask is None:
+            source_mask = getattr(task_state, 'inpaint_mask_image', None)
     elif image_input_result.get('inpaint_image') is not None:
         mode = "inpaint"
         source_pixels = image_input_result.get('inpaint_image')
@@ -1054,8 +1044,8 @@ def build_spatial_context_descriptor(
         
     outpaint_expansion_size = int(getattr(task_state, 'inpaint_outpaint_expansion_size', 384) or 384)
     outpaint_pixelate = bool(getattr(task_state, 'inpaint_pixelate_primer', True))
-    denoise_strength = float(getattr(task_state, 'inpaint_strength', 1.0)) if 'inpaint' in goals else (
-        float(getattr(task_state, 'outpaint_strength', 1.0)) if 'outpaint' in goals else None
+    denoise_strength = float(getattr(task_state, 'inpaint_strength', 1.0)) if plan.route_id == "inpaint" else (
+        float(getattr(task_state, 'outpaint_strength', 1.0)) if plan.route_id == "outpaint" else None
     )
 
     return SpatialContextDescriptor(

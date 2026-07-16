@@ -3,6 +3,7 @@ import time
 import traceback
 import threading
 import re
+import logging
 
 import torch
 
@@ -15,13 +16,25 @@ from modules.task_state import TaskState
 from modules.pipeline.output import build_image_wall, yield_result
 from modules.pipeline.routes import build_generation_route, describe_route
 from modules.pipeline.stage_runtime import PipelineRouteContext, PipelineStageRunner
+from modules.pipeline.workflow_compiler import compile_workflow_plan
+from modules.pipeline.workflow_contracts import FrozenWorkflowSelection, require_workflow_plan
+from modules.pipeline.workflow_legacy_adapter import (
+    capture_controlnet_slot_inputs,
+    capture_workflow_selection,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 def discard_inactive_controlnet_tasks(task_state):
-    """Drop hidden slot values when the queue-frozen route does not admit CN."""
-    from modules.route_intent import resolve_route_intent
+    """Defensive legacy normalization after the immutable plan is compiled.
 
-    if resolve_route_intent(task_state).expects_controlnet:
+    This is deliberately not planning authority.  Route/stage/admission code
+    consumes ``workflow_plan`` and remains correct if this bridge is removed.
+    """
+    plan = require_workflow_plan(task_state)
+    if plan.controlnet_overlay.enabled:
         return 0
 
     discarded = sum(len(tasks) for tasks in task_state.cn_tasks.values())
@@ -82,6 +95,14 @@ class AsyncTask:
             s.requested_route_id = requested_route_id
         if requested_route_family:
             s.requested_route_family = requested_route_family
+        selection = args.get("workflow_selection")
+        if not isinstance(selection, FrozenWorkflowSelection):
+            # Layer 0 capture for API/direct callers that did not pass through
+            # ui_logic.get_tasks. This is still pre-slot queue capture, not a
+            # downstream execution fallback.
+            selection = capture_workflow_selection(args, queue_capture=True)
+        s.workflow_selection = selection
+        s.requested_source_surface = selection.source_surface
 
         frozen_goals = args.get("goals", None)
         if isinstance(frozen_goals, (list, tuple, set)):
@@ -134,9 +155,28 @@ class AsyncTask:
 
             cn_type = flags.resolve_cn_type(raw_cn_type, default=None)
             cn_start = args.get(f'cn_{i}_start', 0.0)
-            if cn_type is None or not s.add_cn_task(cn_type, [cn_img, cn_stop, cn_weight, cn_start, i]):
+            if cn_type is None:
+                # Preserve an explicitly populated unknown slot long enough
+                # for the frozen-plan compiler to reject it when the selected
+                # surface actually activates the overlay.  Hidden unknown
+                # slots remain harmless and are discarded by the defensive
+                # compatibility bridge after planning.
+                raw_key = str(raw_cn_type or "<unknown>").strip()
+                s.cn_tasks.setdefault(raw_key, []).append([cn_img, cn_stop, cn_weight, cn_start, i])
+                print(f'[ControlNet] Preserving unsupported guidance type for plan validation: {raw_cn_type!r}')
+            elif not s.add_cn_task(cn_type, [cn_img, cn_stop, cn_weight, cn_start, i]):
                 print(f'[ControlNet] Skipping unsupported guidance type: {raw_cn_type!r}')
 
+        # Compile only after every raw UI CN slot has been parsed.  The plan,
+        # not the defensive discard below, is the durable execution boundary.
+        plan = compile_workflow_plan(
+            selection,
+            capture_controlnet_slot_inputs(s.cn_tasks),
+        )
+        s.set_workflow_plan(plan)
+        s.requested_route_id = plan.route_id
+        s.requested_route_family = plan.route_family
+        logger.info("[Workflow Plan] %s", dict(plan.telemetry_record()))
         discard_inactive_controlnet_tasks(s)
 
     @property
@@ -217,6 +257,8 @@ def _release_route_runtime_state(task_state):
     for cn_type in list(task_state.cn_tasks.keys()):
         task_state.cn_tasks[cn_type] = []
     task_state.ensure_cn_task_maps()
+    task_state.planned_cn_tasks = {}
+    task_state.planned_cn_tasks_by_channel = {}
 
 
 
@@ -299,6 +341,7 @@ def handler(async_task: AsyncTask):
         task_state=task_state,
         route_id=route.route_id,
         route_family=route.family,
+        workflow_plan=require_workflow_plan(task_state),
         execution_family=getattr(task_state.sdxl_execution_policy, 'execution_family', None),
         residency_class=resources.normalize_sdxl_residency_class(getattr(task_state, 'sdxl_residency_class', None)),
         sdxl_policy=task_state.sdxl_execution_policy,

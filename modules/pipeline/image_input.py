@@ -9,7 +9,7 @@ import backend.ip_adapter as contextual_ip_adapter
 import backend.preprocessors as structural_preprocessors
 import backend.pulid_runtime as pulid_runtime
 import backend.resources as resources
-from modules.route_intent import resolve_route_intent
+from modules.pipeline.workflow_contracts import planned_tasks_for_channel, require_workflow_plan
 from modules.util import (HWC3, resize_image, get_image_shape_ceil, set_image_shape_ceil, 
                           get_shape_ceil, resample_image, erode_or_dilate)
 import modules.mask_processing as mask_proc
@@ -410,15 +410,17 @@ def apply_image_input(task_state: 'TaskState', base_model_additional_loras, prog
         'eva_clip_path': None,
     }
     skip_prompt_processing = False
-    intent = resolve_route_intent(task_state)
-    use_flux_fill_inpaint = intent.wants_flux_inpaint
+    workflow_plan = require_workflow_plan(task_state)
+    route_id = workflow_plan.route_id
+    source_surface = workflow_plan.source_surface
+    use_flux_fill_inpaint = route_id == 'flux_inpaint'
 
     # UoV handling
-    if intent.wants_upscale:
+    if route_id in {'upscale', 'super_upscale', 'color_enhanced_upscale'}:
         skip_prompt_processing = prepare_upscale(task_state, progressbar_callback)
 
     # Outpaint UI Parsing & setup
-    if intent.wants_outpaint and task_state.outpaint_input_image is not None:
+    if source_surface == 'outpaint' and task_state.outpaint_input_image is not None:
         if isinstance(task_state.outpaint_input_image, dict):
             if 'background' in task_state.outpaint_input_image:
                 outpaint_image = HWC3(mask_proc.ensure_numpy(task_state.outpaint_input_image['background']))
@@ -447,7 +449,7 @@ def apply_image_input(task_state: 'TaskState', base_model_additional_loras, prog
         task_state.goals.append('outpaint')
 
     # Inpaint UI Parsing & setup
-    elif intent.wants_inpaint and task_state.inpaint_input_image is not None:
+    elif source_surface == 'inpaint' and task_state.inpaint_input_image is not None:
         if isinstance(task_state.inpaint_input_image, dict):
             if 'background' in task_state.inpaint_input_image:
                 inpaint_image = mask_proc.ensure_numpy(task_state.inpaint_input_image['background'])
@@ -478,15 +480,15 @@ def apply_image_input(task_state: 'TaskState', base_model_additional_loras, prog
     if use_flux_fill_inpaint:
         skip_prompt_processing = True
 
-    if ('inpaint' in task_state.goals or 'outpaint' in task_state.goals) and not skip_prompt_processing:
-        working_image = outpaint_image if 'outpaint' in task_state.goals else inpaint_image
-        working_mask = outpaint_mask if 'outpaint' in task_state.goals else inpaint_mask
+    if route_id in {'inpaint', 'outpaint'} and not skip_prompt_processing:
+        working_image = outpaint_image if route_id == 'outpaint' else inpaint_image
+        working_mask = outpaint_mask if route_id == 'outpaint' else inpaint_mask
 
         if isinstance(working_image, np.ndarray) and isinstance(working_mask, np.ndarray):
             if progressbar_callback:
                 progressbar_callback(task_state, 1, 'Initializing inpainter ...')
 
-            engine = getattr(task_state, 'outpaint_engine', 'None') if 'outpaint' in task_state.goals \
+            engine = getattr(task_state, 'outpaint_engine', 'None') if route_id == 'outpaint' \
                 else getattr(task_state, 'inpaint_engine', 'None')
             engine = flags.normalize_inpaint_engine_version(engine, default=flags.INPAINT_ENGINE_NONE)
 
@@ -501,17 +503,25 @@ def apply_image_input(task_state: 'TaskState', base_model_additional_loras, prog
                 inpaint_patch_model_path = None
 
     # ControlNet handling
-    if intent.expects_controlnet:
-        task_state.goals.append('cn')
+    if workflow_plan.controlnet_overlay.enabled:
         if progressbar_callback:
             progressbar_callback(task_state, 1, 'Downloading control models ...')
 
-        structural_tasks = task_state.get_cn_tasks_for_channel(flags.cn_structural)
-        contextual_tasks = task_state.get_cn_tasks_for_channel(flags.cn_contextual)
+        if hasattr(task_state, 'get_cn_tasks_for_channel'):
+            structural_tasks = task_state.get_cn_tasks_for_channel(flags.cn_structural)
+            contextual_tasks = task_state.get_cn_tasks_for_channel(flags.cn_contextual)
+        else:
+            structural_tasks = planned_tasks_for_channel(workflow_plan, flags.cn_structural)
+            contextual_tasks = planned_tasks_for_channel(workflow_plan, flags.cn_contextual)
 
         from modules import model_registry
 
+        active_structural_types = {
+            item.control_type for item in workflow_plan.controlnet_overlay.structural_descriptors
+        }
         for cn_type in flags.cn_structural_types:
+            if cn_type not in active_structural_types:
+                continue
             if len(structural_tasks.get(cn_type, [])) == 0:
                 continue
 
@@ -524,15 +534,18 @@ def apply_image_input(task_state: 'TaskState', base_model_additional_loras, prog
                 if preprocessor_asset_id is not None:
                     structural_preprocessor_paths[cn_type] = model_registry.ensure_asset(preprocessor_asset_id)
 
-        if any(len(contextual_tasks.get(cn_type, [])) > 0 for cn_type in flags.cn_contextual_types):
-            if len(contextual_tasks.get(flags.cn_ip, [])) > 0:
+        active_contextual_types = {
+            item.control_type for item in workflow_plan.controlnet_overlay.contextual_descriptors
+        }
+        if active_contextual_types:
+            if flags.cn_ip in active_contextual_types:
                 contextual_assets['clip_vision_path'] = model_registry.ensure_asset('contextual.shared.clip_vision')
 
-            if len(contextual_tasks.get(flags.cn_ip, [])) > 0:
+            if flags.cn_ip in active_contextual_types:
                 contextual_assets['ip_negative_path'] = model_registry.ensure_asset('contextual.shared.ip_negative')
                 contextual_assets['contextual_model_paths'][flags.cn_ip] = model_registry.ensure_asset('contextual.image_prompt.adapter')
 
-            if len(contextual_tasks.get(flags.cn_pulid, [])) > 0:
+            if flags.cn_pulid in active_contextual_types:
                 contextual_assets['contextual_model_paths'][flags.cn_pulid] = model_registry.ensure_asset('contextual.pulid.model')
                 model_registry.ensure_asset('contextual.insightface.antelopev2')
                 contextual_assets['eva_clip_path'] = model_registry.ensure_asset('contextual.pulid.eva_clip')
@@ -593,7 +606,8 @@ def preprocess_structural_controlnets(task_state, structural_preprocessor_paths=
     def preprocess_structural_tasks(cn_type, tasks, processor=None):
         from backend.sdxl_unified_runtime import _PREPROCESSOR_METRICS
         valid_tasks = []
-        for slot_index, task in enumerate(tasks, start=1):
+        for ordinal, task in enumerate(tasks):
+            slot_index = int(task[4]) if len(task) >= 5 else ordinal
             raw_img, cn_stop, cn_weight = task[:3]
             cn_img = _unpack_cn_image(raw_img, cn_type)
             if cn_img is None:
@@ -663,7 +677,7 @@ def preprocess_structural_controlnets(task_state, structural_preprocessor_paths=
         structural_preprocessors.apply_residency_policy('destroy')
 
     task_state.prepared_structural_cn_tasks = {
-        cn_type: [list(task) for task in list(task_state.cn_tasks[cn_type])]
+        cn_type: [list(task) for task in list(task_state.get_cn_tasks_for_channel(flags.cn_structural).get(cn_type, []))]
         for cn_type in flags.cn_structural_types
     }
 
@@ -696,7 +710,8 @@ def preprocess_contextual_controlnets(task_state, contextual_assets=None):
             task_state.set_cn_tasks(cn_type, [])
             return
 
-        for slot_index, task in enumerate(tasks, start=1):
+        for ordinal, task in enumerate(tasks):
+            slot_index = int(task[4]) if len(task) >= 5 else ordinal
             raw_img, cn_stop, cn_weight = task[:3]
             cn_img = _unpack_cn_image(raw_img, cn_type)
             if cn_img is None:
@@ -739,13 +754,11 @@ def preprocess_contextual_controlnets(task_state, contextual_assets=None):
         contextual_ip_adapter.apply_contextual_residency('destroy')
         pulid_runtime.apply_contextual_residency('destroy')
 
-    all_contextual_tasks = []
-    for cn_type in [flags.cn_ip]:
-        all_contextual_tasks.extend(list(task_state.cn_tasks[cn_type]))
-
-    pulid_tasks = list(task_state.cn_tasks[flags.cn_pulid])
+    planned_contextual = task_state.get_cn_tasks_for_channel(flags.cn_contextual)
+    all_contextual_tasks = list(planned_contextual.get(flags.cn_ip, []))
+    pulid_tasks = list(planned_contextual.get(flags.cn_pulid, []))
     task_state.prepared_contextual_cn_tasks = {
-        cn_type: [list(task) for task in list(task_state.cn_tasks[cn_type])]
+        cn_type: [list(task) for task in list(task_state.get_cn_tasks_for_channel(flags.cn_contextual).get(cn_type, []))]
         for cn_type in flags.cn_contextual_types
     }
 

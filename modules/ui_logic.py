@@ -7,7 +7,6 @@ import os
 import json
 import html
 import time
-import types
 import numpy as np
 import shared
 import modules.config
@@ -39,7 +38,8 @@ from modules.sdxl_styles import legal_style_names
 from modules.private_logger import get_current_html_path
 from modules.ui_gradio_extensions import javascript_html, css_html
 from modules.auth import auth_enabled, check_auth
-from modules.route_intent import normalize_current_tab, resolve_route_intent
+from modules.route_intent import normalize_current_tab
+from modules.pipeline.workflow_legacy_adapter import capture_workflow_selection
 from modules.util import is_json
 CompletedTaskRecord = runtime_surface_state.CompletedTaskRecord
 completed_tasks_history = runtime_surface_state.completed_tasks_history
@@ -1386,16 +1386,18 @@ def get_tasks(*args):
     task_args['generate_image_grid'] = False
     task_args['current_tab'] = normalize_current_tab(task_args.get('current_tab'))
 
-    submit_snapshot = types.SimpleNamespace(**task_args, goals=[], cn_tasks={})
-    requested_intent = resolve_route_intent(submit_snapshot)
-    task_args['requested_route_id'] = requested_intent.route_id
-    task_args['requested_route_family'] = requested_intent.route_family
+    # Freeze the selected UI surface only.  The complete route and ControlNet
+    # overlay are compiled after AsyncTask has parsed the raw CN slots; doing
+    # route inference here would observe an intentionally empty CN map.
+    workflow_selection = capture_workflow_selection(task_args, queue_capture=True)
+    task_args['workflow_selection'] = workflow_selection
+    task_args['requested_source_surface'] = workflow_selection.source_surface
 
     frozen_goals = []
-    if requested_intent.route_id in {'removal', 'flux_removal'}:
-        if bool(task_args.get('remove_bg_enabled', False)):
+    if workflow_selection.source_surface == 'removal':
+        if workflow_selection.remove_background:
             frozen_goals.append(flags.remove_bg)
-        if bool(task_args.get('remove_obj_enabled', False)):
+        if workflow_selection.remove_object:
             frozen_goals.append(flags.remove_obj)
     task_args['goals'] = frozen_goals
 

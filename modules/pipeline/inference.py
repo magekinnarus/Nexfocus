@@ -12,6 +12,7 @@ import backend.loader as loader
 from backend import sdxl_runtime_policy
 from modules.util import get_file_from_folder_list
 from modules.pipeline.output import save_and_log, yield_result
+from modules.pipeline.workflow_contracts import require_workflow_plan
 
 
 def _is_debug_console_logging_enabled() -> bool:
@@ -385,10 +386,13 @@ def resolve_unified_sdxl_process_key(task_state, *, loras=None, base_model_addit
 def _build_unified_spatial_kwargs(task_state, image_input_result=None):
     image_input_result = image_input_result or {}
     resolved_spatial_context = getattr(task_state, 'inpaint_context', None)
-    goals = set(getattr(task_state, 'goals', []) or [])
-    if 'outpaint' in goals:
+    plan = require_workflow_plan(task_state)
+    def _first(value, fallback):
+        return fallback if value is None else value
+
+    if plan.route_id == 'outpaint':
         return {
-            'source_pixels': image_input_result.get('outpaint_image'),
+            'source_pixels': _first(image_input_result.get('outpaint_image'), getattr(task_state, 'outpaint_input_image', None)),
             'source_mask': image_input_result.get('outpaint_mask'),
             'spatial_mode': 'outpaint',
             'resolved_spatial_context': resolved_spatial_context,
@@ -396,12 +400,12 @@ def _build_unified_spatial_kwargs(task_state, image_input_result=None):
             'outpaint_expansion_size': int(getattr(task_state, 'inpaint_outpaint_expansion_size', 384) or 384),
             'outpaint_pixelate': bool(getattr(task_state, 'inpaint_pixelate_primer', True)),
         }
-    if 'inpaint' in goals:
+    if plan.route_id == 'inpaint':
         source_mask = getattr(task_state, 'context_mask', None)
         if source_mask is None:
             source_mask = image_input_result.get('inpaint_mask')
         return {
-            'source_pixels': image_input_result.get('inpaint_image'),
+            'source_pixels': _first(image_input_result.get('inpaint_image'), getattr(task_state, 'inpaint_input_image', None)),
             'source_mask': source_mask,
             'spatial_mode': 'inpaint',
             'resolved_spatial_context': resolved_spatial_context,
@@ -429,8 +433,33 @@ def _run_unified_sdxl_task(
     from backend.sdxl_unified_runtime import UnifiedSDXLRuntime, UnifiedSDXLRuntimeConfig
     from backend.sdxl_streaming_runtime import SDXLStreamingRuntime
     from backend.staging_manager import ExecutionClass, SDXL_RESIDENT_EXECUTION_CLASSES
-
     policy = getattr(task_state, 'sdxl_execution_policy', None)
+    workflow_plan = require_workflow_plan(task_state)
+    active_structural_types = {
+        item.control_type for item in workflow_plan.controlnet_overlay.structural_descriptors
+    }
+    active_contextual_types = {
+        item.control_type for item in workflow_plan.controlnet_overlay.contextual_descriptors
+    }
+    prepared_structural = getattr(task_state, 'prepared_structural_cn_tasks', {}) or {}
+    prepared_contextual = getattr(task_state, 'prepared_contextual_cn_tasks', {}) or {}
+    planned_controlnet_paths = {
+        cn_type: path for cn_type, path in (controlnet_paths or {}).items()
+        if cn_type in active_structural_types
+    }
+    planned_contextual_assets = dict(contextual_assets or {})
+    planned_contextual_assets['contextual_model_paths'] = {
+        cn_type: path
+        for cn_type, path in (planned_contextual_assets.get('contextual_model_paths') or {}).items()
+        if cn_type in active_contextual_types
+    }
+    if flags.cn_ip not in active_contextual_types:
+        planned_contextual_assets['clip_vision_path'] = None
+        planned_contextual_assets['ip_negative_path'] = None
+    if flags.cn_pulid not in active_contextual_types:
+        planned_contextual_assets['eva_clip_path'] = None
+        planned_contextual_assets['insightface_model_names'] = []
+
     checkpoint_path = _ensure_supported_unified_runtime_request(task_state)
     stream_budget = float(getattr(policy, 'stream_budget_mb', 256.0))
 
@@ -480,17 +509,19 @@ def _run_unified_sdxl_task(
         lora_specs=merged_loras,
         structural_tasks={
             cn_type: tuple(tuple(task) for task in list(tasks))
-            for cn_type, tasks in (getattr(task_state, 'prepared_structural_cn_tasks', {}) or {}).items()
+            for cn_type, tasks in prepared_structural.items()
+            if cn_type in active_structural_types
             if tasks
         },
-        controlnet_paths=dict(controlnet_paths or {}),
+        controlnet_paths=planned_controlnet_paths,
         controlnet_quality=quality,
         contextual_tasks={
             cn_type: tuple(tuple(task) for task in list(tasks))
-            for cn_type, tasks in (getattr(task_state, 'prepared_contextual_cn_tasks', {}) or {}).items()
+            for cn_type, tasks in prepared_contextual.items()
+            if cn_type in active_contextual_types
             if tasks
         },
-        contextual_assets=dict(contextual_assets or {}),
+        contextual_assets=planned_contextual_assets,
         runtime_policy=policy,
         initial_latent=getattr(task_state, 'initial_latent', None),
         disable_initial_latent=bool(getattr(task_state, 'inpaint_disable_initial_latent', False)),
@@ -515,27 +546,23 @@ def _run_unified_sdxl_task(
         runtime = SDXLStreamingRuntime(UnifiedSDXLRuntimeConfig(**config_kwargs))
     try:
         prepared_inputs, _ = runtime.prepare_inputs()
-        active_process_key = resolve_unified_sdxl_process_key(
+        from backend import process_transition
+
+        policy = getattr(task_state, 'sdxl_execution_policy', None)
+        execution_mode = getattr(policy, 'execution_mode', None)
+        process_transition.publish_sdxl_runtime(
             task_state,
+            workflow_plan=workflow_plan,
             loras=loras,
             base_model_additional_loras=base_model_additional_loras,
+            runtime_posture="legacy",
+            route_owner=(
+                getattr(task_state, 'runtime_route_id', None)
+                or getattr(task_state, 'runtime_route_family', None)
+                or workflow_plan.route_id
+            ),
+            safe_to_retain=(execution_mode == 'resident'),
         )
-        if active_process_key is not None:
-            from backend import process_transition
-
-            policy = getattr(task_state, 'sdxl_execution_policy', None)
-            execution_mode = getattr(policy, 'execution_mode', None)
-            process_transition.set_active_runtime(
-                family=process_transition.PROCESS_FAMILY_SDXL,
-                key=active_process_key,
-                route_owner=(
-                    getattr(task_state, 'runtime_route_id', None)
-                    or getattr(task_state, 'runtime_route_family', None)
-                    or getattr(active_process_key, 'route_family', None)
-                    or 'sdxl'
-                ),
-                safe_to_retain=(execution_mode == 'resident'),
-            )
 
         preview_transform = None
         if not getattr(task_state, 'disable_preview', False):
@@ -581,10 +608,14 @@ def _prepare_gpu_text_legacy_bypass_transition(
     ):
         return None
 
-    legacy_key = resolve_unified_sdxl_process_key(
+    workflow_plan = require_workflow_plan(task_state)
+    legacy_key = process_transition.resolve_sdxl_process_key(
         task_state,
+        workflow_plan=workflow_plan,
         loras=loras,
         base_model_additional_loras=base_model_additional_loras,
+        runtime_posture="legacy",
+        allow_legacy_adapter=False,
     )
     if legacy_key is None:
         raise RuntimeError(

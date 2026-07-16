@@ -5,7 +5,13 @@ from threading import RLock
 from typing import Any, Optional
 
 from modules.flux_fill_surface import OBJR_ENGINE_FLUX_FILL, normalize_objr_engine
-from modules.route_intent import resolve_route_intent
+from modules.pipeline.workflow_contracts import (
+    MAIN_FAMILY_FLUX_FILL,
+    MAIN_FAMILY_SDXL,
+    FrozenWorkflowPlan,
+    require_workflow_plan,
+)
+from modules.pipeline.workflow_legacy_adapter import bind_legacy_workflow_plan
 
 
 PROCESS_FAMILY_SDXL = "sdxl"
@@ -110,6 +116,9 @@ class ProcessKey:
     execution_family: Optional[str] = None
     residency_class: Optional[str] = None
     route_family: Optional[str] = None
+    # Layer 1 composition identity.  This is populated from the frozen plan;
+    # inactive raw slots are therefore absent by construction.
+    composition_identity: Any = None
 
     def normalized(self) -> "ProcessKey":
         return ProcessKey(
@@ -119,6 +128,7 @@ class ProcessKey:
             execution_family=self.execution_family if self.execution_family is None else str(self.execution_family),
             residency_class=self.residency_class if self.residency_class is None else str(self.residency_class),
             route_family=self.route_family if self.route_family is None else str(self.route_family),
+            composition_identity=self.composition_identity,
         )
 
 
@@ -236,6 +246,8 @@ class SharedProcessRegistry:
             # A posture boundary is structural even when the same request also
             # changes its LoRA stack. Never let LoRA-only reuse mask release.
             reason = "residency_class_change"
+        elif current.composition_identity != requested.composition_identity:
+            reason = "workflow_composition_change"
         elif current.authoritative_identity != requested.authoritative_identity:
             is_same_base_components = False
             if current.family == PROCESS_FAMILY_SDXL and requested.family == PROCESS_FAMILY_SDXL:
@@ -335,6 +347,7 @@ def build_process_key(
     execution_family: Any = None,
     residency_class: Any = None,
     route_family: Any = None,
+    composition_identity: Any = None,
 ) -> ProcessKey:
     resolved_family = normalize_process_family(family)
     resolved_process_class = resolve_process_class(
@@ -350,6 +363,7 @@ def build_process_key(
         execution_family=None if execution_family is None else str(execution_family),
         residency_class=None if residency_class is None else str(residency_class),
         route_family=None if route_family is None else str(route_family),
+        composition_identity=composition_identity,
     )
 
 
@@ -359,7 +373,8 @@ def describe_process_key(key: ProcessKey | None) -> str:
     return (
         f"family={key.family} "
         f"class={key.process_class} "
-        f"identity={key.authoritative_identity!r}"
+        f"identity={key.authoritative_identity!r} "
+        f"composition={key.composition_identity!r}"
     )
 
 
@@ -498,14 +513,17 @@ def log_stage_telemetry(
 
 def resolve_preflight_additional_loras(task_state) -> list:
     additional_loras = []
-    route_intent = resolve_route_intent(task_state)
+    try:
+        workflow_plan = require_workflow_plan(task_state)
+    except (RuntimeError, ValueError):
+        workflow_plan = bind_legacy_workflow_plan(task_state)
 
     # 1. Inpaint / Outpaint patch LoRA
     try:
         from modules import flags, config
-        is_outpaint = route_intent.wants_outpaint
-        is_inpaint = route_intent.wants_inpaint
-        use_flux_fill_inpaint = route_intent.wants_flux_inpaint
+        is_outpaint = workflow_plan.route_id == "outpaint"
+        is_inpaint = workflow_plan.route_id == "inpaint"
+        use_flux_fill_inpaint = workflow_plan.route_id == "flux_inpaint"
 
         if (is_outpaint or is_inpaint) and not use_flux_fill_inpaint:
             engine = getattr(task_state, 'outpaint_engine', 'None') if is_outpaint else getattr(task_state, 'inpaint_engine', 'None')
@@ -519,21 +537,89 @@ def resolve_preflight_additional_loras(task_state) -> list:
     return additional_loras
 
 
-def resolve_sdxl_process_key(task_state) -> ProcessKey | None:
+def resolve_sdxl_process_key(
+    task_state,
+    *,
+    workflow_plan: FrozenWorkflowPlan | None = None,
+    loras=None,
+    base_model_additional_loras=None,
+    runtime_posture: str = "selected",
+    allow_legacy_adapter: bool = True,
+) -> ProcessKey | None:
+    """Resolve one plan-aware SDXL identity for every registration path."""
     from modules.pipeline.inference import resolve_unified_sdxl_process_key
+
+    plan = workflow_plan
+    if plan is None:
+        try:
+            plan = require_workflow_plan(task_state)
+        except (RuntimeError, ValueError):
+            if not allow_legacy_adapter:
+                raise
+            plan = bind_legacy_workflow_plan(task_state)
+    plan.validate()
+    if plan.execution_declaration.main_family != MAIN_FAMILY_SDXL:
+        return None
 
     key = resolve_unified_sdxl_process_key(
         task_state,
-        loras=getattr(task_state, 'loras', []) or [],
-        base_model_additional_loras=getattr(task_state, 'base_model_additional_loras', []) or [],
+        loras=(getattr(task_state, 'loras', []) or []) if loras is None else loras,
+        base_model_additional_loras=(
+            getattr(task_state, 'base_model_additional_loras', []) or []
+            if base_model_additional_loras is None
+            else base_model_additional_loras
+        ),
     )
+    composition_identity = plan.identity()
+
     posture = str(getattr(task_state, 'sdxl_assembly_posture', 'auto') or 'auto')
     posture = posture.strip().lower().replace('-', '_').replace(' ', '_')
-    if key is not None and posture == 'gpu_text':
+    if key is not None and runtime_posture == 'selected' and posture == 'gpu_text':
         # The assembly selector, not the legacy runtime policy, owns this
         # composition identity. Publishing it on the process key ensures that
         # CPU-text <-> GPU-text switches cross a lifecycle boundary.
-        return replace(key, residency_class='resident_unet_gpu_text')
+        return replace(
+            key,
+            residency_class='resident_unet_gpu_text',
+            composition_identity=composition_identity,
+        )
+    return replace(key, composition_identity=composition_identity) if key is not None else None
+
+
+def publish_sdxl_runtime(
+    task_state,
+    *,
+    workflow_plan: FrozenWorkflowPlan | None = None,
+    process_key: ProcessKey | None = None,
+    loras=None,
+    base_model_additional_loras=None,
+    runtime_posture: str = "selected",
+    route_owner: str | None = None,
+    safe_to_retain: bool = False,
+) -> ProcessKey | None:
+    """Single authoritative active-runtime publication path for SDXL."""
+    plan = workflow_plan or require_workflow_plan(task_state)
+    key = process_key
+    if key is None:
+        key = resolve_sdxl_process_key(
+            task_state,
+            workflow_plan=plan,
+            loras=loras,
+            base_model_additional_loras=base_model_additional_loras,
+            runtime_posture=runtime_posture,
+            allow_legacy_adapter=False,
+        )
+    elif key.family != PROCESS_FAMILY_SDXL:
+        raise ValueError(f"Cannot publish non-SDXL process key through SDXL publisher: {key.family!r}")
+    else:
+        key = replace(key, composition_identity=plan.identity())
+    if key is not None:
+        set_active_runtime(
+            family=PROCESS_FAMILY_SDXL,
+            key=key,
+            route_owner=route_owner or plan.route_id,
+            safe_to_retain=safe_to_retain,
+        )
     return key
 
 
@@ -548,6 +634,13 @@ def resolve_flux_fill_process_key(
 
 
 def _is_auxiliary_only_route(route, task_state) -> bool:
+    plan = None
+    try:
+        plan = require_workflow_plan(task_state)
+        return plan.execution_declaration.auxiliary_only
+    except (RuntimeError, ValueError):
+        # Explicit compatibility path for pre-W12 direct probes.
+        pass
     route_id = str(getattr(route, 'route_id', '') or '').strip().lower()
     selected_engine = normalize_objr_engine(getattr(task_state, 'objr_engine', None))
 
@@ -559,6 +652,32 @@ def _is_auxiliary_only_route(route, task_state) -> bool:
 
 
 def resolve_requested_process_key(task_state, route) -> ProcessKey | None:
+    try:
+        plan = require_workflow_plan(task_state)
+    except (RuntimeError, ValueError):
+        plan = None
+
+    if plan is not None:
+        declaration = plan.execution_declaration
+        if declaration.main_family == MAIN_FAMILY_FLUX_FILL:
+            return resolve_flux_fill_process_key(
+                task_state,
+                route_family=plan.route_family,
+                selected_engine=normalize_objr_engine(getattr(task_state, 'objr_engine', None)),
+            )
+        if declaration.auxiliary_only:
+            return get_active_process_key()
+        if declaration.main_family == MAIN_FAMILY_SDXL:
+            if getattr(task_state.sdxl_execution_policy, 'enabled', False):
+                return resolve_sdxl_process_key(
+                    task_state,
+                    workflow_plan=plan,
+                    allow_legacy_adapter=False,
+                )
+            return None
+
+    # Named pre-W12 compatibility behavior. Queued production tasks always
+    # carry a plan and return above.
     selected_engine = normalize_objr_engine(getattr(task_state, 'objr_engine', None))
     route_id = str(getattr(route, 'route_id', '') or '').strip().lower()
     expects_flux_process = (
@@ -718,22 +837,42 @@ def sync_route_process_activation(route, task_state, requested_process_key: Proc
         # own route-owned identity.
         return None
 
-    if route.family == "flux_fill":
+    plan = None
+    try:
+        plan = require_workflow_plan(task_state)
+        main_family = plan.execution_declaration.main_family
+    except (RuntimeError, ValueError):
+        main_family = None
+
+    if main_family == MAIN_FAMILY_FLUX_FILL or (main_family is None and route.family == "flux_fill"):
         from backend.flux_fill_v3 import sync_flux_fill_process_activation
         return sync_flux_fill_process_activation(route, task_state, requested_process_key)
 
-    elif route.family == "sdxl" or getattr(task_state.sdxl_execution_policy, "enabled", False):
+    elif main_family == MAIN_FAMILY_SDXL or (
+        main_family is None
+        and (route.family == "sdxl" or getattr(task_state.sdxl_execution_policy, "enabled", False))
+    ):
         if requested_process_key is not None and requested_process_key.family == PROCESS_FAMILY_SDXL:
             policy = getattr(task_state, 'sdxl_execution_policy', None)
             execution_mode = getattr(policy, 'execution_mode', None)
             safe_to_retain = (execution_mode == 'resident')
 
-            set_active_runtime(
-                family=PROCESS_FAMILY_SDXL,
-                key=requested_process_key,
-                route_owner=route.route_id,
-                safe_to_retain=safe_to_retain
-            )
+            if plan is None:
+                # Named pre-W12 direct-probe compatibility path.
+                set_active_runtime(
+                    family=PROCESS_FAMILY_SDXL,
+                    key=requested_process_key,
+                    route_owner=route.route_id,
+                    safe_to_retain=safe_to_retain,
+                )
+            else:
+                publish_sdxl_runtime(
+                    task_state,
+                    workflow_plan=plan,
+                    process_key=requested_process_key,
+                    route_owner=route.route_id,
+                    safe_to_retain=safe_to_retain,
+                )
         else:
             clear_active_runtime()
         return None

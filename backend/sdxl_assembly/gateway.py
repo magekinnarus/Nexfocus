@@ -11,6 +11,7 @@ from backend.sdxl_assembly.request_builder import determine_eligibility, build_a
 from backend.sdxl_assembly.director import SDXLAssemblyDirector
 from backend.sdxl_assembly.progress import SDXLAssemblyProgressCallback
 from backend.sdxl_assembly.lifecycle_coordinator import release_for_changes, LifecycleChange
+from modules.pipeline.workflow_contracts import require_workflow_plan
 
 logger = logging.getLogger(__name__)
 
@@ -176,12 +177,18 @@ def is_eligible_for_sdxl_assembly(
     image_input_result: Optional[Dict[str, Any]] = None,
 ) -> Tuple[bool, Optional[str]]:
     """Gateway check to determine if a request should go to the new assembly lane or old path."""
+    try:
+        workflow_plan = require_workflow_plan(task_state)
+    except (RuntimeError, ValueError) as exc:
+        return False, f"Invalid frozen workflow plan: {exc}"
     return determine_eligibility(
         task_state=task_state,
         loras=loras,
         controlnet_paths=controlnet_paths,
         contextual_assets=contextual_assets,
         image_input_result=image_input_result,
+        workflow_plan=workflow_plan,
+        allow_legacy_adapter=False,
     )
 
 _LAST_REQUEST_STATE: Optional[_GatewayRequestState] = None
@@ -214,6 +221,8 @@ def run_sdxl_assembly_task(
     import psutil
     import torch
 
+    workflow_plan = require_workflow_plan(task_state)
+
     # 1. Build frozen request
     try:
         request = build_assembly_request(
@@ -230,6 +239,8 @@ def run_sdxl_assembly_task(
             contextual_assets=contextual_assets,
             base_model_additional_loras=base_model_additional_loras,
             image_input_result=image_input_result,
+            workflow_plan=workflow_plan,
+            allow_legacy_adapter=False,
         )
     except resources.InterruptProcessingException:
         raise

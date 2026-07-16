@@ -12,7 +12,7 @@ from backend import environment_profile as environment_profiles
 from backend import sdxl_runtime_policy
 import modules.flags as flags
 from modules.util import HWC3
-from modules.route_intent import resolve_route_intent
+from modules.pipeline.workflow_contracts import FrozenWorkflowPlan, require_workflow_plan
 from modules.pipeline.stage_runtime import (
     PipelineResourceRequirement,
     PipelineRoute,
@@ -75,31 +75,6 @@ def _mask_fill_ratio(mask) -> float | None:
     if mask_np.ndim != 2:
         return None
     return float(np.count_nonzero(mask_np > 127)) / float(mask_np.size)
-
-
-def _expects_controlnet_extension(task_state) -> bool:
-    return resolve_route_intent(task_state).expects_controlnet
-
-
-def _has_outpaint_request(task_state) -> bool:
-    return resolve_route_intent(task_state).wants_outpaint
-
-
-def _has_inpaint_request(task_state) -> bool:
-    intent = resolve_route_intent(task_state)
-    return intent.wants_inpaint and not intent.wants_flux_inpaint
-
-
-def _is_flux_fill_inpaint_request(task_state) -> bool:
-    return resolve_route_intent(task_state).wants_flux_inpaint
-
-
-def _is_upscale_request(task_state) -> bool:
-    return resolve_route_intent(task_state).wants_upscale
-
-
-
-
 
 
 def describe_route(route: PipelineRoute) -> list[str]:
@@ -347,7 +322,7 @@ class ControlNetSupportLoadStage(PipelineStage):
         from modules.pipeline.image_input import load_controlnet_support_models
 
         task_state = context.task_state
-        if not task_state.input_image_checkbox:
+        if not context.has_controlnet_overlay():
             return PipelineStageResult()
 
         task_state.current_progress = max(task_state.current_progress, 1)
@@ -551,7 +526,7 @@ class StructuralControlNetStage(PipelineStage):
         from modules.pipeline.image_input import preprocess_structural_controlnets
         from backend.sdxl_assembly.gateway import is_eligible_for_sdxl_assembly
 
-        if not context.has_goal('cn'):
+        if not context.has_controlnet_overlay():
             return PipelineStageResult(notes={'status': 'skipped'})
 
         structural_tasks = context.task_state.get_cn_tasks_for_channel(flags.cn_structural)
@@ -611,7 +586,7 @@ class ContextualControlNetStage(PipelineStage):
         from modules.pipeline.image_input import preprocess_contextual_controlnets
         from backend.sdxl_assembly.gateway import is_eligible_for_sdxl_assembly
 
-        if not context.has_goal('cn'):
+        if not context.has_controlnet_overlay():
             return PipelineStageResult(notes={'status': 'skipped'})
 
         contextual_tasks = context.task_state.get_cn_tasks_for_channel(flags.cn_contextual)
@@ -1413,88 +1388,56 @@ class RemovalStage(PipelineStage):
             resources.end_memory_phase('removal', notes={'completed': True})
 
 
-def build_generation_route(task_state) -> PipelineRoute:
-    intent = resolve_route_intent(task_state)
-    expects_controlnet = intent.expects_controlnet
+def build_generation_route_from_plan(plan: FrozenWorkflowPlan) -> PipelineRoute:
+    """Build the exact route/stage sequence from immutable Layer 1 truth."""
+    if not isinstance(plan, FrozenWorkflowPlan):
+        raise TypeError("build_generation_route_from_plan requires FrozenWorkflowPlan")
+    plan.validate()
+    route_id = plan.route_id
+    family = plan.route_family
 
-    if intent.wants_removal:
-        if intent.route_id == 'flux_removal':
-            return PipelineRoute(
-                route_id='flux_removal',
-                family='flux_fill',
-                display_name='Flux Remove',
-                stages=[RemovalStage()],
-            )
-        else:
-            return PipelineRoute(
-                route_id='removal',
-                family='removal',
-                display_name='Removal',
-                stages=[RemovalStage()],
-            )
+    stage_factories = {
+        'image_input_prepare': ImageInputPreparationStage,
+        'controlnet_support_load': ControlNetSupportLoadStage,
+        'inpaint_prepare': InpaintPreparationStage,
+        'outpaint_prepare': OutpaintPreparationStage,
+        'prompt_encode': PromptEncodingStage,
+        'structural_controlnet': StructuralControlNetStage,
+        'contextual_controlnet': ContextualControlNetStage,
+        'diffusion_batch': DiffusionTaskStage,
+        'flux_inpaint': FluxFillInpaintStage,
+        'removal': RemovalStage,
+        'color_enhanced_upscale': ColorEnhancedUpscaleStage,
+        'upscale': UpscaleStage,
+    }
+    try:
+        stages = [stage_factories[stage_id]() for stage_id in plan.ordered_stage_ids]
+    except KeyError as exc:
+        raise ValueError(f"Frozen workflow plan contains an unknown stage: {exc.args[0]}") from exc
 
-    if intent.wants_upscale:
-        route_id = intent.route_id
-        if route_id == 'color_enhanced_upscale':
-            return PipelineRoute(
-                route_id='color_enhanced_upscale',
-                family='upscale',
-                display_name='Color Enhancement',
-                stages=[ImageInputPreparationStage(), ColorEnhancedUpscaleStage()],
-            )
-        else:
-            return PipelineRoute(
-                route_id=route_id,
-                family='upscale',
-                display_name='Upscale',
-                stages=[ImageInputPreparationStage(), PromptEncodingStage(), UpscaleStage()],
-            )
-
-    if intent.wants_outpaint:
-        stages: list[PipelineStage] = [ImageInputPreparationStage(), ControlNetSupportLoadStage(), OutpaintPreparationStage(), PromptEncodingStage()]
-        if expects_controlnet:
-            stages.extend([StructuralControlNetStage(), ContextualControlNetStage()])
-        stages.append(DiffusionTaskStage())
-        return PipelineRoute(
-            route_id='outpaint',
-            family='image_input',
-            display_name='Outpaint',
-            stages=stages,
-        )
-
-    if intent.wants_flux_inpaint:
-        stages = [ImageInputPreparationStage(), FluxFillInpaintStage()]
-        return PipelineRoute(
-            route_id='flux_inpaint',
-            family='flux_fill',
-            display_name='Flux Inpaint',
-            stages=stages,
-        )
-
-    if intent.wants_inpaint:
-        stages = [ImageInputPreparationStage(), ControlNetSupportLoadStage(), InpaintPreparationStage(), PromptEncodingStage()]
-        if expects_controlnet:
-            stages.extend([StructuralControlNetStage(), ContextualControlNetStage()])
-        stages.append(DiffusionTaskStage())
-        return PipelineRoute(
-            route_id='inpaint',
-            family='image_input',
-            display_name='Inpaint',
-            stages=stages,
-        )
-
-    stages = []
-    if intent.expects_controlnet:
-        stages.append(ImageInputPreparationStage())
-    if intent.expects_controlnet:
-        stages.append(ControlNetSupportLoadStage())
-    stages.append(PromptEncodingStage())
-    if expects_controlnet:
-        stages.extend([StructuralControlNetStage(), ContextualControlNetStage()])
-    stages.append(DiffusionTaskStage())
+    display_names = {
+        'txt2img': 'Txt2Img',
+        'inpaint': 'Inpaint',
+        'outpaint': 'Outpaint',
+        'flux_inpaint': 'Flux Inpaint',
+        'removal': 'Removal',
+        'flux_removal': 'Flux Remove',
+        'upscale': 'Upscale',
+        'super_upscale': 'Upscale',
+        'color_enhanced_upscale': 'Color Enhancement',
+    }
     return PipelineRoute(
-        route_id='txt2img',
-        family='txt2img',
-        display_name='Txt2Img',
+        route_id=route_id,
+        family=family,
+        display_name=display_names.get(route_id, route_id),
         stages=stages,
+        notes={
+            'workflow_plan': dict(plan.telemetry_record()),
+            'ordered_stage_ids': tuple(plan.ordered_stage_ids),
+        },
     )
+
+
+def build_generation_route(task_state) -> PipelineRoute:
+    """Task-shell bridge that requires an already-bound queue plan."""
+    return build_generation_route_from_plan(require_workflow_plan(task_state))

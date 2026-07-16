@@ -139,9 +139,13 @@ def _resolve_tiled_prompt_blueprint(task_state, prompt_task=None):
 
 def should_retain_sdxl_warm_state(task_state) -> bool:
     from backend import process_transition
-    from modules.pipeline.inference import resolve_unified_sdxl_process_key
+    from modules.pipeline.workflow_contracts import require_workflow_plan
 
-    requested_key = resolve_unified_sdxl_process_key(task_state)
+    requested_key = process_transition.resolve_sdxl_process_key(
+        task_state,
+        workflow_plan=require_workflow_plan(task_state),
+        allow_legacy_adapter=False,
+    )
     if requested_key is None:
         return False
 
@@ -151,18 +155,16 @@ def should_retain_sdxl_warm_state(task_state) -> bool:
 
 def _register_active_unified_sdxl_process(task_state) -> None:
     from backend import process_transition
-    from modules.pipeline.inference import resolve_unified_sdxl_process_key
+    from modules.pipeline.workflow_contracts import require_workflow_plan
 
-    active_process_key = resolve_unified_sdxl_process_key(task_state)
-    if active_process_key is not None:
-        policy = getattr(task_state, 'sdxl_execution_policy', None)
-        execution_mode = getattr(policy, 'execution_mode', None)
-        process_transition.set_active_runtime(
-            family=process_transition.PROCESS_FAMILY_SDXL,
-            key=active_process_key,
-            route_owner=getattr(task_state, 'runtime_route_id', None) or 'super_upscale',
-            safe_to_retain=(execution_mode == 'resident'),
-        )
+    policy = getattr(task_state, 'sdxl_execution_policy', None)
+    execution_mode = getattr(policy, 'execution_mode', None)
+    process_transition.publish_sdxl_runtime(
+        task_state,
+        workflow_plan=require_workflow_plan(task_state),
+        route_owner=getattr(task_state, 'runtime_route_id', None) or 'super_upscale',
+        safe_to_retain=(execution_mode == 'resident'),
+    )
 
 
 # Classified: Compatibility Bridge.

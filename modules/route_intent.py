@@ -85,9 +85,42 @@ class RouteIntent:
     mixed_outpaint_request: bool
     route_id: str
     route_family: str
+    source_surface: str = ""
+    overlay_activation_source: str = "none"
 
 
 def resolve_route_intent(state, *, prefer_runtime_route: bool = False) -> RouteIntent:
+    frozen_plan = getattr(state, "workflow_plan", None)
+    if frozen_plan is not None:
+        frozen_plan.validate()
+        route_id = str(frozen_plan.route_id)
+        route_family = str(frozen_plan.route_family)
+        source_surface = str(frozen_plan.source_surface)
+        overlay = frozen_plan.controlnet_overlay
+        active_slots = tuple(overlay.active_slot_descriptors)
+        wants_removal = route_id in {"removal", "flux_removal"}
+        wants_upscale = route_id in {"upscale", "super_upscale", "color_enhanced_upscale"}
+        wants_outpaint = route_id == "outpaint"
+        wants_flux_inpaint = route_id == "flux_inpaint"
+        wants_inpaint = route_id in {"inpaint", "flux_inpaint"}
+        return RouteIntent(
+            current_tab=source_surface,
+            input_image_active=source_surface in {"controlnet", "inpaint", "outpaint", "removal", "upscale", "super_upscale", "color_enhanced_upscale"},
+            has_controlnet_tasks=bool(active_slots),
+            expects_controlnet=bool(overlay.enabled),
+            wants_removal=wants_removal,
+            wants_upscale=wants_upscale,
+            wants_outpaint=wants_outpaint,
+            wants_inpaint=wants_inpaint,
+            wants_flux_inpaint=wants_flux_inpaint,
+            mixed_inpaint_request=overlay.activation_source == "inpaint_mixing",
+            mixed_outpaint_request=overlay.activation_source == "outpaint_mixing",
+            route_id=route_id,
+            route_family=route_family,
+            source_surface=source_surface,
+            overlay_activation_source=overlay.activation_source,
+        )
+
     current_tab = normalize_current_tab(getattr(state, "current_tab", ""))
     input_image_active = bool(getattr(state, "input_image_checkbox", False))
     has_controlnet_tasks = _has_controlnet_tasks(state)
@@ -211,4 +244,10 @@ def resolve_route_intent(state, *, prefer_runtime_route: bool = False) -> RouteI
         mixed_outpaint_request=mixed_outpaint_request,
         route_id=route_id,
         route_family=route_family,
+        source_surface="",
+        overlay_activation_source="none" if not expects_controlnet else (
+            "controlnet_tab" if current_tab in {"ip", "controlnet"} else
+            "inpaint_mixing" if mixed_inpaint_request else
+            "outpaint_mixing" if mixed_outpaint_request else "legacy"
+        ),
     )

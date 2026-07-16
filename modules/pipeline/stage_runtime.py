@@ -55,6 +55,7 @@ class PipelineRouteContext:
     task_state: Any
     route_id: str
     route_family: str
+    workflow_plan: Any = None
     execution_family: Optional[str] = None
     residency_class: Optional[str] = None
     sdxl_policy: Any = None
@@ -74,6 +75,10 @@ class PipelineRouteContext:
 
     def has_goal(self, goal: str) -> bool:
         return goal in self.task_state.goals
+
+    def has_controlnet_overlay(self) -> bool:
+        plan = self.workflow_plan or getattr(self.task_state, "workflow_plan", None)
+        return bool(plan is not None and plan.controlnet_overlay.enabled)
 
     def note_stage(
         self,
