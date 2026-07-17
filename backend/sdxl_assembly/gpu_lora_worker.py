@@ -1,13 +1,105 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
+
+import torch
+from safetensors import safe_open
+
 from backend.sdxl_assembly.contracts import SDXLAssemblyRequest
 from backend.sdxl_assembly.progress import log_telemetry
 from backend.cpu_compiler import SafeOpenHeaderOnly
 from backend import lora as backend_lora
 
 logger = logging.getLogger(__name__)
+
+
+class _ResidentLazyWeight:
+    def __init__(
+        self,
+        path: str,
+        key: str,
+        shape: list[int],
+        dtype: str,
+        *,
+        tensor_device: torch.device,
+        load_strategy: str = "safetensors",
+    ) -> None:
+        self.path = path
+        self.key = key
+        self.shape = list(shape)
+        self.dtype = str(dtype)
+        self._tensor_device = torch.device(tensor_device)
+        self._load_strategy = str(load_strategy)
+
+    @property
+    def ndim(self) -> int:
+        return len(self.shape)
+
+    def load(self) -> torch.Tensor:
+        if self._load_strategy == "safetensors":
+            with safe_open(self.path, framework="pt", device=str(self._tensor_device)) as handle:
+                return handle.get_tensor(self.key)
+        try:
+            sd = torch.load(self.path, map_location="cpu", weights_only=True)
+        except Exception:
+            sd = torch.load(self.path, map_location="cpu", weights_only=False)
+        if isinstance(sd, dict) and "state_dict" in sd:
+            sd = sd["state_dict"]
+        tensor = sd.get(self.key) if isinstance(sd, dict) else None
+        if not isinstance(tensor, torch.Tensor):
+            raise KeyError(f"Legacy tensor key {self.key!r} could not be reloaded from {self.path!r}.")
+        return tensor.to(device=self._tensor_device)
+
+    def item(self):
+        return self.load().item()
+
+
+class _ResidentSafeOpenHeaderOnly(dict):
+    def __init__(self, path: str, *, tensor_device: torch.device) -> None:
+        super().__init__()
+        self.path = path
+        self.tensor_device = torch.device(tensor_device)
+        try:
+            with safe_open(path, framework="pt", device="cpu") as handle:
+                for key in handle.keys():
+                    try:
+                        slice_view = handle.get_slice(key)
+                        shape = list(slice_view.get_shape())
+                        dtype = str(slice_view.get_dtype())
+                    except Exception:
+                        tensor = handle.get_tensor(key)
+                        shape = list(tensor.shape)
+                        dtype = str(tensor.dtype)
+                    self[key] = _ResidentLazyWeight(
+                        path,
+                        key,
+                        shape,
+                        dtype,
+                        tensor_device=self.tensor_device,
+                        load_strategy="safetensors",
+                    )
+        except Exception:
+            try:
+                sd = torch.load(path, map_location="cpu", weights_only=True)
+            except Exception:
+                sd = torch.load(path, map_location="cpu", weights_only=False)
+            if isinstance(sd, dict) and "state_dict" in sd:
+                sd = sd["state_dict"]
+            for key, tensor in sd.items():
+                if isinstance(tensor, torch.Tensor):
+                    self[key] = _ResidentLazyWeight(
+                        path,
+                        key,
+                        list(tensor.shape),
+                        str(tensor.dtype),
+                        tensor_device=self.tensor_device,
+                        load_strategy="torch_load",
+                    )
+                else:
+                    self[key] = tensor
+
 
 class GpuLoraWorker:
     """Worker representing GpuLoraWorker (materializes patches directly in GPU VRAM)."""
@@ -38,6 +130,17 @@ class GpuLoraWorker:
             }
         return self
 
+    def _open_unet_lora_header(self, lora_path: str):
+        if os.path.isfile(lora_path):
+            try:
+                return _ResidentSafeOpenHeaderOnly(
+                    lora_path,
+                    tensor_device=torch.device(self.request.device),
+                )
+            except Exception:
+                logger.debug("Falling back to shared LoRA header loader for %s.", lora_path, exc_info=True)
+        return SafeOpenHeaderOnly(lora_path)
+
     def apply_unet_patches(self, unet: Any) -> int:
         """Parses and applies UNet-side patches to the model patcher."""
         active_specs = [
@@ -58,7 +161,7 @@ class GpuLoraWorker:
         for spec in active_specs:
             lora_path = str(spec.file_identity.path)
             log_telemetry("resident_lora_parse", f"target=unet path={spec.file_identity.path.name}")
-            header = SafeOpenHeaderOnly(lora_path)
+            header = self._open_unet_lora_header(lora_path)
             patch_dict = backend_lora.load_lora(header, key_map, log_missing=False)
             if patch_dict is None:
                 patch_dict = {}

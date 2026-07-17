@@ -310,6 +310,47 @@ def test_resident_unet_lora_lifecycle(monkeypatch):
     assert len(gpu_compile_calls) == 2
 
 
+def test_gpu_lora_worker_uses_resident_safe_header_for_existing_unet_lora(monkeypatch, tmp_path):
+    lora_path = tmp_path / "resident_unet_lora.safetensors"
+    lora_path.write_bytes(b"placeholder")
+
+    spec = SDXLLoraSpec(
+        file_identity=ResolvedFileIdentity(
+            path=lora_path,
+            sha256="resident_hash",
+            size_bytes=lora_path.stat().st_size,
+            modified_ns=lora_path.stat().st_mtime_ns,
+        ),
+        unet_weight=1.0,
+        clip_weight=0.0,
+    )
+    worker = GpuLoraWorker(_request(lora_specs=(spec,), lora_stack_hash="resident_stack"))
+    unet = FakePatcher("unet")
+
+    resident_calls = []
+    sentinel_header = {"resident": True}
+
+    def fake_resident_header(path, *, tensor_device):
+        resident_calls.append((path, tensor_device))
+        return sentinel_header
+
+    monkeypatch.setattr("backend.sdxl_assembly.gpu_lora_worker._ResidentSafeOpenHeaderOnly", fake_resident_header)
+    monkeypatch.setattr(
+        "backend.sdxl_assembly.gpu_lora_worker.SafeOpenHeaderOnly",
+        lambda path: pytest.fail(f"shared header loader should not be used for existing UNet LoRA: {path}"),
+    )
+    monkeypatch.setattr("backend.lora.model_lora_keys_unet", lambda m: {"param1": "param1"})
+    monkeypatch.setattr(
+        "backend.lora.load_lora",
+        lambda header, key_map, log_missing=False: {"param1": torch.ones(2, 2)} if header is sentinel_header else {},
+    )
+
+    patch_count = worker.apply_unet_patches(unet)
+
+    assert patch_count == 1
+    assert resident_calls == [(str(lora_path), torch.device("cpu"))]
+
+
 def test_coordination_invalidation_rules(monkeypatch):
     released_spines = []
 
