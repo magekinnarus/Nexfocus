@@ -337,6 +337,7 @@ class SDXLAssemblyRequest:
     sampler: str
     scheduler: str
     seed: int
+    original_scheduler_name: str = ""
     clip_layer: int = -2
     style_selections: Tuple[str, ...] = field(default_factory=tuple)
     prompt_payload_hash: str = ""

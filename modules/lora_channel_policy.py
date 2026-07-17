@@ -16,11 +16,22 @@ def normalize_lora_override_key(value: Any) -> str:
     return str(value or "").strip().replace("\\", "/").lower()
 
 
+def get_lora_basename(value: Any) -> str:
+    normalized = normalize_lora_override_key(value)
+    if not normalized:
+        return ""
+    return normalized.rsplit("/", 1)[-1]
+
+
+def is_preset_speed_lora(value: Any) -> bool:
+    return get_lora_basename(value) in PRESET_SPEED_LORAS
+
+
 def iter_lora_override_keys(value: Any) -> tuple[str, ...]:
     normalized = normalize_lora_override_key(value)
     if not normalized:
         return ()
-    basename = normalized.rsplit("/", 1)[-1]
+    basename = get_lora_basename(normalized)
     if basename == normalized:
         return (normalized,)
     return (normalized, basename)
@@ -34,7 +45,7 @@ def build_explicit_lora_channel_overrides(
         keys = iter_lora_override_keys(lora_path)
         if not keys:
             continue
-        if keys[-1] not in PRESET_SPEED_LORAS:
+        if not is_preset_speed_lora(lora_path):
             continue
         override = {
             "target": "unet_only",

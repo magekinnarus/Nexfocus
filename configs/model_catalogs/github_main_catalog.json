@@ -43,8 +43,8 @@
             "thumbnail_library_relative": "thumbnails/loras/sdxl/base/sdxl_base_lora_sdxl_lcm_lora.png",
             "source_provider": "github",
             "source_version_id": "support_models",
-            "visibility": "generic",
-            "preset_managed": false,
+            "visibility": "preset",
+            "preset_managed": true,
             "token_required": false,
             "source": {
                 "url": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/sdxl_lcm_lora.safetensors"
@@ -64,8 +64,8 @@
             "thumbnail_library_relative": "thumbnails/loras/sdxl/base/sdxl_base_lora_sdxl_lightning_8step_lora.png",
             "source_provider": "github",
             "source_version_id": "support_models",
-            "visibility": "generic",
-            "preset_managed": false,
+            "visibility": "preset",
+            "preset_managed": true,
             "token_required": false,
             "source": {
                 "url": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/sdxl_lightning_8step_lora.safetensors"

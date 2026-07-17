@@ -8,7 +8,10 @@ import torch
 
 from backend.sdxl_assembly.contracts import SDXLAssemblyRequest
 from backend.sdxl_assembly.progress import log_telemetry
-from backend.sdxl_assembly.runtime_state import acquire_resident_unet_component
+from backend.sdxl_assembly.runtime_state import (
+    acquire_resident_unet_component,
+    get_request_scheduler_name,
+)
 from backend.sdxl_assembly.gpu_lora_worker import GpuLoraWorker
 
 logger = logging.getLogger(__name__)
@@ -35,7 +38,7 @@ class ResidentUnetSpine:
                 self.unet = acquire_resident_unet_component(self.request)
 
                 # 2. Patch LCM scheduler if LCM.
-                orig_scheduler = self.request.scheduler
+                orig_scheduler = get_request_scheduler_name(self.request)
                 if orig_scheduler == 'lcm':
                     from modules import core as modules_core
                     self.unet = modules_core.opModelSamplingDiscrete.patch(self.unet, orig_scheduler, False)[0]

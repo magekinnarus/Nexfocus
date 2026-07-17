@@ -6,6 +6,7 @@ from fastapi import APIRouter, Body, File, Form, HTTPException, Query, UploadFil
 from fastapi.responses import FileResponse, JSONResponse
 
 import modules.model_taxonomy as model_taxonomy
+from modules.lora_channel_policy import is_preset_speed_lora
 from modules.model_download.policy import ModelDownloadPolicy
 from modules.model_download.resolver import CivitAIResolver, DirectResolver, GitHubResolver, HuggingFaceResolver
 from modules.model_download.transport import Aria2Transport
@@ -121,6 +122,23 @@ def _is_downloadable_browser_record(record) -> bool:
     return has_source_url and provider in {'civitai', 'huggingface', 'hf', 'github'}
 
 
+def _is_hidden_preset_speed_lora_record(record) -> bool:
+    entry = getattr(record, 'entry', None)
+    if entry is None or getattr(entry, 'model_type', None) != 'lora':
+        return False
+    selector = (
+        getattr(entry, 'relative_path', None)
+        or getattr(entry, 'name', None)
+        or getattr(entry, 'alias', None)
+        or ''
+    )
+    return is_preset_speed_lora(selector)
+
+
+def _filter_ui_inventory_records(records):
+    return [record for record in records if not _is_hidden_preset_speed_lora_record(record)]
+
+
 def _catalog_sources_payload(manager: ModelManager) -> list[dict[str, Any]]:
     sources = []
     for source in manager.catalog_index.list_sources():
@@ -170,19 +188,10 @@ def create_model_router(manager: ModelManager | None = None, download_worker=Non
             preset_managed=preset_managed,
             installed=installed,
         )
+        records = _filter_ui_inventory_records(records)
         return JSONResponse(content={
             'entries': _serialize_records(records),
-            'groups': manager.build_architecture_groups(
-                architecture=architecture,
-                sub_architecture=sub_architecture,
-                compatibility_family=compatibility_family,
-                model_type=model_type,
-                root_key=root_key,
-                registration_state=registration_state,
-                visibility=visibility,
-                preset_managed=preset_managed,
-                installed=installed,
-            ),
+            'groups': manager.build_architecture_groups(records=records),
             'sources': _catalog_sources_payload(manager),
             'count': len(records),
         })
@@ -294,18 +303,10 @@ def create_model_router(manager: ModelManager | None = None, download_worker=Non
             registration_state=registration_state,
             preset_managed=preset_managed,
         )
+        records = _filter_ui_inventory_records(records)
         return JSONResponse(content={
             'entries': _serialize_records(records),
-            'groups': manager.build_architecture_groups(
-                architecture=architecture,
-                sub_architecture=sub_architecture,
-                compatibility_family=compatibility_family,
-                model_type=model_type,
-                root_key=root_key,
-                registration_state=registration_state,
-                preset_managed=preset_managed,
-                installed=True,
-            ),
+            'groups': manager.build_architecture_groups(records=records),
             'count': len(records),
         })
 
@@ -342,6 +343,7 @@ def create_model_router(manager: ModelManager | None = None, download_worker=Non
             records = [record for record in records if record.entry.visibility == 'generic']
         if not include_preset_managed:
             records = [record for record in records if not record.entry.preset_managed]
+        records = _filter_ui_inventory_records(records)
 
         installed_records = [record for record in records if record.installed]
         available_records = [record for record in records if not record.installed and _is_downloadable_browser_record(record)]
@@ -365,13 +367,7 @@ def create_model_router(manager: ModelManager | None = None, download_worker=Non
             'installed_unregistered': _serialize_records(installed_unregistered_records),
             'available_registered': _serialize_records(available_registered_records),
             'available_unregistered': _serialize_records(available_unregistered_records),
-            'groups': manager.build_architecture_groups(
-                architecture=architecture,
-                sub_architecture=sub_architecture,
-                root_key=root_key,
-                installed=installed_only if installed_only else None,
-                preset_managed=False if not include_preset_managed else None,
-            ),
+            'groups': manager.build_architecture_groups(records=records),
             'count': len(records),
         })
 

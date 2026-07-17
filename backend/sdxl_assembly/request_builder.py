@@ -907,6 +907,7 @@ def build_assembly_request(
         sampler=str(task_state.sampler_name),
         scheduler=str(final_scheduler_name),
         seed=int(task_dict['task_seed']),
+        original_scheduler_name=str(getattr(task_state, 'scheduler_name', '') or ''),
         clip_layer=-abs(int(getattr(task_state, 'clip_skip', 1) or 1)),
         style_selections=tuple(getattr(task_state, 'style_selections', []) or []),
         prompt_payload_hash=prompt_payload_hash,

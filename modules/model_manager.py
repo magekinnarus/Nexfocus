@@ -18,6 +18,7 @@ from modules.model_download.spec import (
     REGISTRATION_STATE_UNREGISTERED,
     ModelCatalogEntry,
 )
+from modules.lora_channel_policy import is_preset_speed_lora
 from modules.model_manager_companions import ModelManagerCompanions
 from modules.model_manager_helpers import (
     MODEL_FILE_EXTENSIONS,
@@ -1135,6 +1136,8 @@ class ModelManager:
                     normalized_relative_path = _normalize_path(relative_path)
                     if normalized_relative_path is None or normalized_relative_path in seen:
                         continue
+                    if is_preset_speed_lora(normalized_relative_path) and not include_preset_managed:
+                        continue
 
                     entry = self.get_entry(normalized_relative_path, root_keys=[root_key])
                     if entry is not None:
@@ -1172,8 +1175,12 @@ class ModelManager:
 
         return sorted(choices)
 
-    def build_architecture_groups(self, **filters) -> list[dict[str, Any]]:
-        entries = self.iter_inventory(**filters)
+    def build_architecture_groups(
+        self,
+        records: Iterable[ModelInventoryRecord] | None = None,
+        **filters,
+    ) -> list[dict[str, Any]]:
+        entries = list(records) if records is not None else self.iter_inventory(**filters)
         buckets: dict[str, dict[str, Any]] = {}
         for record in entries:
             entry = record.entry

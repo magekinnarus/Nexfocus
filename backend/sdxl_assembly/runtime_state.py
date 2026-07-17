@@ -87,6 +87,14 @@ def _unet_lora_signature(request: SDXLAssemblyRequest) -> Tuple[Tuple[str, float
     )
 
 
+def get_request_scheduler_name(request: SDXLAssemblyRequest) -> str:
+    return str(getattr(request, "original_scheduler_name", "") or request.scheduler or "").strip().lower()
+
+
+def get_request_scheduler_signature(request: SDXLAssemblyRequest) -> str:
+    return "lcm" if get_request_scheduler_name(request) == "lcm" else "standard"
+
+
 def _patched_text_encoder_key(request: SDXLAssemblyRequest) -> SDXLPatchedTextEncoderKey | None:
     clip_lora_signature = _clip_lora_signature(request)
     if not clip_lora_signature:
@@ -443,7 +451,7 @@ class SDXLStreamingRuntimeState:
             lora_stack_hash=request.lora_stack_hash,
             # Only the LCM patch changes UNet state. Ordinary scheduler changes
             # affect sampling, not the already-loaded/patched UNet spine.
-            scheduler_signature="lcm" if request.scheduler == "lcm" else "standard",
+            scheduler_signature=get_request_scheduler_signature(request),
         )
 
     def acquire(self, request: SDXLAssemblyRequest, *, lora_worker: Any | None = None) -> Tuple[Any, bool]:
@@ -540,7 +548,7 @@ class SDXLResidentRuntimeState:
             unet_posture=request.unet_posture.value,
             device=request.device,
             dtype="float16",  # resident UNet is fp16
-            scheduler_signature="lcm" if request.scheduler == "lcm" else "standard",
+            scheduler_signature=get_request_scheduler_signature(request),
             unet_lora_signature=_unet_lora_signature(request),
         )
 
@@ -608,7 +616,7 @@ class SDXLResidentRuntimeState:
                         self._spine.unet.model.current_weight_patches_uuid = None
                         
                         # 3. Patch LCM scheduler if LCM
-                        orig_scheduler = request.scheduler
+                        orig_scheduler = get_request_scheduler_name(request)
                         if orig_scheduler == 'lcm':
                             from modules import core as modules_core
                             self._spine.unet = modules_core.opModelSamplingDiscrete.patch(self._spine.unet, orig_scheduler, False)[0]

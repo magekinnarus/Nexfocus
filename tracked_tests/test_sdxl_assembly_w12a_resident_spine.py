@@ -23,6 +23,9 @@ from backend.sdxl_assembly.runtime_state import (
     release_active_sdxl_resident_spine,
     clear_all_caches,
     debug_component_cache_report,
+    get_active_sdxl_resident_spine_key,
+    SDXLResidentRuntimeState,
+    SDXLStreamingRuntimeState,
 )
 from backend.sdxl_assembly.resident_unet import ResidentUnetSpine
 from backend.sdxl_assembly.gpu_lora_worker import GpuLoraWorker
@@ -353,3 +356,79 @@ def test_failure_cleanup_path(monkeypatch):
     assert not report["active_resident_spine"]
     assert loaded_unets
     assert loaded_unets[0].detach_calls
+
+
+def test_scheduler_signature_uses_original_scheduler_name_for_lcm():
+    request = _request(scheduler="sgm_uniform", original_scheduler_name="lcm")
+
+    assert SDXLStreamingRuntimeState._build_key(request).scheduler_signature == "lcm"
+    assert SDXLResidentRuntimeState._build_key(request).scheduler_signature == "lcm"
+
+
+def test_resident_spine_applies_lcm_patch_from_original_scheduler_name(monkeypatch):
+    patch_calls = []
+
+    def fake_stream_load(ckpt_path, **kwargs):
+        unet = FakePatcher("unet")
+        unet.runtime_reload = lambda model, device: None
+        return unet
+
+    monkeypatch.setattr("backend.loader._stream_load_sdxl_unet_from_checkpoint", fake_stream_load)
+    monkeypatch.setattr("backend.gpu_compiler.GpuArtifactCompiler.compile_patcher", lambda patcher, **kwargs: {"status": "compiled"})
+    monkeypatch.setattr(
+        "modules.core.opModelSamplingDiscrete.patch",
+        lambda unet, scheduler, *args, **kwargs: (patch_calls.append(scheduler) or unet, None),
+    )
+
+    request = _request(scheduler="sgm_uniform", original_scheduler_name="lcm", lora_specs=())
+    spine, reused = acquire_active_sdxl_resident_spine(request)
+
+    assert not reused
+    assert patch_calls == ["lcm"]
+    assert get_active_sdxl_resident_spine_key().scheduler_signature == "lcm"
+    assert getattr(spine.unet.model, "_nex_resident_scheduler", "") == "lcm"
+
+
+def test_resident_spine_clean_reload_reuses_lcm_signature_from_original_scheduler_name(monkeypatch):
+    patch_calls = []
+    reload_calls = []
+
+    def fake_stream_load(ckpt_path, **kwargs):
+        unet = FakePatcher("unet")
+
+        def reload_func(model, device):
+            reload_calls.append(device)
+            model.parameters_dict["param1"] = torch.nn.Parameter(torch.zeros(2, 2, device=device))
+
+        unet.runtime_reload = reload_func
+        return unet
+
+    monkeypatch.setattr("backend.loader._stream_load_sdxl_unet_from_checkpoint", fake_stream_load)
+    monkeypatch.setattr("backend.gpu_compiler.GpuArtifactCompiler.compile_patcher", lambda patcher, **kwargs: {"status": "compiled"})
+    monkeypatch.setattr(
+        "modules.core.opModelSamplingDiscrete.patch",
+        lambda unet, scheduler, *args, **kwargs: (patch_calls.append(scheduler) or unet, None),
+    )
+    monkeypatch.setattr("backend.lora.load_lora", lambda *args, **kwargs: {"param1": torch.ones(2, 2)})
+    monkeypatch.setattr("backend.lora.model_lora_keys_unet", lambda m: {"param1": "param1"})
+    monkeypatch.setattr("backend.sdxl_assembly.gpu_lora_worker.SafeOpenHeaderOnly", lambda path: {"path": path})
+
+    warm_request = _request(scheduler="sgm_uniform", original_scheduler_name="lcm", lora_specs=())
+    spine1, reused = acquire_active_sdxl_resident_spine(warm_request)
+    assert not reused
+
+    spec = SDXLLoraSpec(file_identity=_identity("lora1.safetensors", "hash1"), unet_weight=1.0, clip_weight=0.0)
+    changed_request = _request(
+        scheduler="sgm_uniform",
+        original_scheduler_name="lcm",
+        lora_specs=(spec,),
+        lora_stack_hash="stack1",
+    )
+    spine2, reused = acquire_active_sdxl_resident_spine(changed_request)
+
+    assert not reused
+    assert spine2 is spine1
+    assert reload_calls
+    assert patch_calls == ["lcm", "lcm"]
+    assert get_active_sdxl_resident_spine_key().scheduler_signature == "lcm"
+    assert getattr(spine2.unet.model, "_nex_resident_scheduler", "") == "lcm"
