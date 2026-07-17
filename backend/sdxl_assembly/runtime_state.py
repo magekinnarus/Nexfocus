@@ -37,7 +37,6 @@ class SDXLResidentSpineKey:
     unet_posture: str
     device: str
     dtype: str
-    scheduler_signature: str
     unet_lora_signature: Tuple[Tuple[str, float], ...]
 
 
@@ -548,7 +547,6 @@ class SDXLResidentRuntimeState:
             unet_posture=request.unet_posture.value,
             device=request.device,
             dtype="float16",  # resident UNet is fp16
-            scheduler_signature=get_request_scheduler_signature(request),
             unet_lora_signature=_unet_lora_signature(request),
         )
 
@@ -557,86 +555,37 @@ class SDXLResidentRuntimeState:
         stale_spine: Any | None = None
 
         with self._lock:
-            # Case 1: Exact key match -> Reuse warm resident spine immediately!
-            if self._spine is not None and self._key == requested_key:
-                self._spine.request = request
-                if lora_worker is not None:
-                    self._spine.lora_worker = lora_worker
-                logger.debug(
-                    "[SDXL Telemetry] Reusing warm resident UNet spine for key=%s",
-                    requested_key,
-                )
-                log_telemetry("resident_spine_warm_reuse", f"checkpoint={request.checkpoint.path.name}")
-                return self._spine, True
-
-            # Case 2: Spine is warm, but there is a key mismatch.
-            # We check if it is ONLY a change in the UNet-side LoRA signature.
             if self._spine is not None and self._key is not None:
                 structural_match = (
                     self._key.checkpoint_sha256 == requested_key.checkpoint_sha256
                     and self._key.unet_posture == requested_key.unet_posture
                     and self._key.device == requested_key.device
                     and self._key.dtype == requested_key.dtype
-                    and self._key.scheduler_signature == requested_key.scheduler_signature
                 )
                 if structural_match:
-                    # In-place clean reload and GPU prepatch!
-                    logger.debug(
-                        "[SDXL Telemetry] In-place resident reload/prepatch for LoRA signature change. "
-                        "Old key: %s, New key: %s",
-                        self._key, requested_key
-                    )
-                    log_telemetry("resident_spine_clean_reload_begin", f"checkpoint={request.checkpoint.path.name}")
-                    
                     try:
-                        # 1. Update requests and workers
+                        # Delegate all resident scheduler/LoRA reconciliation to the spine.
+                        # This applies even on exact resident-key hits because scheduler mode
+                        # is runtime-owned and intentionally excluded from the structural key.
                         self._spine.request = request
-                        from backend.sdxl_assembly.gpu_lora_worker import GpuLoraWorker
                         if lora_worker is not None:
                             self._spine.lora_worker = lora_worker
-                        else:
-                            self._spine.lora_worker = GpuLoraWorker(request)
-                        
-                        # 2. Reload clean weights from checkpoint source (restores clean state)
-                        import torch
-                        model = self._spine.unet.model
-                        runtime_reload = getattr(self._spine.unet, "runtime_reload", None)
-                        if callable(runtime_reload):
-                            target_device = torch.device(request.device)
-                            runtime_reload(model, target_device)
-                            model.device = target_device
-                        else:
-                            raise RuntimeError("Resident UNet spine component missing runtime_reload callable.")
-                        
-                        # Clear GpuArtifactCompiler's patcher artifacts
-                        self._spine.unet.patches = {}
-                        self._spine.unet.weight_wrapper_patches = {}
-                        self._spine.unet.backup.clear()
-                        self._spine.unet.object_patches_backup.clear()
-                        self._spine.unet.model.current_weight_patches_uuid = None
-                        
-                        # 3. Patch LCM scheduler if LCM
-                        orig_scheduler = get_request_scheduler_name(request)
-                        if orig_scheduler == 'lcm':
-                            from modules import core as modules_core
-                            self._spine.unet = modules_core.opModelSamplingDiscrete.patch(self._spine.unet, orig_scheduler, False)[0]
-                            self._spine.unet.model._nex_resident_scheduler = "lcm"
-                        else:
-                            self._spine.unet.model._nex_resident_scheduler = ""
-
-                        # 4. Materialize and apply new LoRAs to UNet on GPU
-                        self._spine.lora_worker.apply_unet_patches(self._spine.unet)
-                        
-                        # 5. Compile new patches on GPU
-                        self._spine.lora_worker.compile_unet_patches(self._spine.unet)
-                        
-                        # 6. Publish the new key atomically
+                        warm_hit = self._spine.materialize_scheduler_and_loras(request, lora_worker)
                         self._key = requested_key
-                        log_telemetry("resident_spine_clean_reload_complete", f"checkpoint={request.checkpoint.path.name}")
+                        if warm_hit:
+                            logger.debug(
+                                "[SDXL Telemetry] Reusing warm resident UNet spine for key=%s",
+                                requested_key,
+                            )
+                            log_telemetry("resident_spine_warm_reuse", f"checkpoint={request.checkpoint.path.name}")
+                            return self._spine, True
+                        logger.debug(
+                            "[SDXL Telemetry] Reconfigured resident UNet spine for key=%s",
+                            requested_key,
+                        )
+                        log_telemetry("resident_spine_reconfigure", f"checkpoint={request.checkpoint.path.name}")
                         return self._spine, False
-                        
                     except Exception as exc:
-                        # Reconfiguration failed -> Release spine completely.
                         logger.error(
                             "[SDXL Telemetry] Resident in-place reconfiguration failed! "
                             "Releasing spine completely. Error: %s", exc

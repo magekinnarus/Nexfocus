@@ -298,12 +298,7 @@ def determine_eligibility(
         getattr(getattr(task_state, "sdxl_execution_policy", None), "execution_mode", "") or ""
     ).strip().lower()
     posture_selection = str(getattr(task_state, "sdxl_assembly_posture", "") or "").strip().lower()
-    if (
-        execution_mode == "resident"
-        and posture_selection in {"", "auto"}
-        and plan.route_id not in {"direct_upscale", "color_enhanced_upscale", "super_upscale"}
-    ):
-        return False, "Resident SDXL posture is not eligible for the assembly path."
+
 
     # 0. Check for retired FaceID V2 / FaceSwap, using planned slots only.
     resolved_controlnet_paths = _resolve_controlnet_paths(controlnet_paths, image_input_result)
