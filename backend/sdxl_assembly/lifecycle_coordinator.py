@@ -17,6 +17,7 @@ class LifecycleChange(str, Enum):
     MODEL_TYPE_CHANGE = "model_type_change"
     FAMILY_CHANGE = "family_change"
     SPINE_POSTURE_CHANGE = "spine_posture_change"
+    TEXT_ENCODER_POSTURE_CHANGE = "text_encoder_posture_change"
     MODEL_CHANGE = "model_change"
     CHECKPOINT_CHANGE = "checkpoint_change"
     LORA_STACK_CHANGE = "lora_stack_change"
@@ -109,7 +110,15 @@ def plan_release_for_changes(
     def add(domain: LifecycleDomain) -> None:
         if domain == LifecycleDomain.MODEL_PROMPT and LifecycleDomain.PROMPT_CONDITIONING in domains:
             domains.remove(LifecycleDomain.PROMPT_CONDITIONING)
+        if domain == LifecycleDomain.MODEL_PROMPT and LifecycleDomain.TEXT_ENCODER in domains:
+            domains.remove(LifecycleDomain.TEXT_ENCODER)
         if domain == LifecycleDomain.PROMPT_CONDITIONING and LifecycleDomain.MODEL_PROMPT in domains:
+            return
+        if domain == LifecycleDomain.TEXT_ENCODER and LifecycleDomain.MODEL_PROMPT in domains:
+            return
+        if domain == LifecycleDomain.TEXT_ENCODER and LifecycleDomain.PROMPT_CONDITIONING in domains:
+            domains.remove(LifecycleDomain.PROMPT_CONDITIONING)
+        if domain == LifecycleDomain.PROMPT_CONDITIONING and LifecycleDomain.TEXT_ENCODER in domains:
             return
         if domain not in domains:
             domains.append(domain)
@@ -129,6 +138,8 @@ def plan_release_for_changes(
             add(LifecycleDomain.RUN_BOUND)
         elif change == LifecycleChange.PROMPT_CHANGE.value:
             add(LifecycleDomain.PROMPT_CONDITIONING)
+        elif change == LifecycleChange.TEXT_ENCODER_POSTURE_CHANGE.value:
+            add(LifecycleDomain.TEXT_ENCODER)
         elif change in {
             LifecycleChange.SPINE_POSTURE_CHANGE.value,
             LifecycleChange.MODEL_CHANGE.value,
@@ -189,6 +200,31 @@ def _release_run_bound(errors: list[LifecycleReleaseError], assembly: Any | None
     _run_step(errors, domain, "assembly_close", close)
 
 
+def _release_text_encoder(errors: list[LifecycleReleaseError], reason: str) -> None:
+    """Release text-owned components without disturbing either UNet spine."""
+    from backend.sdxl_assembly import runtime_state
+
+    domain = LifecycleDomain.TEXT_ENCODER
+    _run_step(
+        errors,
+        domain,
+        "text_encoder_cache",
+        lambda: runtime_state.release_text_encoder_component_cache(reason=reason),
+    )
+    _run_step(
+        errors,
+        domain,
+        "gpu_text_encoder",
+        lambda: runtime_state.release_active_gpu_text(reason=reason),
+    )
+    _run_step(
+        errors,
+        domain,
+        "prompt_conditioning_cache",
+        lambda: runtime_state.release_prompt_conditioning_cache(reason=reason),
+    )
+
+
 def _release_model_prompt(errors: list[LifecycleReleaseError], reason: str, changes: tuple[str, ...] = ()) -> None:
     from backend.sdxl_assembly import runtime_state
 
@@ -246,7 +282,12 @@ def _release_model_prompt(errors: list[LifecycleReleaseError], reason: str, chan
             LifecycleChange.FULL_TEARDOWN.value,
         }
         has_structural = any(ch in model_prompt_structural_changes for ch in changes)
-        if not has_structural and LifecycleChange.LORA_STACK_CHANGE.value in changes:
+        has_text_posture_change = LifecycleChange.TEXT_ENCODER_POSTURE_CHANGE.value in changes
+        if (
+            not has_structural
+            and not has_text_posture_change
+            and LifecycleChange.LORA_STACK_CHANGE.value in changes
+        ):
             should_release_gpu_text = False
 
     if should_release_gpu_text:
@@ -467,6 +508,8 @@ def release_domains(
             _release_run_bound(errors, assembly)
         elif domain == LifecycleDomain.PROMPT_CONDITIONING:
             _release_prompt_conditioning(errors, clear_reason)
+        elif domain == LifecycleDomain.TEXT_ENCODER:
+            _release_text_encoder(errors, clear_reason)
         elif domain == LifecycleDomain.MODEL_PROMPT:
             _release_model_prompt(errors, clear_reason, changes=changes)
         elif domain == LifecycleDomain.SPATIAL_VAE:
@@ -479,7 +522,7 @@ def release_domains(
     gc.collect()
 
     # Flush host-pinned memory cache on model/family transitions
-    if any(d == LifecycleDomain.MODEL_PROMPT for d in plan.domains):
+    if any(d in (LifecycleDomain.MODEL_PROMPT, LifecycleDomain.TEXT_ENCODER) for d in plan.domains):
         try:
             from backend.host_cache import flush_pinned_host_cache
             flush_pinned_host_cache()

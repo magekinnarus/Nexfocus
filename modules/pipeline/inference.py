@@ -607,12 +607,17 @@ def _prepare_gpu_text_legacy_bypass_transition(
 ):
     """Release assembly-owned GPU residents before legacy SDXL admission."""
     from backend import process_transition
+    from backend.sdxl_assembly import runtime_state
 
     current_key = process_transition.get_active_process_key()
+    active_gpu_text = runtime_state.get_active_gpu_text_key()
     if (
-        current_key is None
-        or current_key.family != process_transition.PROCESS_FAMILY_SDXL
-        or str(current_key.residency_class or '').lower() != 'resident_unet_gpu_text'
+        active_gpu_text is None
+        and (
+            current_key is None
+            or current_key.family != process_transition.PROCESS_FAMILY_SDXL
+            or str(current_key.residency_class or '').lower() != 'resident_unet_gpu_text'
+        )
     ):
         return None
 
@@ -631,14 +636,12 @@ def _prepare_gpu_text_legacy_bypass_transition(
             'the legacy process identity could not be resolved for deterministic release.'
         )
 
-    decision = process_transition.apply_process_transition_gate(legacy_key)
-    if decision is None or not decision.reset_required:
-        raise RuntimeError(
-            'Refusing legacy SDXL bypass while GPU-text assembly residents are active: '
-            'the process transition did not establish a releasing posture boundary.'
-        )
+    from backend.sdxl_assembly.lifecycle_coordinator import LifecycleChange, release_for_changes
 
-    from backend.sdxl_assembly import runtime_state
+    release_for_changes(
+        [LifecycleChange.SPINE_POSTURE_CHANGE],
+        reason="gpu_text_legacy_bypass",
+    )
 
     remaining_owners = []
     if runtime_state.get_active_sdxl_resident_spine_key() is not None:
@@ -650,6 +653,14 @@ def _prepare_gpu_text_legacy_bypass_transition(
             'Refusing legacy SDXL bypass because assembly-owned GPU residents '
             f'remain active after transition: {", ".join(remaining_owners)}.'
         )
+    process_transition.set_active_process_key(legacy_key)
+    decision = process_transition.ProcessTransitionDecision(
+        action="reset",
+        reason="gpu_text_legacy_bypass",
+        reset_required=True,
+        current_key=current_key,
+        requested_key=legacy_key,
+    )
     return decision
 
 

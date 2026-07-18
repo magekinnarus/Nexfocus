@@ -155,7 +155,7 @@ class PipelineStageRunner:
             residency_plan = memory_governor.plan_for_task(task=context.task_state, phase=stage.phase_name)
             print(
                 f"[Residency] phase={stage.phase_name} profile={residency_plan.notes.get('profile')} "
-                f"pinned={','.join(residency_plan.pinned) or '-'} "
+                f"required={','.join(residency_plan.pinned) or '-'} "
                 f"warm={','.join(residency_plan.warm) or '-'} "
                 f"evictable={','.join(residency_plan.evictable) or '-'}"
             )
@@ -166,6 +166,8 @@ class PipelineStageRunner:
                 notes={
                     'residency_profile': residency_plan.notes.get('profile'),
                     'residency_phase': residency_plan.notes.get('phase'),
+                    'residency_required': list(residency_plan.pinned),
+                    # Pre-W13 compatibility for stage-note consumers.
                     'residency_pinned': list(residency_plan.pinned),
                     'residency_warm': list(residency_plan.warm),
                     'residency_evictable': list(residency_plan.evictable),

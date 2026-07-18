@@ -11,8 +11,21 @@ class UNetPostureKind(str, Enum):
     RESIDENT = "resident"
 
 class TextEncoderPostureKind(str, Enum):
-    CPU_PINNED = "cpu_pinned"
-    GPU_PINNED = "gpu_pinned"
+    CPU_RESIDENT = "cpu_resident"
+    GPU_RESIDENT = "gpu_resident"
+
+    # Compatibility aliases for legacy callers. These names described
+    # lifecycle residency, not physical page-locked host memory.
+    CPU_PINNED = "cpu_resident"
+    GPU_PINNED = "gpu_resident"
+
+    @classmethod
+    def _missing_(cls, value):
+        legacy = {
+            "cpu_pinned": cls.CPU_RESIDENT,
+            "gpu_pinned": cls.GPU_RESIDENT,
+        }
+        return legacy.get(str(value).strip().lower())
 
 class VAEPostureKind(str, Enum):
     TRANSIENT = "transient"
@@ -348,7 +361,7 @@ class SDXLAssemblyRequest:
     
     # Selected Postures
     unet_posture: UNetPostureKind = UNetPostureKind.STREAMING
-    clip_posture: TextEncoderPostureKind = TextEncoderPostureKind.CPU_PINNED
+    clip_posture: TextEncoderPostureKind = TextEncoderPostureKind.CPU_RESIDENT
     vae_posture: VAEPostureKind = VAEPostureKind.TRANSIENT
     lora_posture: LoraPatchPostureKind = LoraPatchPostureKind.STREAMING
     

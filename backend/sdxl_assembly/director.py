@@ -21,19 +21,19 @@ class SDXLAssemblyDirector:
         # Enforce validation of the only supported production posture combinations.
         is_w02_streaming = (
             request.unet_posture == UNetPostureKind.STREAMING
-            and request.clip_posture == TextEncoderPostureKind.CPU_PINNED
+            and request.clip_posture == TextEncoderPostureKind.CPU_RESIDENT
             and request.vae_posture == VAEPostureKind.TRANSIENT
             and request.lora_posture == LoraPatchPostureKind.STREAMING
         )
         is_w12b_resident = (
             request.unet_posture == UNetPostureKind.RESIDENT
-            and request.clip_posture == TextEncoderPostureKind.CPU_PINNED
+            and request.clip_posture == TextEncoderPostureKind.CPU_RESIDENT
             and request.vae_posture == VAEPostureKind.TRANSIENT
             and request.lora_posture == LoraPatchPostureKind.RESIDENT
         )
         is_w12c_gpu_text = (
             request.unet_posture == UNetPostureKind.RESIDENT
-            and request.clip_posture == TextEncoderPostureKind.GPU_PINNED
+            and request.clip_posture == TextEncoderPostureKind.GPU_RESIDENT
             and request.vae_posture == VAEPostureKind.TRANSIENT
             and request.lora_posture == LoraPatchPostureKind.RESIDENT
         )
@@ -49,7 +49,7 @@ class SDXLAssemblyDirector:
         # while CPU text keeps CPU CLIP LoRA ownership.
         if request.lora_posture == LoraPatchPostureKind.RESIDENT:
             lora_worker = SDXLAssemblyAssembler.acquire_gpu_lora_worker(request)
-            if request.clip_posture == TextEncoderPostureKind.GPU_PINNED:
+            if request.clip_posture == TextEncoderPostureKind.GPU_RESIDENT:
                 text_lora_worker = lora_worker
             else:
                 text_lora_worker = SDXLAssemblyAssembler.acquire_cpu_lora_worker(request)

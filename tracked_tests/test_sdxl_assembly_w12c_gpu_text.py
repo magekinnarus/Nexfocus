@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -68,7 +69,7 @@ def _gpu_request(*, lora_specs=(), checkpoint_sha="checkpoint_sha") -> SDXLAssem
         device="cuda",
         lora_specs=tuple(lora_specs),
         unet_posture=UNetPostureKind.RESIDENT,
-        clip_posture=TextEncoderPostureKind.GPU_PINNED,
+        clip_posture=TextEncoderPostureKind.GPU_RESIDENT,
         vae_posture=VAEPostureKind.TRANSIENT,
         lora_posture=LoraPatchPostureKind.RESIDENT,
     )
@@ -139,6 +140,13 @@ def test_w12c_normalization():
     assert _normalize_sdxl_assembly_posture_value("GPU-text") == "gpu_text"
 
 
+def test_text_posture_names_describe_residency_with_legacy_parse_compatibility():
+    assert TextEncoderPostureKind.CPU_RESIDENT.value == "cpu_resident"
+    assert TextEncoderPostureKind.GPU_RESIDENT.value == "gpu_resident"
+    assert TextEncoderPostureKind("cpu_pinned") is TextEncoderPostureKind.CPU_RESIDENT
+    assert TextEncoderPostureKind("gpu_pinned") is TextEncoderPostureKind.GPU_RESIDENT
+
+
 def test_w12c_colab_free_ui_default_is_gpu_text_only():
     assert resolve_default_sdxl_assembly_posture(SimpleNamespace(name="colab_free")) == "gpu_text"
     assert resolve_default_sdxl_assembly_posture(SimpleNamespace(name="colab_pro")) == "auto"
@@ -171,7 +179,7 @@ def test_w12c_posture_tuple_mapping(monkeypatch):
         task, task_dict, 0, 1, 30, 0, None, "karras", loras=[]
     )
     assert req.unet_posture == UNetPostureKind.RESIDENT
-    assert req.clip_posture == TextEncoderPostureKind.GPU_PINNED
+    assert req.clip_posture == TextEncoderPostureKind.GPU_RESIDENT
     assert req.vae_posture == VAEPostureKind.TRANSIENT
     assert req.lora_posture == LoraPatchPostureKind.RESIDENT
 
@@ -226,7 +234,7 @@ def test_gpu_text_encode_worker_conditioning(monkeypatch):
         device="cuda",
         lora_specs=(),
         unet_posture=UNetPostureKind.RESIDENT,
-        clip_posture=TextEncoderPostureKind.GPU_PINNED,
+        clip_posture=TextEncoderPostureKind.GPU_RESIDENT,
         vae_posture=VAEPostureKind.TRANSIENT,
         lora_posture=LoraPatchPostureKind.RESIDENT,
     )
@@ -279,7 +287,7 @@ def test_gpu_text_runtime_state_lifecycle(monkeypatch):
     key = _GPU_TEXT_RUNTIME_STATE.get_active_key()
     assert key is not None
     assert key.checkpoint_sha256 == "checkpoint_sha"
-    assert key.clip_posture == "gpu_pinned"
+    assert key.clip_posture == "gpu_resident"
     assert loader_calls[0][1]["load_device"] == torch.device("cuda")
     assert loader_calls[0][1]["offload_device"] == torch.device("cuda")
     assert loader_calls[0][1]["dtype"] == torch.float32
@@ -395,7 +403,7 @@ def test_gpu_text_and_unet_lora_signatures_invalidate_independently():
     assert SDXLResidentRuntimeState._build_key(clip_a) != SDXLResidentRuntimeState._build_key(unet_only)
 
 
-def test_gpu_text_process_identity_comes_from_assembly_selector(monkeypatch):
+def test_gpu_text_posture_does_not_change_unet_process_identity(monkeypatch):
     base_key = process_transition.ProcessKey(
         family="sdxl",
         process_class="standard_sdxl",
@@ -415,18 +423,35 @@ def test_gpu_text_process_identity_comes_from_assembly_selector(monkeypatch):
     )
 
     gpu_key = process_transition.resolve_sdxl_process_key(task)
-    assert gpu_key.residency_class == "resident_unet_gpu_text"
+    assert gpu_key.residency_class == base_key.residency_class
     changes = process_transition.classify_sdxl_process_key_changes(base_key, gpu_key)
-    assert [change.value for change in changes] == ["spine_posture_change"]
+    assert changes == []
 
 
-def test_gpu_text_posture_change_precedes_simultaneous_lora_reuse():
+def test_gateway_classifies_text_posture_without_spine_posture_change():
+    from backend.sdxl_assembly.gateway import _build_gateway_request_state, _calculate_gateway_changes
+
+    gpu_request = _gpu_request()
+    cpu_request = replace(
+        gpu_request,
+        clip_posture=TextEncoderPostureKind.CPU_RESIDENT,
+    )
+
+    changes = _calculate_gateway_changes(
+        _build_gateway_request_state(cpu_request),
+        _build_gateway_request_state(gpu_request),
+    )
+
+    assert [change.value for change in changes] == ["text_encoder_posture_change"]
+
+
+def test_gpu_text_posture_change_preserves_compatible_unet_with_simultaneous_lora_change():
     registry = process_transition.SharedProcessRegistry()
     gpu_key = process_transition.ProcessKey(
         family="sdxl",
         process_class="standard_sdxl",
         authoritative_identity=("checkpoint", "clip", "lora-a"),
-        residency_class="resident_unet_gpu_text",
+        residency_class="full_resident",
     )
     legacy_key = process_transition.ProcessKey(
         family="sdxl",
@@ -438,8 +463,27 @@ def test_gpu_text_posture_change_precedes_simultaneous_lora_reuse():
     registry.set_active_key(gpu_key)
     decision = registry.evaluate_transition(legacy_key)
 
-    assert decision.reset_required is True
-    assert decision.reason == "residency_class_change"
+    assert decision.reset_required is False
+    assert decision.reason == "lora_stack_change"
+
+
+def test_text_posture_release_does_not_release_unet_spines(monkeypatch):
+    from backend.sdxl_assembly import runtime_state
+    from backend.sdxl_assembly.lifecycle_coordinator import LifecycleChange, release_for_changes
+
+    events = []
+    monkeypatch.setattr(runtime_state, "release_active_sdxl_streaming_spine", lambda **kwargs: events.append("streaming_unet"))
+    monkeypatch.setattr(runtime_state, "release_active_sdxl_resident_spine", lambda **kwargs: events.append("resident_unet"))
+    monkeypatch.setattr(runtime_state, "release_text_encoder_component_cache", lambda **kwargs: events.append("cpu_text"))
+    monkeypatch.setattr(runtime_state, "release_active_gpu_text", lambda **kwargs: events.append("gpu_text"))
+    monkeypatch.setattr(runtime_state, "release_prompt_conditioning_cache", lambda **kwargs: events.append("prompt"))
+
+    release_for_changes(
+        [LifecycleChange.TEXT_ENCODER_POSTURE_CHANGE],
+        reason="text_posture_test",
+    )
+
+    assert events == ["cpu_text", "gpu_text", "prompt"]
 
 
 def test_inactive_outpaint_controlnet_slots_are_discarded():
@@ -462,6 +506,7 @@ def test_inactive_outpaint_controlnet_slots_are_discarded():
 
 def test_gpu_text_legacy_bypass_releases_before_legacy_load(monkeypatch):
     from backend.sdxl_assembly import gateway
+    from backend.sdxl_assembly import lifecycle_coordinator
     from backend.sdxl_assembly import runtime_state
     from modules.pipeline import inference
 
@@ -481,25 +526,20 @@ def test_gpu_text_legacy_bypass_releases_before_legacy_load(monkeypatch):
         residency_class="full_resident",
         route_family="sdxl",
     )
-    decision = process_transition.ProcessTransitionDecision(
-        action="reset",
-        reason="process_posture_change",
-        reset_required=True,
-        current_key=gpu_key,
-        requested_key=legacy_key,
-    )
     events = []
 
     monkeypatch.setattr(gateway, "is_eligible_for_sdxl_assembly", lambda **kwargs: (False, "forced bypass"))
     monkeypatch.setattr(process_transition, "get_active_process_key", lambda: gpu_key)
     monkeypatch.setattr(inference, "resolve_unified_sdxl_process_key", lambda *args, **kwargs: legacy_key)
     monkeypatch.setattr(
-        process_transition,
-        "apply_process_transition_gate",
-        lambda key: events.append(("release", key)) or decision,
+        lifecycle_coordinator,
+        "release_for_changes",
+        lambda changes, **kwargs: events.append(("release", tuple(changes))),
     )
+    monkeypatch.setattr(process_transition, "set_active_process_key", lambda key: key)
     monkeypatch.setattr(runtime_state, "get_active_sdxl_resident_spine_key", lambda: None)
-    monkeypatch.setattr(runtime_state, "get_active_gpu_text_key", lambda: None)
+    gpu_owner_states = iter((object(), None))
+    monkeypatch.setattr(runtime_state, "get_active_gpu_text_key", lambda: next(gpu_owner_states))
     monkeypatch.setattr(inference, "_ensure_supported_unified_runtime_request", lambda task: None)
     monkeypatch.setattr(
         inference,
@@ -529,12 +569,7 @@ def test_gpu_text_legacy_bypass_releases_before_legacy_load(monkeypatch):
     )
 
     assert [event[0] for event in events] == ["release", "legacy_load"]
-    released_key = events[0][1]
-    assert released_key.family == legacy_key.family
-    assert released_key.process_class == legacy_key.process_class
-    assert released_key.authoritative_identity == legacy_key.authoritative_identity
-    assert released_key.residency_class == legacy_key.residency_class
-    assert released_key.composition_identity == task.workflow_plan.identity()
+    assert [change.value for change in events[0][1]] == ["spine_posture_change"]
 
 
 def test_gpu_text_legacy_bypass_fails_closed_if_owner_remains(monkeypatch):
@@ -597,8 +632,13 @@ def test_gpu_text_lifecycle_retains_only_for_lora_reconfiguration(monkeypatch):
     from backend.sdxl_assembly import runtime_state
 
     gpu_releases = []
+    resident_releases = []
     monkeypatch.setattr(runtime_state, "release_active_sdxl_streaming_spine", lambda **kwargs: False)
-    monkeypatch.setattr(runtime_state, "release_active_sdxl_resident_spine", lambda **kwargs: False)
+    monkeypatch.setattr(
+        runtime_state,
+        "release_active_sdxl_resident_spine",
+        lambda **kwargs: resident_releases.append(kwargs.get("reason")) or False,
+    )
     monkeypatch.setattr(runtime_state, "release_text_encoder_component_cache", lambda **kwargs: None)
     monkeypatch.setattr(runtime_state, "release_prompt_conditioning_cache", lambda **kwargs: None)
     monkeypatch.setattr(
@@ -612,3 +652,10 @@ def test_gpu_text_lifecycle_retains_only_for_lora_reconfiguration(monkeypatch):
 
     release_for_changes([LifecycleChange.CHECKPOINT_CHANGE], reason="checkpoint")
     assert gpu_releases == ["checkpoint"]
+
+    release_for_changes(
+        [LifecycleChange.TEXT_ENCODER_POSTURE_CHANGE, LifecycleChange.LORA_STACK_CHANGE],
+        reason="text_and_lora",
+    )
+    assert gpu_releases == ["checkpoint", "text_and_lora"]
+    assert resident_releases == ["checkpoint"]

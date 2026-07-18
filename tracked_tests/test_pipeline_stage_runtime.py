@@ -39,7 +39,7 @@ class RecordingStage(PipelineStage):
         self._events.append(f'finalize:{self.stage_id}')
 
 
-def test_stage_runner_records_stage_metadata_and_stops_on_route_complete():
+def test_stage_runner_records_stage_metadata_and_stops_on_route_complete(capsys):
     events = []
     route = PipelineRoute(
         route_id='test',
@@ -58,8 +58,13 @@ def test_stage_runner_records_stage_metadata_and_stops_on_route_complete():
     )
 
     PipelineStageRunner().run(route, context)
+    output = capsys.readouterr().out
 
     assert events == ['execute:first', 'finalize:first']
+    assert '[Residency]' in output
+    assert 'required=' in output
+    assert ' pinned=' not in output
     assert context.route_complete is True
     assert [record.stage_id for record in context.executed_stages] == ['first']
     assert context.executed_stages[0].resources[0].resource_id == 'first_resource'
+    assert 'residency_required' in context.executed_stages[0].notes

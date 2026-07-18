@@ -20,7 +20,10 @@ logger = logging.getLogger(__name__)
 class _GatewayRequestState:
     checkpoint_sha256: str
     vae_sha256: str | None
-    posture_signature: tuple[str, str, str, str]
+    unet_posture: str
+    text_encoder_posture: str
+    vae_posture: str
+    lora_posture: str
     lora_stack_hash: str
     prompt_payload_hash: str
     spatial_signature: Any
@@ -151,12 +154,10 @@ def _build_gateway_request_state(request: SDXLAssemblyRequest) -> _GatewayReques
     return _GatewayRequestState(
         checkpoint_sha256=str(request.checkpoint.sha256 or ""),
         vae_sha256=request.vae.sha256 if request.vae is not None else None,
-        posture_signature=(
-            str(request.unet_posture.value),
-            str(request.clip_posture.value),
-            str(request.vae_posture.value),
-            str(request.lora_posture.value),
-        ),
+        unet_posture=str(request.unet_posture.value),
+        text_encoder_posture=str(request.clip_posture.value),
+        vae_posture=str(request.vae_posture.value),
+        lora_posture=str(request.lora_posture.value),
         lora_stack_hash=str(request.lora_stack_hash or ""),
         prompt_payload_hash=str(request.prompt_payload_hash or ""),
         spatial_signature=_spatial_context_signature(request.spatial_context),
@@ -179,8 +180,15 @@ def _calculate_gateway_changes(
         add(LifecycleChange.CHECKPOINT_CHANGE)
     if previous_state.vae_sha256 != request_state.vae_sha256:
         add(LifecycleChange.SPATIAL_VAE_CHANGE)
-    if previous_state.posture_signature != request_state.posture_signature:
+    if (
+        previous_state.unet_posture != request_state.unet_posture
+        or previous_state.lora_posture != request_state.lora_posture
+    ):
         add(LifecycleChange.SPINE_POSTURE_CHANGE)
+    if previous_state.text_encoder_posture != request_state.text_encoder_posture:
+        add(LifecycleChange.TEXT_ENCODER_POSTURE_CHANGE)
+    if previous_state.vae_posture != request_state.vae_posture:
+        add(LifecycleChange.SPATIAL_VAE_CHANGE)
     if previous_state.lora_stack_hash != request_state.lora_stack_hash:
         add(LifecycleChange.LORA_STACK_CHANGE)
     if previous_state.prompt_payload_hash != request_state.prompt_payload_hash:

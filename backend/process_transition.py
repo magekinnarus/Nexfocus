@@ -243,8 +243,6 @@ class SharedProcessRegistry:
         elif current.process_class != requested.process_class:
             reason = "process_class_change"
         elif current.residency_class != requested.residency_class:
-            # A posture boundary is structural even when the same request also
-            # changes its LoRA stack. Never let LoRA-only reuse mask release.
             reason = "residency_class_change"
         elif current.authoritative_identity != requested.authoritative_identity:
             is_same_base_components = False
@@ -582,17 +580,8 @@ def resolve_sdxl_process_key(
     )
     composition_identity = plan.identity()
 
-    posture = str(getattr(task_state, 'sdxl_assembly_posture', 'auto') or 'auto')
-    posture = posture.strip().lower().replace('-', '_').replace(' ', '_')
-    if key is not None and runtime_posture == 'selected' and posture == 'gpu_text':
-        # The assembly selector, not the legacy runtime policy, owns this
-        # composition identity. Publishing it on the process key ensures that
-        # CPU-text <-> GPU-text switches cross a lifecycle boundary.
-        return replace(
-            key,
-            residency_class='resident_unet_gpu_text',
-            composition_identity=composition_identity,
-        )
+    # Text-encoder posture is component-owned gateway state. It must not alter
+    # the process key or manufacture a whole-model boundary for one UNet.
     return replace(key, composition_identity=composition_identity) if key is not None else None
 
 

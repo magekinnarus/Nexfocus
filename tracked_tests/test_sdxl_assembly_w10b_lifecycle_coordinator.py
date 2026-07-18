@@ -29,7 +29,7 @@ def _seed_warm_domains():
     _TEXT_ENCODER_COMPONENT_CACHE.clear()
     _TEXT_ENCODER_COMPONENT_CACHE["clip"] = MagicMock()
     runtime_state._PATCHED_TEXT_ENCODER_COMPONENT_SLOT = MagicMock()
-    runtime_state._PATCHED_TEXT_ENCODER_COMPONENT_SLOT_KEY = ("checkpoint", "cpu_pinned", (("lora", 1.0),))
+    runtime_state._PATCHED_TEXT_ENCODER_COMPONENT_SLOT_KEY = ("checkpoint", "cpu_resident", (("lora", 1.0),))
     _PROMPT_CONDITIONING_CACHE.clear()
     _PROMPT_CONDITIONING_CACHE[("prompt",)] = object()
     _STREAMING_RUNTIME_STATE._spine = MagicMock()
@@ -76,6 +76,12 @@ def test_lifecycle_planner_maps_change_events_to_release_domains():
         reason="prompt_only_refresh",
     )
     assert plan.domains == (LifecycleDomain.PROMPT_CONDITIONING,)
+
+    plan = plan_release_for_changes(
+        [LifecycleChange.TEXT_ENCODER_POSTURE_CHANGE],
+        reason="text_posture_refresh",
+    )
+    assert plan.domains == (LifecycleDomain.TEXT_ENCODER,)
 
     plan = plan_release_for_changes(
         [

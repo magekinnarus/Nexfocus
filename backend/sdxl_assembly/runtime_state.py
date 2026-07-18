@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 class LifecycleDomain(str, Enum):
     RUN_BOUND = "run_bound"
     PROMPT_CONDITIONING = "prompt_conditioning"
+    TEXT_ENCODER = "text_encoder"
     MODEL_PROMPT = "model_prompt"
     SPATIAL_VAE = "spatial_vae"
     STRUCTURAL_CN = "structural_cn"

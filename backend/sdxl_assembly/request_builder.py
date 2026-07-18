@@ -580,17 +580,17 @@ def build_assembly_request(
 
     if posture_resolved == 'resident_unet_cpu_text':
         unet_posture = UNetPostureKind.RESIDENT
-        clip_posture = TextEncoderPostureKind.CPU_PINNED
+        clip_posture = TextEncoderPostureKind.CPU_RESIDENT
         vae_posture = VAEPostureKind.TRANSIENT
         lora_posture = LoraPatchPostureKind.RESIDENT
     elif posture_resolved == 'resident_unet_gpu_text':
         unet_posture = UNetPostureKind.RESIDENT
-        clip_posture = TextEncoderPostureKind.GPU_PINNED
+        clip_posture = TextEncoderPostureKind.GPU_RESIDENT
         vae_posture = VAEPostureKind.TRANSIENT
         lora_posture = LoraPatchPostureKind.RESIDENT
     elif posture_resolved == 'streaming':
         unet_posture = UNetPostureKind.STREAMING
-        clip_posture = TextEncoderPostureKind.CPU_PINNED
+        clip_posture = TextEncoderPostureKind.CPU_RESIDENT
         vae_posture = VAEPostureKind.TRANSIENT
         lora_posture = LoraPatchPostureKind.STREAMING
     else:
