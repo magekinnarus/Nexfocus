@@ -208,6 +208,11 @@ def model_lora_keys_clip(model, key_map=None):
     if key_map is None:
         key_map = {}
     sdk = model.state_dict().keys()
+
+    def first_present(*candidates):
+        """Return the model key for either legacy or Nex CLIP module layouts."""
+        return next((candidate for candidate in candidates if candidate in sdk), None)
+
     for k in sdk:
         if k.endswith(".weight"):
             key_map["text_encoders.{}".format(k[:-len(".weight")])] = k #generic lora format without any weird key names
@@ -217,8 +222,11 @@ def model_lora_keys_clip(model, key_map=None):
     clip_g_present = False
     for b in range(32): #TODO: clean up
         for c in LORA_CLIP_MAP:
-            k = "clip_h.transformer.text_model.encoder.layers.{}.{}.weight".format(b, c)
-            if k in sdk:
+            k = first_present(
+                "clip_h.transformer.text_model.encoder.layers.{}.{}.weight".format(b, c),
+                "clip_h.transformer.encoder.layers.{}.{}.weight".format(b, c),
+            )
+            if k is not None:
                 lora_key = text_model_lora_key.format(b, LORA_CLIP_MAP[c])
                 key_map[lora_key] = k
                 lora_key = "lora_te1_text_model_encoder_layers_{}_{}".format(b, LORA_CLIP_MAP[c])
@@ -226,8 +234,11 @@ def model_lora_keys_clip(model, key_map=None):
                 lora_key = "text_encoder.text_model.encoder.layers.{}.{}".format(b, c) #diffusers lora
                 key_map[lora_key] = k
 
-            k = "clip_l.transformer.text_model.encoder.layers.{}.{}.weight".format(b, c)
-            if k in sdk:
+            k = first_present(
+                "clip_l.transformer.text_model.encoder.layers.{}.{}.weight".format(b, c),
+                "clip_l.transformer.encoder.layers.{}.{}.weight".format(b, c),
+            )
+            if k is not None:
                 lora_key = text_model_lora_key.format(b, LORA_CLIP_MAP[c])
                 key_map[lora_key] = k
                 lora_key = "lora_te1_text_model_encoder_layers_{}_{}".format(b, LORA_CLIP_MAP[c]) #SDXL base
@@ -236,8 +247,11 @@ def model_lora_keys_clip(model, key_map=None):
                 lora_key = "text_encoder.text_model.encoder.layers.{}.{}".format(b, c) #diffusers lora
                 key_map[lora_key] = k
 
-            k = "clip_g.transformer.text_model.encoder.layers.{}.{}.weight".format(b, c)
-            if k in sdk:
+            k = first_present(
+                "clip_g.transformer.text_model.encoder.layers.{}.{}.weight".format(b, c),
+                "clip_g.transformer.encoder.layers.{}.{}.weight".format(b, c),
+            )
+            if k is not None:
                 clip_g_present = True
                 if clip_l_present:
                     lora_key = "lora_te2_text_model_encoder_layers_{}_{}".format(b, LORA_CLIP_MAP[c]) #SDXL base
@@ -271,13 +285,13 @@ def model_lora_keys_clip(model, key_map=None):
                 lora_key = "lora_te1_{}".format(l_key.replace(".", "_"))
                 key_map[lora_key] = k
 
-    k = "clip_g.transformer.text_projection.weight"
-    if k in sdk:
+    k = first_present("clip_g.transformer.text_projection.weight", "clip_g.text_projection")
+    if k is not None:
         key_map["lora_prior_te_text_projection"] = k #cascade lora?
         key_map["lora_te2_text_projection"] = k #OneTrainer SD3 lora
 
-    k = "clip_l.transformer.text_projection.weight"
-    if k in sdk:
+    k = first_present("clip_l.transformer.text_projection.weight", "clip_l.text_projection")
+    if k is not None:
         key_map["lora_te1_text_projection"] = k #OneTrainer SD3 lora, not necessary but omits warning
 
     return key_map

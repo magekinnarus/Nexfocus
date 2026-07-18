@@ -272,6 +272,10 @@ def acquire_patched_text_encoder_component(
             raise TypeError("CLIP patch application requires an isolated patcher clone.")
         if callable(isolated_clone):
             clip.patcher = isolated_clone()
+            if hasattr(clip, "cond_stage_model"):
+                # isolated_clone() deep-copies the model. Keep the CLIP container's
+                # encode target aligned with the model that receives the patches.
+                clip.cond_stage_model = clip.patcher.model
             log_telemetry("clip_lora_isolation_complete", f"checkpoint={request.checkpoint.path.name}")
 
         if resolved_patches is None:

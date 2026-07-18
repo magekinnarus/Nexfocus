@@ -257,6 +257,77 @@ def test_zero_clip_patch_stack_bypasses_isolated_clone(monkeypatch):
     assert isolate_calls == []
     runtime_state.clear_all_caches()
 
+
+def test_patched_cpu_clip_encodes_with_the_isolated_patched_model(monkeypatch):
+    import backend.sdxl_assembly.runtime_state as runtime_state
+    from backend.cpu_compiler import CpuArtifactCompiler
+
+    runtime_state.clear_all_caches()
+    clean_model = object()
+    isolated_model = object()
+    isolated_patcher = SimpleNamespace(model=isolated_model)
+    clip = SimpleNamespace(
+        cond_stage_model=clean_model,
+        patcher=SimpleNamespace(
+            model=clean_model,
+            isolated_clone=lambda: isolated_patcher,
+        ),
+    )
+    monkeypatch.setattr(runtime_state, "acquire_text_encoder_component", lambda _request: clip)
+    monkeypatch.setattr(CpuArtifactCompiler, "compile_patcher", lambda _patcher: None)
+
+    class ClipPatchWorker:
+        clip_patch_count = 0
+
+        @staticmethod
+        def resolve_clip_patches(_clip):
+            return (({"clip.weight": object()}, 1.0),)
+
+        def apply_clip_patches(self, patched_clip, *, resolved_patches):
+            assert resolved_patches
+            assert patched_clip.patcher is isolated_patcher
+            assert patched_clip.cond_stage_model is isolated_model
+            self.clip_patch_count = 1
+            return 1
+
+    request = SDXLAssemblyRequest(
+        request_id="isolated_clip_patch",
+        route_id="txt2img_assembly",
+        image_index=0,
+        image_count=1,
+        checkpoint=_identity("checkpoint.safetensors", "checkpoint_sha"),
+        vae=None,
+        model_variant_key="sdxl",
+        prompt="prompt",
+        negative_prompt="",
+        positive_texts=("prompt",),
+        negative_texts=("",),
+        width=64,
+        height=64,
+        steps=1,
+        cfg=1.0,
+        sampler="euler",
+        scheduler="karras",
+        seed=1,
+        device="cpu",
+        lora_specs=(
+            SimpleNamespace(
+                enabled=True,
+                clip_weight=1.0,
+                file_identity=_identity("dual.safetensors", "dual_sha"),
+            ),
+        ),
+    )
+
+    result = runtime_state.acquire_patched_text_encoder_component(
+        request,
+        lora_worker=ClipPatchWorker(),
+    )
+
+    assert result.cond_stage_model is isolated_model
+    assert result.patcher.model is isolated_model
+    runtime_state.clear_all_caches()
+
 def test_telemetry_envelope_success(monkeypatch, capsys):
     task = TaskState()
     task.base_model_name = "test_model.safetensors"

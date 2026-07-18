@@ -96,6 +96,16 @@ def _fake_clip(events=None):
     )
     return SimpleNamespace(patcher=patcher, cond_stage_model=model), model
 
+
+def test_gpu_text_key_ignores_explicit_unet_only_lora_addition():
+    dual = _lora("dual.safetensors", unet_weight=0.8, clip_weight=0.8)
+    unet_only = _lora("inpaint.patch", unet_weight=1.0, clip_weight=0.0)
+
+    dual_key = _GPU_TEXT_RUNTIME_STATE._build_key(_gpu_request(lora_specs=(dual,)))
+    mixed_key = _GPU_TEXT_RUNTIME_STATE._build_key(_gpu_request(lora_specs=(dual, unet_only)))
+
+    assert mixed_key == dual_key
+
 @pytest.fixture(autouse=True)
 def mock_dependencies(monkeypatch):
     def fake_get_identity(path):
