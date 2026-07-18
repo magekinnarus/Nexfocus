@@ -47,6 +47,23 @@ class SDXLLoraSpec:
     unet_weight: float
     clip_weight: float
     enabled: bool = True
+    requested_unet_weight: Optional[float] = None
+    requested_clip_weight: Optional[float] = None
+    decision_source: Optional[str] = None
+    decision_reason: Optional[str] = None
+    evidence_status: Optional[str] = None
+
+    def __post_init__(self):
+        if self.requested_unet_weight is None:
+            object.__setattr__(self, "requested_unet_weight", self.unet_weight)
+        if self.requested_clip_weight is None:
+            object.__setattr__(self, "requested_clip_weight", self.clip_weight)
+        if self.decision_source is None:
+            object.__setattr__(self, "decision_source", "conservative_default")
+        if self.decision_reason is None:
+            object.__setattr__(self, "decision_reason", "unspecified")
+        if self.evidence_status is None:
+            object.__setattr__(self, "evidence_status", "unavailable")
 
 @dataclass(frozen=True)
 class SDXLRuntimeIdentity:

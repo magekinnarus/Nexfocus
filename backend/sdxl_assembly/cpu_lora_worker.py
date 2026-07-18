@@ -107,7 +107,13 @@ class CpuLoraWorker:
         resolved_patches = []
         
         for spec in self.request.lora_specs:
-            if not spec.enabled or spec.clip_weight == 0.0:
+            if not spec.enabled:
+                continue
+            if spec.clip_weight == 0.0:
+                logger.info(
+                    "[SDXL LORA DETAIL] Explicitly or evidence-based UNet-only asset %s correctly skipping CLIP resolution.",
+                    spec.file_identity.path.name
+                )
                 continue
             
             lora_path = str(spec.file_identity.path)
@@ -135,6 +141,22 @@ class CpuLoraWorker:
                         
             if patch_dict:
                 resolved_patches.append((patch_dict, float(spec.clip_weight)))
+            else:
+                if (
+                    getattr(spec, "decision_source", None) == "asset_evidence"
+                    and getattr(spec, "evidence_status", None) == "recognized"
+                ):
+                    logger.warning(
+                        "[SDXL LORA WARNING] Evidence-predicted CLIP content in %s "
+                        "resolved zero compatible patches.",
+                        spec.file_identity.path.name,
+                    )
+                else:
+                    logger.info(
+                        "[SDXL LORA DETAIL] Conservative or unavailable evidence for %s "
+                        "retained the requested CLIP channel; zero compatible patches resolved.",
+                        spec.file_identity.path.name,
+                    )
 
         self.clip_patch_count = sum(len(patch_dict) for patch_dict, _weight in resolved_patches)
         return tuple(resolved_patches)

@@ -13,7 +13,7 @@ import torch
 
 import modules.config as config
 import modules.flags as flags
-from modules.lora_channel_policy import resolve_lora_channel_override
+from modules.lora_channel_policy import resolve_lora_channels, inspect_lora_asset
 import modules.mask_processing as mask_processing
 import modules.model_taxonomy as model_taxonomy
 from modules.util import HWC3, get_file_from_folder_list
@@ -455,21 +455,33 @@ def determine_eligibility(
     return True, None
 
 def _resolve_lora_channel_weights(input_loras, additional_loras, *, lora_channel_overrides=None):
-    """Return (path, UNet weight, CLIP weight) with explicit channel authority."""
-    def resolve_weights(lora_path, weight, default_clip_weight):
-        override = resolve_lora_channel_override(lora_channel_overrides, lora_path)
-        if isinstance(override, dict) and str(override.get("target", "")).strip().lower() == "unet_only":
-            return float(weight), float(override.get("clip_weight", 0.0) or 0.0)
-        return float(weight), float(default_clip_weight)
-
+    """Bridge to the new resolve_lora_channels policy for compatibility/tests."""
     resolved = []
     for lora_path, weight in input_loras:
-        u_w, c_w = resolve_weights(lora_path, weight, weight)
-        resolved.append((lora_path, u_w, c_w))
+        exists = isinstance(lora_path, str) and os.path.exists(lora_path)
+        file_identity = get_file_identity(lora_path) if exists else None
+        decision = resolve_lora_channels(
+            file_identity=file_identity,
+            requested_unet_weight=float(weight),
+            requested_clip_weight=float(weight),
+            provenance="input",
+            overrides=lora_channel_overrides,
+            raw_path=lora_path,
+        )
+        resolved.append((lora_path, decision.effective_unet_weight, decision.effective_clip_weight))
 
     for lora_path, weight in additional_loras:
-        u_w, c_w = resolve_weights(lora_path, weight, 0.0)
-        resolved.append((lora_path, u_w, c_w))
+        exists = isinstance(lora_path, str) and os.path.exists(lora_path)
+        file_identity = get_file_identity(lora_path) if exists else None
+        decision = resolve_lora_channels(
+            file_identity=file_identity,
+            requested_unet_weight=float(weight),
+            requested_clip_weight=0.0,
+            provenance="additional",
+            overrides=lora_channel_overrides,
+            raw_path=lora_path,
+        )
+        resolved.append((lora_path, decision.effective_unet_weight, decision.effective_clip_weight))
 
     return tuple(resolved)
 
@@ -532,17 +544,16 @@ def build_assembly_request(
         or []
     )
     lora_specs_list = []
+    lora_channel_overrides = _task_attr_or_none(task_state, 'lora_channel_overrides') or None
 
-    # User LoRAs may target both model branches. Additional base-model LoRAs
-    # (including the Fooocus Inpaint patch) are an explicit UNet-only channel.
-    all_lora_tuples = _resolve_lora_channel_weights(
-        resolved_input_loras,
-        resolved_additional,
-        lora_channel_overrides=_task_attr_or_none(task_state, 'lora_channel_overrides') or None,
-    )
+    # Resolve paths and build specs
+    raw_tuples = []
+    for lora_path, weight in resolved_input_loras:
+        raw_tuples.append((lora_path, weight, "input"))
+    for lora_path, weight in resolved_additional:
+        raw_tuples.append((lora_path, weight, "additional"))
 
-    # We resolve lookup path for each LoRA.
-    for lora_path, weight, clip_weight in all_lora_tuples:
+    for lora_path, weight, provenance in raw_tuples:
         candidate = str(lora_path).strip()
         if candidate in {'', 'None'}:
             continue
@@ -552,10 +563,64 @@ def build_assembly_request(
             raise FileNotFoundError(f"Could not resolve LoRA file: {candidate}")
             
         spec_identity = get_file_identity(resolved_lora_path)
+
+        decision = resolve_lora_channels(
+            file_identity=spec_identity,
+            requested_unet_weight=float(weight),
+            requested_clip_weight=float(weight) if provenance == "input" else 0.0,
+            provenance=provenance,
+            overrides=lora_channel_overrides,
+        )
+
+        evidence_summary = "none"
+        if decision.evidence_status == "recognized":
+            ev = inspect_lora_asset(spec_identity)
+            evidence_summary = f"UNet={ev.unet_count}, CLIP-L={ev.clip_l_count}, CLIP-G={ev.clip_g_count}, GenericText={ev.generic_text_count}, recognized_keys={ev.recognized_key_count}, unrecognized_keys={ev.unrecognized_key_count}"
+        elif decision.evidence_status == "unknown":
+            ev = inspect_lora_asset(spec_identity)
+            evidence_summary = f"unknown (unrecognized_keys={ev.unrecognized_key_count})"
+        else:
+            evidence_summary = decision.evidence_status
+
+        logger.info(
+            "[SDXL LORA ADMISSION] Resolved LoRA %s | "
+            "requested=(UNet=%.2f, CLIP=%.2f) | "
+            "evidence=%s | "
+            "effective=(UNet=%.2f, CLIP=%.2f) | "
+            "source=%s | "
+            "reason=%s",
+            spec_identity.path.name,
+            decision.requested_unet_weight,
+            decision.requested_clip_weight,
+            evidence_summary,
+            decision.effective_unet_weight,
+            decision.effective_clip_weight,
+            decision.source,
+            decision.reason
+        )
+
+        if decision.source == "conservative_default" and decision.evidence_status in {
+            "unknown",
+            "error",
+            "unavailable",
+        }:
+            logger.warning(
+                "[SDXL LORA WARNING] Unknown or unavailable evidence for %s (%s). "
+                "Using conservative default channels.",
+                spec_identity.path.name,
+                decision.evidence_status,
+            )
+
         lora_specs_list.append(SDXLLoraSpec(
             file_identity=spec_identity,
-            unet_weight=float(weight),
-            clip_weight=clip_weight,
+            unet_weight=decision.effective_unet_weight,
+            clip_weight=decision.effective_clip_weight,
+            enabled=True,
+            requested_unet_weight=decision.requested_unet_weight,
+            requested_clip_weight=decision.requested_clip_weight,
+            decision_source=decision.source,
+            decision_reason=decision.reason,
+            evidence_status=decision.evidence_status,
         ))
         
     lora_specs = tuple(lora_specs_list)
