@@ -225,7 +225,7 @@ def test_streaming_unet_host_pinning_is_explicit_request_metadata(monkeypatch):
     )
     monkeypatch.setattr(
         CpuArtifactCompiler,
-        'compile_patcher',
+        'compile_streaming_unet_patcher',
         lambda _unet, *, pin_unet_host=True: compile_calls.append(pin_unet_host),
     )
 
@@ -236,6 +236,29 @@ def test_streaming_unet_host_pinning_is_explicit_request_metadata(monkeypatch):
     ).start()
 
     assert compile_calls == [False, True]
+
+
+def test_generic_cpu_patcher_compile_does_not_pin_model_by_default(monkeypatch):
+    import backend.cpu_compiler as cpu_compiler
+    from backend.cpu_compiler import CpuArtifactCompiler
+
+    class DummyModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.ones(1, dtype=torch.float16))
+
+    patcher = SimpleNamespace(model=DummyModel(), patches={})
+    pinned_models = []
+    monkeypatch.setattr(
+        cpu_compiler,
+        '_pin_module_tensors',
+        lambda model: pinned_models.append(model) or 0,
+    )
+
+    result = CpuArtifactCompiler.compile_patcher(patcher)
+
+    assert result['status'] == 'noop'
+    assert pinned_models == []
 
 
 def test_lora_worker_caches_zero_patch_clip_results(monkeypatch):

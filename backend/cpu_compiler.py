@@ -195,8 +195,11 @@ def _pin_module_tensors(module: torch.nn.Module) -> int:
 
 class CpuArtifactCompiler:
     """
-    Multi-threaded, CPU-native artifact compiler capable of rapidly merging
-    dense LoRA deltas into a pinned FP16 base UNet.
+    Multi-threaded, CPU-native artifact compiler for materializing LoRA deltas.
+
+    Generic patcher compilation is non-pinning by default. Host pinning is a
+    streaming-UNet transfer policy and new assembly code must opt into it via
+    ``compile_streaming_unet_patcher``.
     """
 
     @staticmethod
@@ -283,13 +286,53 @@ class CpuArtifactCompiler:
         cls,
         patcher: Any,
         *,
-        pin_unet_host: bool = True,
+        pin_unet_host: bool = False,
         num_workers: Optional[int] = None,
         torch_threads_per_worker: Optional[int] = None,
     ) -> dict[str, Any]:
         """
-        Main entrypoint for compiling a NexModelPatcher in-place on CPU.
+        Compile a generic NexModelPatcher in-place on CPU.
+
+        ``pin_unet_host`` is retained temporarily for legacy callers. New code
+        must use ``compile_streaming_unet_patcher`` when compiling a streaming
+        UNet that may require page-locked host tensors.
         """
+        return cls._compile_patcher_impl(
+            patcher,
+            pin_model_host=bool(pin_unet_host),
+            num_workers=num_workers,
+            torch_threads_per_worker=torch_threads_per_worker,
+        )
+
+    @classmethod
+    @torch.no_grad()
+    def compile_streaming_unet_patcher(
+        cls,
+        patcher: Any,
+        *,
+        pin_unet_host: bool,
+        num_workers: Optional[int] = None,
+        torch_threads_per_worker: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Compile a streaming UNet and apply its explicit host-pinning policy."""
+        # Route through the legacy-observable entry point until W13 removes
+        # old runtime instrumentation around compile_patcher.
+        return cls.compile_patcher(
+            patcher,
+            pin_unet_host=bool(pin_unet_host),
+            num_workers=num_workers,
+            torch_threads_per_worker=torch_threads_per_worker,
+        )
+
+    @classmethod
+    def _compile_patcher_impl(
+        cls,
+        patcher: Any,
+        *,
+        pin_model_host: bool,
+        num_workers: Optional[int],
+        torch_threads_per_worker: Optional[int],
+    ) -> dict[str, Any]:
         patcher.model.requires_grad_(False)
         patcher.model.eval()
         
@@ -306,7 +349,7 @@ class CpuArtifactCompiler:
 
         patch_count = len(getattr(patcher, "patches", {}) or {})
         if patch_count == 0:
-            if pin_unet_host:
+            if pin_model_host:
                 _pin_module_tensors(patcher.model)
             return {"status": "noop", "patch_count": 0}
 
@@ -323,7 +366,7 @@ class CpuArtifactCompiler:
                     patcher,
                     tasks[index],
                     target_device,
-                    pin_output=pin_unet_host,
+                    pin_output=pin_model_host,
                 )
             ),
             torch_threads_per_worker=torch_threads_per_worker,
@@ -341,7 +384,7 @@ class CpuArtifactCompiler:
         patcher.model.device = target_device
 
         host_pinned_bytes = 0
-        if pin_unet_host:
+        if pin_model_host:
             _pin_module_tensors(patcher.model)
             host_pinned_bytes = _measure_pinned_module_tensors(patcher.model)
 

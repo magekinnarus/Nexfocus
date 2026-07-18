@@ -489,7 +489,7 @@ def _materialize_runtime_artifacts_on_cpu(
     if runtime.unet is not None:
         start = time.perf_counter()
         if use_cpu_compiler:
-            unet_result = CpuArtifactCompiler.compile_patcher(
+            unet_result = CpuArtifactCompiler.compile_streaming_unet_patcher(
                 runtime.unet,
                 pin_unet_host=pin_unet_host,
                 num_workers=cpu_compiler_workers,

@@ -47,7 +47,10 @@ class StreamingUnetSpine:
 
             logger.debug("[SDXL Telemetry] Compiling UNet on CPU (pin_host=%s)...", pin_model_host)
             log_telemetry("unet_compile_begin", f"pin_host={pin_model_host}")
-            CpuArtifactCompiler.compile_patcher(self.unet, pin_unet_host=pin_model_host)
+            CpuArtifactCompiler.compile_streaming_unet_patcher(
+                self.unet,
+                pin_unet_host=pin_model_host,
+            )
             self.unet.runtime_release_to_meta = False
             log_telemetry("unet_compile_complete", f"pin_host={pin_model_host}")
         else:

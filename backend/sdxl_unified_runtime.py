@@ -1284,7 +1284,7 @@ class UnifiedSDXLRuntime(
         clip_compile_metrics: dict[str, Any] = self._default_compile_metrics()
         if clip_patch_count > 0:
             clip_compile_start = time.perf_counter()
-            clip_compile = self._compile_patcher(clip_patcher)
+            clip_compile = self._compile_patcher(clip_patcher, pin_model_host=False)
             clip_compile_wall = time.perf_counter() - clip_compile_start
             clip_compile_metrics = clip_compile
             clip_host_pinned_bytes = int(clip_compile.get("host_pinned_bytes", 0))
