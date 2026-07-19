@@ -33,7 +33,7 @@ from backend.auxiliary_workers.mat_inpaint_worker import (
     undo_resize_square,
 )
 from modules.util import HWC3
-from backend.flux import LegacyFluxArchivedError
+from backend.legacy_runtime_errors import LegacyFluxArchivedError
 
 logger = logging.getLogger(__name__)
 

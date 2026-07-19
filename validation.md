@@ -507,6 +507,26 @@ Notes:
   until their slices land:
   `tracked_tests/test_w11_auxiliary_queue_preview.py`.
 
+## W13c Historical-Surface Quarantine Checks
+
+W13c removed the historical `backend/flux/` Python stubs and
+`backend/flux_fill_v2/` package after migrating the archived error contract
+and T5 assets to the active Flux Fill v3 owner. These checks verify the
+public-tree boundary without treating the ignored `.legacy_reference/`
+archive as runtime source:
+
+```powershell
+git ls-files backend/flux backend/flux_fill_v2 modules/gguf_headless_runner.py
+rg -n -P "backend\.flux(?!_fill_v3)|backend/flux/(?!fill_v3)|backend\.flux_fill_v2|backend/flux_fill_v2" backend modules tests tracked_tests
+git ls-files .legacy_reference
+git check-ignore -v .legacy_reference/P4-M18-W13/backend/flux/__init__.py
+```
+
+The GGUF headless runner remains a retained tool-support bridge because its
+remaining callers are public `tools/` scripts and its local process-transition
+regression test. W13d owns the atomic caller/support-module decision. W13c
+does not retire `tracked_tests/` or `tools/`.
+
 ## Optional Benchmarks
 
 These are evidence tools, not closure gates:
@@ -515,5 +535,7 @@ These are evidence tools, not closure gates:
 .\venv\Scripts\python.exe tools\bench_sdxl_pinned_residency_matrix.py
 .\venv\Scripts\python.exe tools\bench_sdxl_resident_lora_lifecycle.py --placement both
 .\venv\Scripts\python.exe tools\bench_headless_gguf_txt2img.py
-.\venv\Scripts\python.exe tools\bench_flux_fill_fp8_streaming.py
 ```
+
+Historical Flux benchmark scripts that still reference the retired donor
+surface are deferred to W13d and are not closure-gate commands.

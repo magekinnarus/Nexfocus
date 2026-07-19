@@ -34,6 +34,7 @@ from ldm_patched.ldm.modules.attention import optimized_attention_for_device
 
 logger = logging.getLogger(__name__)
 
+_FLUX_FILL_V3_ASSET_ROOT = Path(__file__).resolve().parent / "assets"
 _T5_FIXED_LENGTH = 256
 _CLIP_L_KEY = "text_model.encoder.layers.1.mlp.fc1.weight"
 _T5_KEY = "encoder.block.23.layer.1.DenseReluDense.wi_1.weight"
@@ -162,7 +163,7 @@ def _resolve_disk_paged_t5_gc_config(*, override_interval: int | None = None) ->
 
 
 def flux_t5_tokenizer_path() -> Path:
-    return Path(__file__).parent.parent / "flux" / "t5_tokenizer"
+    return _FLUX_FILL_V3_ASSET_ROOT / "t5_tokenizer"
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -569,7 +570,7 @@ class T5(torch.nn.Module):
 class T5XXLTextEncoder(torch.nn.Module, sd1_clip.ClipTokenWeightEncoder):
     def __init__(self, *, device="cpu", dtype=None, model_options: dict[str, Any] | None = None) -> None:
         super().__init__()
-        config_path = Path(__file__).parent.parent / "flux" / "t5_config_xxl.json"
+        config_path = _FLUX_FILL_V3_ASSET_ROOT / "t5_config_xxl.json"
         config = _load_json(config_path)
         operations = _pick_t5_ops(model_options)
         self.transformer = T5(config, dtype, device, operations)
