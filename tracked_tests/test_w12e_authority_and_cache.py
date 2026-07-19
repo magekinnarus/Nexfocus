@@ -10,7 +10,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import pytest
 from backend.sdxl_assembly.request_builder import _resolve_lora_channel_weights
-from backend.sdxl_assembly.lifecycle_coordinator import release_domains, _get_cn_cache_counts
+from backend.sdxl_assembly.lifecycle_coordinator import (
+    LifecycleChange,
+    release_domains,
+    _get_cn_cache_counts,
+)
 from backend.sdxl_assembly.runtime_state import LifecycleDomain
 from modules.async_worker import AsyncTask, handler
 from modules.lora_channel_policy import build_explicit_lora_channel_overrides
@@ -483,3 +487,51 @@ def test_additional_lora_telemetry_uses_frozen_provenance():
     assert _summarize_additional_unet_only_loras((user_unet_only, additional_patch)) == [
         "inpaint.patch@1",
     ]
+
+
+def test_gateway_lora_transition_only_releases_text_for_effective_clip_change():
+    from backend.sdxl_assembly.contracts import SDXLLoraSpec, ResolvedFileIdentity
+    from backend.sdxl_assembly.gateway import _build_gateway_request_state, _calculate_gateway_changes
+
+    checkpoint = SimpleNamespace(sha256="checkpoint")
+    base = SimpleNamespace(
+        checkpoint=checkpoint,
+        vae=None,
+        unet_posture=SimpleNamespace(value="streaming"),
+        clip_posture=SimpleNamespace(value="cpu_resident"),
+        vae_posture=SimpleNamespace(value="transient"),
+        lora_posture=SimpleNamespace(value="streaming"),
+        lora_stack_hash="base",
+        prompt_payload_hash="prompt",
+        spatial_context=None,
+        structural_controls=(),
+        contextual_controls=(),
+        lora_specs=(),
+    )
+    unet_spec = SDXLLoraSpec(
+        file_identity=ResolvedFileIdentity(Path("unet.safetensors"), "sha_unet", 1, 1),
+        unet_weight=0.2,
+        clip_weight=0.0,
+        provenance="input",
+    )
+    clip_spec = SDXLLoraSpec(
+        file_identity=ResolvedFileIdentity(Path("clip.safetensors"), "sha_clip", 1, 1),
+        unet_weight=0.0,
+        clip_weight=0.2,
+        provenance="input",
+    )
+
+    with_unet = SimpleNamespace(**{**base.__dict__, "lora_specs": (unet_spec,), "lora_stack_hash": "unet"})
+    with_clip = SimpleNamespace(**{**with_unet.__dict__, "lora_specs": (unet_spec, clip_spec), "lora_stack_hash": "dual"})
+
+    unet_changes = _calculate_gateway_changes(
+        _build_gateway_request_state(base),
+        _build_gateway_request_state(with_unet),
+    )
+    assert LifecycleChange.LORA_STACK_CHANGE not in unet_changes
+
+    clip_changes = _calculate_gateway_changes(
+        _build_gateway_request_state(with_unet),
+        _build_gateway_request_state(with_clip),
+    )
+    assert LifecycleChange.LORA_STACK_CHANGE in clip_changes

@@ -11,6 +11,7 @@ from backend.sdxl_assembly.request_builder import determine_eligibility, build_a
 from backend.sdxl_assembly.director import SDXLAssemblyDirector
 from backend.sdxl_assembly.progress import SDXLAssemblyProgressCallback
 from backend.sdxl_assembly.lifecycle_coordinator import release_for_changes, LifecycleChange
+from backend.sdxl_assembly.runtime_state import _clip_lora_signature, _unet_lora_signature
 from modules.pipeline.workflow_contracts import require_workflow_plan
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,8 @@ class _GatewayRequestState:
     vae_posture: str
     lora_posture: str
     lora_stack_hash: str
+    unet_lora_signature: tuple[tuple[str, float], ...]
+    clip_lora_signature: tuple[tuple[str, float], ...]
     prompt_payload_hash: str
     spatial_signature: Any
     structural_signature: tuple[Any, ...]
@@ -165,6 +168,8 @@ def _build_gateway_request_state(request: SDXLAssemblyRequest) -> _GatewayReques
         vae_posture=str(request.vae_posture.value),
         lora_posture=str(request.lora_posture.value),
         lora_stack_hash=str(request.lora_stack_hash or ""),
+        unet_lora_signature=_unet_lora_signature(request),
+        clip_lora_signature=_clip_lora_signature(request),
         prompt_payload_hash=str(request.prompt_payload_hash or ""),
         spatial_signature=_spatial_context_signature(request.spatial_context),
         structural_signature=structural_signature,
@@ -195,7 +200,25 @@ def _calculate_gateway_changes(
         add(LifecycleChange.TEXT_ENCODER_POSTURE_CHANGE)
     if previous_state.vae_posture != request_state.vae_posture:
         add(LifecycleChange.SPATIAL_VAE_CHANGE)
-    if previous_state.lora_stack_hash != request_state.lora_stack_hash:
+    unet_lora_changed = (
+        previous_state.unet_lora_signature != request_state.unet_lora_signature
+    )
+    clip_lora_changed = (
+        previous_state.clip_lora_signature != request_state.clip_lora_signature
+    )
+    # The resident-spine owner handles effective UNet LoRA changes during
+    # acquire.  Only an effective CLIP change invalidates prompt/text-owned
+    # state here; otherwise adding a recognized UNet-only LoRA needlessly
+    # releases and recompiles the unchanged CPU text encoder. Keep the hash
+    # fallback for synthetic/legacy requests with no effective LoRA entries.
+    if clip_lora_changed or (
+        previous_state.lora_stack_hash != request_state.lora_stack_hash
+        and not unet_lora_changed
+        and not previous_state.unet_lora_signature
+        and not request_state.unet_lora_signature
+        and not previous_state.clip_lora_signature
+        and not request_state.clip_lora_signature
+    ):
         add(LifecycleChange.LORA_STACK_CHANGE)
     if previous_state.prompt_payload_hash != request_state.prompt_payload_hash:
         add(LifecycleChange.PROMPT_CHANGE)
