@@ -186,6 +186,7 @@ def test_run_sdxl_assembly_task_preserves_interrupts(monkeypatch):
         spatial_context=None,
         structural_controls=(),
         contextual_controls=(),
+        lora_specs=(),
     )
 
     class FakeAssembly:
@@ -244,7 +245,7 @@ def test_run_sdxl_assembly_task_logs_additional_unet_only_loras(tmp_path, monkey
         contextual_controls=(),
         lora_specs=(
             SDXLLoraSpec(file_identity=_identity(user_lora_path, 'user_sha'), unet_weight=0.7, clip_weight=0.7),
-            SDXLLoraSpec(file_identity=_identity(patch_lora_path, 'patch_sha'), unet_weight=1.0, clip_weight=0.0),
+            SDXLLoraSpec(file_identity=_identity(patch_lora_path, 'patch_sha'), unet_weight=1.0, clip_weight=0.0, provenance="additional"),
         ),
     )
 
