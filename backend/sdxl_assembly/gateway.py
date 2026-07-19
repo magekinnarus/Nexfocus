@@ -58,6 +58,12 @@ def _summarize_additional_unet_only_loras(lora_specs: Any) -> list[str]:
     for spec in tuple(lora_specs or ()):
         if not bool(getattr(spec, "enabled", True)):
             continue
+        # Effective clip_weight=0 is not sufficient to identify an
+        # additional/inpaint LoRA: recognized user-selected UNet-only assets
+        # intentionally have the same effective channel shape. Preserve the
+        # frozen request provenance instead of reconstructing it from weights.
+        if getattr(spec, "provenance", None) != "additional":
+            continue
         unet_weight = float(getattr(spec, "unet_weight", 0.0) or 0.0)
         clip_weight = float(getattr(spec, "clip_weight", 0.0) or 0.0)
         if unet_weight == 0.0 or clip_weight != 0.0:

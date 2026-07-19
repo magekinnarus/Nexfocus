@@ -95,7 +95,7 @@ def build_debug_tab():
         minimum=1,
         maximum=20,
         step=1,
-        value=1,
+        value=modules.config.preview_update_interval,
         info='Keeps progress text live every step, but only sends preview images every N steps. Preview image size now auto-fits the panel.'
     )
     

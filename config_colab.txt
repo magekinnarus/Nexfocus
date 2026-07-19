@@ -38,6 +38,7 @@
     ],
     "default_aspect_ratio": "832*1216",
     "default_overwrite_step": 30,
+    "preview_update_interval": 5,
     "default_prompt_negative": "ugly, duplicate, mutilated, out of frame, hand, feet, fingers, mutation, deformed, blurry, out of focus, cropped",
     "default_prompt": "masterpiece, best quality, amazing quality, very aesthetic, promotional art, newest, dynamic angle, dramatic light, intricate details, cinematic, detailed background",
     "default_save_metadata_to_images": true,

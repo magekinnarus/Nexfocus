@@ -621,6 +621,7 @@ def build_assembly_request(
             decision_source=decision.source,
             decision_reason=decision.reason,
             evidence_status=decision.evidence_status,
+            provenance=provenance,
         ))
         
     lora_specs = tuple(lora_specs_list)

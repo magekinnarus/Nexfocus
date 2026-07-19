@@ -1038,6 +1038,12 @@ default_overwrite_step = get_config_item_or_set_default(
     validator=lambda x: isinstance(x, int),
     expected_type=int
 )
+preview_update_interval = get_config_item_or_set_default(
+    key='preview_update_interval',
+    default_value=1,
+    validator=lambda x: isinstance(x, int) and 1 <= x <= 20,
+    expected_type=int
+)
 default_overwrite_upscale = get_config_item_or_set_default(
     key='default_overwrite_upscale',
     default_value=-1,

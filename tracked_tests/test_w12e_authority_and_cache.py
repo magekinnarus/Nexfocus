@@ -461,3 +461,25 @@ def test_signatures_and_prompt_cache_effective_only():
     # Removing last effective CLIP LoRA
     req_unet_only = SimpleNamespace(lora_specs=(spec_unet,))
     assert _clip_lora_signature(req_unet_only) == ()
+
+
+def test_additional_lora_telemetry_uses_frozen_provenance():
+    from backend.sdxl_assembly.contracts import SDXLLoraSpec, ResolvedFileIdentity
+    from backend.sdxl_assembly.gateway import _summarize_additional_unet_only_loras
+
+    user_unet_only = SDXLLoraSpec(
+        file_identity=ResolvedFileIdentity(Path("stabilizer.safetensors"), "user", 1, 1),
+        unet_weight=0.2,
+        clip_weight=0.0,
+        provenance="input",
+    )
+    additional_patch = SDXLLoraSpec(
+        file_identity=ResolvedFileIdentity(Path("inpaint.patch"), "additional", 1, 1),
+        unet_weight=1.0,
+        clip_weight=0.0,
+        provenance="additional",
+    )
+
+    assert _summarize_additional_unet_only_loras((user_unet_only, additional_patch)) == [
+        "inpaint.patch@1",
+    ]

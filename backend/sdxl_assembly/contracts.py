@@ -52,6 +52,7 @@ class SDXLLoraSpec:
     decision_source: Optional[str] = None
     decision_reason: Optional[str] = None
     evidence_status: Optional[str] = None
+    provenance: Optional[str] = None
 
     def __post_init__(self):
         if self.requested_unet_weight is None:
@@ -64,6 +65,8 @@ class SDXLLoraSpec:
             object.__setattr__(self, "decision_reason", "unspecified")
         if self.evidence_status is None:
             object.__setattr__(self, "evidence_status", "unavailable")
+        if self.provenance is None:
+            object.__setattr__(self, "provenance", "input")
 
 @dataclass(frozen=True)
 class SDXLRuntimeIdentity:
