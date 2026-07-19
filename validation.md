@@ -12,7 +12,7 @@ evidence.
 Run validation through the project virtual environment:
 
 ```powershell
-.\venv\Scripts\python.exe tools\check_validation_env.py
+.\venv\Scripts\python.exe -m pytest tests\test_validation_environment.py -q
 ```
 
 Validated local W12 baseline:
@@ -92,14 +92,14 @@ machines may opt into streaming explicitly.
 Ownership/runtime audit search:
 
 ```powershell
-rg -n "sdxl_runtime_owner|process_diffusion|runtime_family|execution_mode|gguf_sdxl|flux_fill" backend modules tools tracked_tests tests
+rg -n "sdxl_runtime_owner|process_diffusion|runtime_family|execution_mode|gguf_sdxl|flux_fill" backend modules tests
 ```
 
 Compile sanity on the authoritative runtime surfaces:
 
 ```powershell
 $fluxV3Files = Get-ChildItem backend\flux_fill_v3\*.py | ForEach-Object { $_.FullName }
-.\venv\Scripts\python.exe -m py_compile @fluxV3Files backend\memory_governor.py backend\process_transition.py backend\resources.py backend\sdxl_runtime_policy.py backend\sdxl_streaming_runtime.py backend\sdxl_unified_runtime.py backend\staging_manager.py backend\sdxl_assembly\assembler.py backend\sdxl_assembly\director.py backend\sdxl_assembly\gateway.py backend\sdxl_assembly\cpu_text_encode_worker.py backend\sdxl_assembly\gpu_lora_worker.py backend\sdxl_assembly\gpu_text_encode_worker.py backend\sdxl_assembly\lifecycle_coordinator.py backend\sdxl_assembly\progress.py backend\sdxl_assembly\request_builder.py backend\sdxl_assembly\runtime_state.py modules\async_worker.py modules\objr_engine.py modules\parameter_registry.py modules\pipeline\inference.py modules\pipeline\routes.py modules\pipeline\tiled_refinement.py modules\runtime_surface_state.py modules\runtime_surface_api.py modules\task_state.py modules\ui_components\advanced_panel.py modules\ui_logic.py webui.py tools\check_validation_env.py tracked_tests\test_memory_residency.py tracked_tests\test_pipeline_routes.py tracked_tests\test_pipeline_stage_runtime.py tracked_tests\test_sdxl_assembly_w03_regression.py tracked_tests\test_sdxl_assembly_w04_regression.py tracked_tests\test_sdxl_assembly_w10b_lifecycle_coordinator.py tracked_tests\test_sdxl_assembly_w12b_production_resident.py tracked_tests\test_sdxl_assembly_w12c_gpu_text.py tests\test_runtime_surface_api.py tests\test_sdxl_assembly_w10d.py tests\test_sdxl_outer_wiring_w10c.py
+.\venv\Scripts\python.exe -m py_compile @fluxV3Files backend\memory_governor.py backend\process_transition.py backend\resources.py backend\sdxl_runtime_policy.py backend\sdxl_streaming_runtime.py backend\sdxl_unified_runtime.py backend\staging_manager.py backend\sdxl_assembly\assembler.py backend\sdxl_assembly\director.py backend\sdxl_assembly\gateway.py backend\sdxl_assembly\cpu_text_encode_worker.py backend\sdxl_assembly\gpu_lora_worker.py backend\sdxl_assembly\gpu_text_encode_worker.py backend\sdxl_assembly\lifecycle_coordinator.py backend\sdxl_assembly\progress.py backend\sdxl_assembly\request_builder.py backend\sdxl_assembly\runtime_state.py modules\async_worker.py modules\objr_engine.py modules\parameter_registry.py modules\pipeline\inference.py modules\pipeline\routes.py modules\pipeline\tiled_refinement.py modules\runtime_surface_state.py modules\runtime_surface_api.py modules\task_state.py modules\ui_components\advanced_panel.py modules\ui_logic.py webui.py tests\test_validation_environment.py tests\test_memory_residency.py tests\test_pipeline_routes.py tests\test_pipeline_stage_runtime.py tests\test_sdxl_assembly_w12b_production_resident.py tests\test_sdxl_assembly_w12c_gpu_text.py tests\test_runtime_surface_api.py tests\test_sdxl_assembly_w10d.py tests\test_sdxl_outer_wiring_w10c.py
 ```
 
 ## Regression Matrix
@@ -133,7 +133,7 @@ Covers:
 ### 3. Runtime-Centered Memory / Hardware / Flux Fill / Runtime-Surface Sanity
 
 ```powershell
-.\venv\Scripts\python.exe -m pytest tests\test_memory_governor.py tests\test_w11_policy_simplification.py tests\test_async_worker_process_transition.py tests\test_flux_fill_v3.py tests\test_flux_fill_integration.py tests\test_runtime_surface_api.py tracked_tests\test_flux_fill_t5_gc_policy.py -q
+.\venv\Scripts\python.exe -m pytest tests\test_memory_governor.py tests\test_w11_policy_simplification.py tests\test_async_worker_process_transition.py tests\test_flux_fill_v3.py tests\test_flux_fill_integration.py tests\test_runtime_surface_api.py tests\test_flux_fill_t5_gc_policy.py -q
 ```
 
 Covers:
@@ -148,8 +148,8 @@ Covers:
 ### 4. Worker-Centric SDXL Lifecycle / Queue-Boundary / Interrupt Regressions
 
 ```powershell
-.\venv\Scripts\python.exe -m pytest tests\test_sdxl_assembly_w10b.py tests\test_sdxl_assembly_w10d.py tests\test_sdxl_outer_wiring_w10c.py tracked_tests\test_sdxl_assembly_w03_regression.py tracked_tests\test_sdxl_assembly_w10b_lifecycle_coordinator.py tracked_tests\test_sdxl_assembly_w12b_production_resident.py tracked_tests\test_sdxl_assembly_w12c_gpu_text.py -q
-.\venv\Scripts\python.exe -m pytest tracked_tests\test_sdxl_assembly_w04_regression.py -k "assembly_progress_callback_preserves_interrupt_processing_exception or assembly_progress_callback_throttles_full_memory_telemetry" -q
+.\venv\Scripts\python.exe -m pytest tests\test_sdxl_assembly_w10b.py tests\test_sdxl_assembly_w10d.py tests\test_sdxl_outer_wiring_w10c.py tests\test_sdxl_assembly_w12b_production_resident.py tests\test_sdxl_assembly_w12c_gpu_text.py -q
+.\venv\Scripts\python.exe -m pytest tests\test_sdxl_assembly_w04.py -k "assembly_progress_callback_preserves_interrupt_processing_exception or assembly_progress_callback_throttles_full_memory_telemetry" -q
 .\venv\Scripts\python.exe -m pytest tests\test_runtime_surface_api.py -k "runtime_surface_skip_action_interrupts_active_task" -q
 ```
 
@@ -163,11 +163,11 @@ Covers:
 ### 5. W11 Auxiliary Worker Lifecycle And Upscale Routing
 
 ```powershell
-.\venv\Scripts\python.exe -m pytest tracked_tests\test_w11_gan_upscale_worker.py tracked_tests\test_w11_upscale_route_contract.py -q
-.\venv\Scripts\python.exe -m pytest tracked_tests\test_w11_remove_workers.py tests\test_internal_assets.py -q
+.\venv\Scripts\python.exe -m pytest tests\test_w11_gan_upscale_worker.py tests\test_w11_upscale_route_contract.py -q
+.\venv\Scripts\python.exe -m pytest tests\test_w11_remove_workers.py tests\test_internal_assets.py -q
 .\venv\Scripts\python.exe -m pytest tests\test_flux_fill_integration.py -k "remove_object_with_engine_dispatches_mat_and_flux or removal_stage_persists_background_and_object_outputs or flux_fill_removal_stage" -q
-.\venv\Scripts\python.exe -m pytest tracked_tests\test_w11_color_enhanced_upscale.py tracked_tests\test_w11_color_enhanced_upscale_smoke.py -q
-.\venv\Scripts\python.exe -m pytest tracked_tests\test_sdxl_progress_callback_compatibility.py -q
+.\venv\Scripts\python.exe -m pytest tests\test_w11_color_enhanced_upscale.py tests\test_w11_color_enhanced_upscale_smoke.py -q
+.\venv\Scripts\python.exe -m pytest tests\test_sdxl_progress_callback_compatibility.py -q
 .\venv\Scripts\python.exe -m pytest tests\test_sdxl_assembly_w06.py -k "vae_encode_worker_transient_lifecycle or vae_encode_cache_hit_preserves_blend_mask" -q
 ```
 
@@ -479,10 +479,10 @@ Expected result:
 - The color-enhanced image has no regular 32-pixel block lattice; color transfer
   remains smooth under a one-pixel source translation.
 
-### 8. Tracked Route / Stage Smoke
+### 8. Migrated Route / Stage Smoke
 
 ```powershell
-.\venv\Scripts\python.exe -m pytest tracked_tests\test_pipeline_routes.py tracked_tests\test_pipeline_stage_runtime.py tracked_tests\test_memory_residency.py -q
+.\venv\Scripts\python.exe -m pytest tests\test_pipeline_routes.py tests\test_pipeline_stage_runtime.py tests\test_memory_residency.py -q
 ```
 
 Covers:
@@ -505,37 +505,57 @@ Notes:
   already green.
 - Remaining W11 scaffold modules exist as intentionally skipped placeholders
   until their slices land:
-  `tracked_tests/test_w11_auxiliary_queue_preview.py`.
+  `tests/test_w11_auxiliary_queue_preview.py`.
 
-## W13c Historical-Surface Quarantine Checks
+## W13d Legacy-Surface Quarantine Checks
 
-W13c removed the historical `backend/flux/` Python stubs and
-`backend/flux_fill_v2/` package after migrating the archived error contract
-and T5 assets to the active Flux Fill v3 owner. These checks verify the
-public-tree boundary without treating the ignored `.legacy_reference/`
-archive as runtime source:
+W13d retired the public `tracked_tests/` and `tools/` collections along with the GGUF headless runner and its callers, following the historical W13c Flux surface quarantine. These checks verify the public-tree boundary without treating the ignored `.legacy_reference/` archive as runtime source:
+
+The required isolated Flux prompt-conditioning cache-miss worker is now owned
+by `backend/flux_fill_v3/prompt_conditioning_artifact_worker.py`; it is not a
+replacement general-purpose tools collection.
 
 ```powershell
-git ls-files backend/flux backend/flux_fill_v2 modules/gguf_headless_runner.py
-rg -n -P "backend\.flux(?!_fill_v3)|backend/flux/(?!fill_v3)|backend\.flux_fill_v2|backend/flux_fill_v2" backend modules tests tracked_tests
+git ls-files backend/flux backend/flux_fill_v2 modules/gguf_headless_runner.py tracked_tests tools
+rg -n -P "backend\.flux(?!_fill_v3)|backend/flux/(?!fill_v3)|backend\.flux_fill_v2|backend/flux_fill_v2|modules/gguf_headless_runner|tracked_tests|tools[\\/]" backend modules tests
 git ls-files .legacy_reference
 git check-ignore -v .legacy_reference/P4-M18-W13/backend/flux/__init__.py
 ```
 
-The GGUF headless runner remains a retained tool-support bridge because its
-remaining callers are public `tools/` scripts and its local process-transition
-regression test. W13d owns the atomic caller/support-module decision. W13c
-does not retire `tracked_tests/` or `tools/`.
+## W13e Validation Surface Classification
 
-## Optional Benchmarks
+The existing validation surface is intentionally split by repository policy:
 
-These are evidence tools, not closure gates:
+| Surface | Classification | Boundary |
+|---|---|---|
+| Environment check and the `Search And Compile` command | **local maintainer** | They reference the ignored `tests/` owners and use the maintainer virtual environment. |
+| Regression Matrix sections 1-9 | **local maintainer** | The canonical tests remain ignored local maintainer tests; they are not clone-owned CI coverage. |
+| Manual Acceptance Replay sections 1-8 | **historical/manual** | These are hardware, model, and UI replay instructions rather than fresh-clone executable gates. |
+| W13d Legacy-Surface Quarantine Checks above | **local maintainer** | The `rg` command includes the ignored local `tests/` tree; the Git inventory subcommands remain useful public checks. |
+| Commands below | **fresh-clone/public** | Every repository path named by the command is tracked in the integrated candidate, or is an intentionally absent ignored path tested by Git metadata. |
+
+The W13 mission documents `P4-M18-W13_retirement_manifest.md` and
+`P4-M18_work_list.md` are deliberately local ignored maintainer documents after
+the W13d Update2 commit. Their absence from a fresh clone is expected and must
+not be repaired by publishing the `.agent/` tree.
+
+### Fresh-clone/public W13e checks
+
+Run these from the root of a clean clone of the integrated candidate:
 
 ```powershell
-.\venv\Scripts\python.exe tools\bench_sdxl_pinned_residency_matrix.py
-.\venv\Scripts\python.exe tools\bench_sdxl_resident_lora_lifecycle.py --placement both
-.\venv\Scripts\python.exe tools\bench_headless_gguf_txt2img.py
+git status --short
+git ls-files tracked_tests tools modules/gguf_headless_runner.py .legacy_reference
+git grep -n -P "backend\.flux(?!_fill_v3)|backend/flux/(?!fill_v3)|backend\.flux_fill_v2|backend/flux_fill_v2|modules/gguf_headless_runner" -- backend modules webui.py
+git grep -n -E "from tools|import tools|generate_flux_t5_fp16_stream_artifact" -- backend modules webui.py
+git ls-files --error-unmatch backend/flux_fill_v3/prompt_conditioning_artifact_worker.py backend/flux_fill_v3/t5_worker.py validation.md
+git check-ignore -v .legacy_reference/P4-M18-W13/backend/flux/__init__.py
+python -c "import py_compile, subprocess; paths=[p for p in subprocess.check_output(['git','ls-files','-z','--','*.py']).decode().split(chr(0)) if p]; [py_compile.compile(p,doraise=True) for p in paths]; print('tracked_python_compiled',len(paths))"
+python -c "from pathlib import Path; from backend.flux_fill_v3 import prompt_conditioning_artifact_worker as worker; assert worker.REPO_ROOT == Path.cwd(); print('worker_import_ok', worker.REPO_ROOT)"
 ```
 
-Historical Flux benchmark scripts that still reference the retired donor
-surface are deferred to W13d and are not closure-gate commands.
+Expected results are an empty status, no output from the retired-path and
+retired-import searches, tracked-path proof for the maintained worker and
+validation document, an ignore-rule match for the quarantine path, and a
+successful compile/import result. The clone must not contain `.legacy_reference/`,
+`tests/`, `tools/`, or either ignored W13 mission document.

@@ -985,7 +985,7 @@ def _resolve_request_conditioning_cache_path(request: FluxFillRequest) -> Path:
 
 
 def _flux_prompt_conditioning_generator_script() -> Path:
-    return Path(__file__).resolve().parents[2] / "tools" / "generate_flux_t5_fp16_stream_artifact.py"
+    return Path(__file__).resolve().with_name("prompt_conditioning_artifact_worker.py")
 
 
 def _flux_prompt_conditioning_metrics_path(cache_path: Path) -> Path:
@@ -1040,7 +1040,7 @@ def generate_flux_prompt_conditioning_artifact(
     cache_path = Path(cache_path)
     t5_path = _require_disk_paged_t5_checkpoint(t5_path)
     metrics_path = _flux_prompt_conditioning_metrics_path(cache_path)
-    repo_root = script_path.parent.parent
+    repo_root = script_path.parents[2]
     command = [
         sys.executable,
         str(script_path),

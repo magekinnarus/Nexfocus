@@ -1,3 +1,10 @@
+"""Isolated Flux prompt-conditioning artifact subprocess.
+
+This is the runtime-owned replacement for the retired maintainer generator
+under ``tools/``.  It intentionally remains a single-shot subprocess so the
+large text encoder and its host allocations die with the worker process.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -19,7 +26,7 @@ except ImportError:  # pragma: no cover - optional dependency
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -83,7 +90,6 @@ def _capture_process_memory_snapshot() -> dict[str, float] | None:
     try:
         process = psutil.Process()
         info = process.memory_info()
-        full = None
         try:
             full = process.memory_full_info()
         except Exception:
@@ -100,14 +106,21 @@ def _capture_process_memory_snapshot() -> dict[str, float] | None:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Single-shot Flux fp16 streaming prompt-conditioning artifact generator.")
+    parser = argparse.ArgumentParser(
+        description="Single-shot Flux fp16 streaming prompt-conditioning artifact generator."
+    )
     parser.add_argument("--prompt", required=True, help="Prompt text to encode.")
     parser.add_argument("--output", required=True, help="Output .pt artifact path.")
     parser.add_argument("--clip-l", default=str(DEFAULT_CLIP_L_PATH), help="Path to Flux CLIP-L weights.")
     parser.add_argument("--fp16-t5", default=str(DEFAULT_FP16_T5_PATH), help="Path to the fp16 T5 safetensors weights.")
     parser.add_argument("--embedding-directory", default=None, help="Optional embedding directory.")
     parser.add_argument("--metrics-json", default=None, help="Optional metrics JSON output path.")
-    parser.add_argument("--disk-paged-t5-gc-interval", type=int, default=None, help="Optional fixed disk-paged T5 GC interval override.")
+    parser.add_argument(
+        "--disk-paged-t5-gc-interval",
+        type=int,
+        default=None,
+        help="Optional fixed disk-paged T5 GC interval override.",
+    )
     parser.add_argument("--traceback", action="store_true")
     return parser.parse_args()
 
@@ -121,11 +134,17 @@ def main() -> int:
     if not prompt_text:
         raise ValueError("--prompt must be a non-empty string.")
     if Path(args.fp16_t5).suffix.lower() != ".safetensors":
-        raise ValueError("--fp16-t5 must point to a .safetensors checkpoint for disk-paged worker execution.")
+        raise ValueError(
+            "--fp16-t5 must point to a .safetensors checkpoint for disk-paged worker execution."
+        )
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    metrics_path = Path(args.metrics_json) if args.metrics_json else output_path.with_suffix(output_path.suffix + ".metrics.json")
+    metrics_path = (
+        Path(args.metrics_json)
+        if args.metrics_json
+        else output_path.with_suffix(output_path.suffix + ".metrics.json")
+    )
 
     from backend import resources
     from backend.flux_fill_v3.t5_worker import (
@@ -145,11 +164,7 @@ def main() -> int:
             phase_snapshots: list[dict[str, Any]] = []
             total_start = time.perf_counter()
             phase_snapshots.append(
-                {
-                    "phase": "pre_load",
-                    "elapsed_wall": 0.0,
-                    "memory": _capture_process_memory_snapshot(),
-                }
+                {"phase": "pre_load", "elapsed_wall": 0.0, "memory": _capture_process_memory_snapshot()}
             )
             load_start = time.perf_counter()
             encoder = load_flux_prompt_text_encoder(
@@ -193,7 +208,7 @@ def main() -> int:
                     "clip_l_path": str(args.clip_l),
                     "t5_path": str(args.fp16_t5),
                     "t5_format": "safetensors",
-                    "generator": "tools/generate_flux_t5_fp16_stream_artifact.py",
+                    "generator": "backend/flux_fill_v3/prompt_conditioning_artifact_worker.py",
                     "conditioning_kind": "prompt",
                     "transport": "pt_cache",
                     "text_encoder_resident": False,
@@ -208,11 +223,7 @@ def main() -> int:
             save_wall = time.perf_counter() - save_start
             total_wall = time.perf_counter() - total_start
             phase_snapshots.append(
-                {
-                    "phase": "post_save",
-                    "elapsed_wall": total_wall,
-                    "memory": _capture_process_memory_snapshot(),
-                }
+                {"phase": "post_save", "elapsed_wall": total_wall, "memory": _capture_process_memory_snapshot()}
             )
 
         payload = {
@@ -249,10 +260,7 @@ def main() -> int:
     except Exception as exc:
         error = {
             "status": "error",
-            "error": {
-                "type": exc.__class__.__name__,
-                "message": str(exc),
-            },
+            "error": {"type": exc.__class__.__name__, "message": str(exc)},
             "output_path": str(output_path),
             "metrics_path": str(metrics_path),
         }
