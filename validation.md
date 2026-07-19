@@ -1,15 +1,17 @@
 # Runtime Validation
 
-This file defines the canonical automated validation contract for the post-W11
-runtime model.
+This file defines the canonical validation contract for the post-W11 runtime
+model. Each section is labeled by the environment that can execute it.
 
 Historical mission work reports still describe what was true when each work
 order closed. Use the commands in this file for current validation and closure
 evidence.
 
-## Environment
+## Environment (local maintainer)
 
-Run validation through the project virtual environment:
+This check depends on the ignored maintainer `tests/` tree and project virtual
+environment. It is not available in a normal fresh clone. Run it from a
+maintainer worktree through the project virtual environment:
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest tests\test_validation_environment.py -q
@@ -87,7 +89,10 @@ the streaming lane. There is no separate `resident` UI override because resident
 machines should naturally resolve to `auto`, while streaming-capable benchmark
 machines may opt into streaming explicitly.
 
-## Search And Compile
+## Search And Compile (local maintainer)
+
+These commands depend on the ignored maintainer `tests/` tree and project
+virtual environment. They are not fresh-clone/public gates.
 
 Ownership/runtime audit search:
 
@@ -102,7 +107,10 @@ $fluxV3Files = Get-ChildItem backend\flux_fill_v3\*.py | ForEach-Object { $_.Ful
 .\venv\Scripts\python.exe -m py_compile @fluxV3Files backend\memory_governor.py backend\process_transition.py backend\resources.py backend\sdxl_runtime_policy.py backend\sdxl_streaming_runtime.py backend\sdxl_unified_runtime.py backend\staging_manager.py backend\sdxl_assembly\assembler.py backend\sdxl_assembly\director.py backend\sdxl_assembly\gateway.py backend\sdxl_assembly\cpu_text_encode_worker.py backend\sdxl_assembly\gpu_lora_worker.py backend\sdxl_assembly\gpu_text_encode_worker.py backend\sdxl_assembly\lifecycle_coordinator.py backend\sdxl_assembly\progress.py backend\sdxl_assembly\request_builder.py backend\sdxl_assembly\runtime_state.py modules\async_worker.py modules\objr_engine.py modules\parameter_registry.py modules\pipeline\inference.py modules\pipeline\routes.py modules\pipeline\tiled_refinement.py modules\runtime_surface_state.py modules\runtime_surface_api.py modules\task_state.py modules\ui_components\advanced_panel.py modules\ui_logic.py webui.py tests\test_validation_environment.py tests\test_memory_residency.py tests\test_pipeline_routes.py tests\test_pipeline_stage_runtime.py tests\test_sdxl_assembly_w12b_production_resident.py tests\test_sdxl_assembly_w12c_gpu_text.py tests\test_runtime_surface_api.py tests\test_sdxl_assembly_w10d.py tests\test_sdxl_outer_wiring_w10c.py
 ```
 
-## Regression Matrix
+## Regression Matrix (local maintainer)
+
+These commands use the ignored maintainer `tests/` tree and project virtual
+environment. They are not clone-owned CI coverage.
 
 ### 1. Unified SDXL Runtime And Image-Input Handoff
 
@@ -197,10 +205,11 @@ Covers:
   transformer-tile caps, CPU-side tile accumulation, and final output
   shape/range contracts
 
-## Manual Acceptance Replay
+## Manual Acceptance Replay (historical/manual)
 
 These are recommended scenario checks for Flux Fill route ownership changes and
-are especially useful before pushing to Colab:
+are especially useful before pushing to Colab. They require local hardware,
+models, or UI interaction and are not fresh-clone executable gates:
 
 ### 1. Flux Warm-Reuse Replay
 
@@ -534,14 +543,16 @@ The existing validation surface is intentionally split by repository policy:
 | W13d Legacy-Surface Quarantine Checks above | **local maintainer** | The `rg` command includes the ignored local `tests/` tree; the Git inventory subcommands remain useful public checks. |
 | Commands below | **fresh-clone/public** | Every repository path named by the command is tracked in the integrated candidate, or is an intentionally absent ignored path tested by Git metadata. |
 
-The W13 mission documents `P4-M18-W13_retirement_manifest.md` and
-`P4-M18_work_list.md` are deliberately local ignored maintainer documents after
-the W13d Update2 commit. Their absence from a fresh clone is expected and must
-not be repaired by publishing the `.agent/` tree.
+The `.agent/` tree contains local maintainer governance and is intentionally
+absent from a fresh clone. Its absence is expected and must not be repaired by
+publishing project-governance documents.
 
 ### Fresh-clone/public W13e checks
 
-Run these from the root of a clean clone of the integrated candidate:
+Run these from the root of a clean clone of the integrated candidate. The
+Python checks may use an external compatible Python environment (including a
+maintainer virtual environment), but the clone must remain the working directory
+and import root. `-B` prevents validation from creating bytecode caches:
 
 ```powershell
 git status --short
@@ -550,12 +561,12 @@ git grep -n -P "backend\.flux(?!_fill_v3)|backend/flux/(?!fill_v3)|backend\.flux
 git grep -n -E "from tools|import tools|generate_flux_t5_fp16_stream_artifact" -- backend modules webui.py
 git ls-files --error-unmatch backend/flux_fill_v3/prompt_conditioning_artifact_worker.py backend/flux_fill_v3/t5_worker.py validation.md
 git check-ignore -v .legacy_reference/P4-M18-W13/backend/flux/__init__.py
-python -c "import py_compile, subprocess; paths=[p for p in subprocess.check_output(['git','ls-files','-z','--','*.py']).decode().split(chr(0)) if p]; [py_compile.compile(p,doraise=True) for p in paths]; print('tracked_python_compiled',len(paths))"
-python -c "from pathlib import Path; from backend.flux_fill_v3 import prompt_conditioning_artifact_worker as worker; assert worker.REPO_ROOT == Path.cwd(); print('worker_import_ok', worker.REPO_ROOT)"
+python -B -c "import subprocess, tokenize; paths=[p for p in subprocess.check_output(['git','ls-files','-z','--','*.py']).decode().split(chr(0)) if p]; [compile(tokenize.open(path).read(), path, 'exec') for path in paths]; print('tracked_python_compiled',len(paths))"
+python -B -c "from pathlib import Path; from backend.flux_fill_v3 import prompt_conditioning_artifact_worker as worker; assert worker.REPO_ROOT == Path.cwd(); print('worker_import_ok', worker.REPO_ROOT)"
 ```
 
-Expected results are an empty status, no output from the retired-path and
-retired-import searches, tracked-path proof for the maintained worker and
-validation document, an ignore-rule match for the quarantine path, and a
-successful compile/import result. The clone must not contain `.legacy_reference/`,
-`tests/`, `tools/`, or either ignored W13 mission document.
+Expected results are an empty status; exit code 1 with no output from each
+retired-path/import `git grep`; tracked-path proof for the maintained worker and
+validation document; an ignore-rule match for the quarantine path; and a
+successful compile/import result. The clone must not contain `.agent/`,
+`.legacy_reference/`, `tests/`, `tools/`, or generated bytecode caches.
