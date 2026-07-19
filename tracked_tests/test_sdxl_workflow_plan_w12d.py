@@ -682,16 +682,26 @@ def test_prepared_inpaint_uses_frozen_source_bbox_and_fails_closed_without_it():
         apply_inpaint(missing_bbox_state, source, np.zeros(source.shape[:2], dtype=np.uint8))
 
 
-def test_additional_lora_channel_is_unet_only():
-    from backend.sdxl_assembly.request_builder import _resolve_lora_channel_weights
+def test_additional_lora_channel_policy_is_unet_only():
+    from modules.lora_channel_policy import resolve_lora_channels
 
-    assert _resolve_lora_channel_weights(
-        [('user.safetensors', 0.7)],
-        [('inpaint_v26.fooocus.patch', 1.0)],
-    ) == (
-        ('user.safetensors', 0.7, 0.7),
-        ('inpaint_v26.fooocus.patch', 1.0, 0.0),
+    user_decision = resolve_lora_channels(
+        file_identity=None,
+        requested_unet_weight=0.7,
+        requested_clip_weight=0.7,
+        provenance="input",
+        raw_path="user.safetensors",
     )
+    additional_decision = resolve_lora_channels(
+        file_identity=None,
+        requested_unet_weight=1.0,
+        requested_clip_weight=0.0,
+        provenance="additional",
+        raw_path="inpaint_v26.fooocus.patch",
+    )
+
+    assert (user_decision.effective_unet_weight, user_decision.effective_clip_weight) == (0.7, 0.7)
+    assert (additional_decision.effective_unet_weight, additional_decision.effective_clip_weight) == (1.0, 0.0)
 
 
 def test_preflight_additional_loras_outpaint_uses_outpaint_engine_only(monkeypatch):

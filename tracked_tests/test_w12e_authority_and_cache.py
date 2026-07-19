@@ -9,7 +9,6 @@ sys.argv = [sys.argv[0]]
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import pytest
-from backend.sdxl_assembly.request_builder import _resolve_lora_channel_weights
 from backend.sdxl_assembly.lifecycle_coordinator import (
     LifecycleChange,
     release_domains,
@@ -17,25 +16,38 @@ from backend.sdxl_assembly.lifecycle_coordinator import (
 )
 from backend.sdxl_assembly.runtime_state import LifecycleDomain
 from modules.async_worker import AsyncTask, handler
-from modules.lora_channel_policy import build_explicit_lora_channel_overrides
+from modules.lora_channel_policy import (
+    build_explicit_lora_channel_overrides,
+    resolve_lora_channels,
+)
 
 
-def test_resolve_lora_channel_weights_requires_explicit_overrides_for_speed_presets():
+def test_lora_channel_policy_requires_explicit_overrides_for_speed_presets():
     speed_lora = ("D:/loras/sdxl_lightning_4step_lora.safetensors", 0.8)
 
-    unresolved = _resolve_lora_channel_weights([speed_lora], [], lora_channel_overrides=None)
-    assert unresolved == ((speed_lora[0], 0.8, 0.8),)
+    unresolved = resolve_lora_channels(
+        file_identity=None,
+        requested_unet_weight=speed_lora[1],
+        requested_clip_weight=speed_lora[1],
+        provenance="input",
+        overrides=None,
+        raw_path=speed_lora[0],
+    )
+    assert (unresolved.effective_unet_weight, unresolved.effective_clip_weight) == (0.8, 0.8)
 
     overrides = build_explicit_lora_channel_overrides([speed_lora])
-    resolved = _resolve_lora_channel_weights(
-        [speed_lora],
-        [],
-        lora_channel_overrides=overrides,
+    resolved = resolve_lora_channels(
+        file_identity=None,
+        requested_unet_weight=speed_lora[1],
+        requested_clip_weight=speed_lora[1],
+        provenance="input",
+        overrides=overrides,
+        raw_path=speed_lora[0],
     )
-    assert resolved == ((speed_lora[0], 0.8, 0.0),)
+    assert (resolved.effective_unet_weight, resolved.effective_clip_weight) == (0.8, 0.0)
 
 
-def test_resolve_lora_channel_weights_zeroes_presets_with_explicit_overrides():
+def test_lora_channel_policy_zeroes_presets_and_additional_loras():
     normal_lora = ("my_custom_lora.safetensors", 0.7)
     lcm_lora = ("sdxl_lcm_lora.safetensors", 0.5)
     lightning_lora = ("sdxl_lightning_4step_lora.safetensors", 0.8)
@@ -43,11 +55,29 @@ def test_resolve_lora_channel_weights_zeroes_presets_with_explicit_overrides():
     input_loras = [normal_lora, lcm_lora, lightning_lora]
     additional_loras = [("sdxl_inpaint_lora.safetensors", 1.0)]
 
-    resolved = _resolve_lora_channel_weights(
-        input_loras,
-        additional_loras,
-        lora_channel_overrides=build_explicit_lora_channel_overrides(input_loras),
-    )
+    overrides = build_explicit_lora_channel_overrides(input_loras)
+    resolved = []
+    for lora_path, weight in input_loras:
+        decision = resolve_lora_channels(
+            file_identity=None,
+            requested_unet_weight=weight,
+            requested_clip_weight=weight,
+            provenance="input",
+            overrides=overrides,
+            raw_path=lora_path,
+        )
+        resolved.append((lora_path, decision.effective_unet_weight, decision.effective_clip_weight))
+
+    for lora_path, weight in additional_loras:
+        decision = resolve_lora_channels(
+            file_identity=None,
+            requested_unet_weight=weight,
+            requested_clip_weight=0.0,
+            provenance="additional",
+            overrides=overrides,
+            raw_path=lora_path,
+        )
+        resolved.append((lora_path, decision.effective_unet_weight, decision.effective_clip_weight))
 
     assert len(resolved) == 4
     assert resolved[0][0] == normal_lora[0]

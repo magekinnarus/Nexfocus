@@ -454,38 +454,6 @@ def determine_eligibility(
 
     return True, None
 
-def _resolve_lora_channel_weights(input_loras, additional_loras, *, lora_channel_overrides=None):
-    """Bridge to the new resolve_lora_channels policy for compatibility/tests."""
-    resolved = []
-    for lora_path, weight in input_loras:
-        exists = isinstance(lora_path, str) and os.path.exists(lora_path)
-        file_identity = get_file_identity(lora_path) if exists else None
-        decision = resolve_lora_channels(
-            file_identity=file_identity,
-            requested_unet_weight=float(weight),
-            requested_clip_weight=float(weight),
-            provenance="input",
-            overrides=lora_channel_overrides,
-            raw_path=lora_path,
-        )
-        resolved.append((lora_path, decision.effective_unet_weight, decision.effective_clip_weight))
-
-    for lora_path, weight in additional_loras:
-        exists = isinstance(lora_path, str) and os.path.exists(lora_path)
-        file_identity = get_file_identity(lora_path) if exists else None
-        decision = resolve_lora_channels(
-            file_identity=file_identity,
-            requested_unet_weight=float(weight),
-            requested_clip_weight=0.0,
-            provenance="additional",
-            overrides=lora_channel_overrides,
-            raw_path=lora_path,
-        )
-        resolved.append((lora_path, decision.effective_unet_weight, decision.effective_clip_weight))
-
-    return tuple(resolved)
-
-
 
 def build_assembly_request(
     task_state: Any,
