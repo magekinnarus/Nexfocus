@@ -12,12 +12,6 @@ def resolve_default_sdxl_assembly_posture(profile=None):
     profile_name = str(getattr(profile, 'name', '') or '').strip().lower()
     return 'gpu_text' if profile_name == PROFILE_COLAB_FREE else 'auto'
 
-def build_advanced_tab():
-    """
-    Builds the Advanced tab components (now mostly empty or wrapper).
-    """
-    return {}
-
 def build_debug_tab():
     """
     Builds the Debug Tools tab contents.
