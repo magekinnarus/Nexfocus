@@ -526,20 +526,6 @@ def sample_ddpm(model, x, sigmas, extra_args=None, callback=None, disable=None, 
     return generic_step_sampler(model, x, sigmas, extra_args, callback, disable, noise_sampler, DDPMSampler_step)
 
 @torch.no_grad()
-def sample_lcm(model, x, sigmas, extra_args=None, callback=None, disable=None, noise_sampler=None):
-    extra_args, seed = {} if extra_args is None else extra_args, extra_args.get("seed", None)
-    noise_sampler = default_noise_sampler(x, seed=seed) if noise_sampler is None else noise_sampler
-    s_in = x.new_ones([x.shape[0]])
-    for i in trange(len(sigmas) - 1, disable=disable):
-        denoised = model(x, sigmas[i] * s_in, **extra_args)
-        if callback is not None: callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
-        x = denoised
-        if sigmas[i + 1] > 0:
-            model_sampling = model.inner_model.inner_model.model_sampling
-            x = model_sampling.noise_scaling(sigmas[i + 1], noise_sampler(sigmas[i], sigmas[i + 1]), x)
-    return x
-
-@torch.no_grad()
 def sample_heunpp2(model, x, sigmas, extra_args=None, callback=None, disable=None, s_churn=0., s_tmin=0., s_tmax=float('inf'), s_noise=1.):
     extra_args, s_in, s_end = {} if extra_args is None else extra_args, x.new_ones([x.shape[0]]), sigmas[-1]
     for i in trange(len(sigmas) - 1, disable=disable):

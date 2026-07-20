@@ -25,23 +25,17 @@ class StreamingUnetSpine:
         self._active_color_worker = None
 
     def start(self) -> None:
-        """Acquires the base UNet, applies scheduler-specific patches and UNet-side LoRAs,
+        """Acquires the base UNet, applies UNet-side LoRAs,
         and compiles it for streaming.
         """
         if self.unet is None:
             # 1. Acquire the owned UNet for this streaming spine.
             self.unet = acquire_unet_component(self.request)
 
-            # 2. Patch LCM scheduler if LCM.
-            orig_scheduler = self.request.scheduler
-            if orig_scheduler == 'lcm':
-                from modules import core as modules_core
-                self.unet = modules_core.opModelSamplingDiscrete.patch(self.unet, orig_scheduler, False)[0]
-
-            # 3. Apply LoRAs to UNet.
+            # 2. Apply LoRAs to UNet.
             self.lora_worker.apply_unet_patches(self.unet)
 
-            # 4. Compile the patcher on CPU.
+            # 3. Compile the patcher on CPU.
             from backend.cpu_compiler import CpuArtifactCompiler
             pin_model_host = bool(self.request.metadata.get("pin_unet_host", False))
 

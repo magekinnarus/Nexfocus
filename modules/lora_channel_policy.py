@@ -10,15 +10,6 @@ from backend.cpu_compiler import SafeOpenHeaderOnly
 
 logger = logging.getLogger(__name__)
 
-PRESET_SPEED_LORAS = frozenset(
-    {
-        "sdxl_lcm_lora.safetensors",
-        "sdxl_lightning_4step_lora.safetensors",
-        "sdxl_lightning_8step_lora.safetensors",
-    }
-)
-
-
 @dataclass(frozen=True)
 class LoRAAssetEvidence:
     sha256: str
@@ -206,11 +197,9 @@ def resolve_lora_channels(
     overrides: Optional[Mapping[str, Mapping[str, Any]]] = None,
     raw_path: Optional[str] = None,
 ) -> LoRAChannelDecision:
-    """Decides the effective channel weights based on explicit overrides, presets, and asset evidence."""
+    """Decides effective channel weights from explicit overrides and asset evidence."""
     path = getattr(file_identity, "path", None) if file_identity else None
     path_str = str(path) if path else (raw_path or "")
-    basename = get_lora_basename(path_str) if path_str else ""
-
     # 1. Explicit inpaint / additional provenance contract
     if provenance == "additional":
         return LoRAChannelDecision(
@@ -232,10 +221,7 @@ def resolve_lora_channels(
                 eff_unet = requested_unet_weight
                 eff_clip = float(override.get("clip_weight", 0.0) or 0.0)
                 source = "explicit"
-                if basename and is_preset_speed_lora(basename):
-                    reason = f"Preset speed LoRA '{basename}' is explicitly UNet-only via preset overrides."
-                else:
-                    reason = f"Explicit override applied: target={target}, clip_weight={eff_clip}."
+                reason = f"Explicit override applied: target={target}, clip_weight={eff_clip}."
                 return LoRAChannelDecision(
                     requested_unet_weight=requested_unet_weight,
                     requested_clip_weight=requested_clip_weight,
@@ -312,10 +298,6 @@ def get_lora_basename(value: Any) -> str:
     return normalized.rsplit("/", 1)[-1]
 
 
-def is_preset_speed_lora(value: Any) -> bool:
-    return get_lora_basename(value) in PRESET_SPEED_LORAS
-
-
 def iter_lora_override_keys(value: Any) -> tuple[str, ...]:
     normalized = normalize_lora_override_key(value)
     if not normalized:
@@ -324,26 +306,6 @@ def iter_lora_override_keys(value: Any) -> tuple[str, ...]:
     if basename == normalized:
         return (normalized,)
     return (normalized, basename)
-
-
-def build_explicit_lora_channel_overrides(
-    loras: Iterable[tuple[Any, Any]],
-) -> Dict[str, Dict[str, Any]]:
-    overrides: Dict[str, Dict[str, Any]] = {}
-    for lora_path, _weight in loras or ():
-        keys = iter_lora_override_keys(lora_path)
-        if not keys:
-            continue
-        if not is_preset_speed_lora(lora_path):
-            continue
-        override = {
-            "target": "unet_only",
-            "clip_weight": 0.0,
-            "source": "preset_speed_lora",
-        }
-        for key in keys:
-            overrides[key] = dict(override)
-    return overrides
 
 
 def merge_lora_channel_overrides(

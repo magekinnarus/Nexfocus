@@ -6,7 +6,6 @@ from fastapi import APIRouter, Body, File, Form, HTTPException, Query, UploadFil
 from fastapi.responses import FileResponse, JSONResponse
 
 import modules.model_taxonomy as model_taxonomy
-from modules.lora_channel_policy import is_preset_speed_lora
 from modules.model_download.policy import ModelDownloadPolicy
 from modules.model_download.resolver import CivitAIResolver, DirectResolver, GitHubResolver, HuggingFaceResolver
 from modules.model_download.transport import Aria2Transport
@@ -122,21 +121,8 @@ def _is_downloadable_browser_record(record) -> bool:
     return has_source_url and provider in {'civitai', 'huggingface', 'hf', 'github'}
 
 
-def _is_hidden_preset_speed_lora_record(record) -> bool:
-    entry = getattr(record, 'entry', None)
-    if entry is None or getattr(entry, 'model_type', None) != 'lora':
-        return False
-    selector = (
-        getattr(entry, 'relative_path', None)
-        or getattr(entry, 'name', None)
-        or getattr(entry, 'alias', None)
-        or ''
-    )
-    return is_preset_speed_lora(selector)
-
-
 def _filter_ui_inventory_records(records):
-    return [record for record in records if not _is_hidden_preset_speed_lora_record(record)]
+    return list(records)
 
 
 def _catalog_sources_payload(manager: ModelManager) -> list[dict[str, Any]]:

@@ -267,13 +267,10 @@ def _ensure_supported_unified_runtime_request(task_state):
 
     checkpoint_path = _resolve_unified_checkpoint_path(task_state)
     resolved_taxonomy = config.resolve_model_taxonomy(checkpoint_path)
-    if sdxl_runtime_policy.is_legacy_sdxl_gguf_selection(
-        architecture=resolved_taxonomy.architecture,
-        base_model_name=checkpoint_path,
-    ):
+    if str(checkpoint_path).lower().endswith('.gguf'):
         raise RuntimeError(
-            'SDXL GGUF base models are deprecated and no longer supported. '
-            'Select an SDXL checkpoint base model instead.'
+            'GGUF model checkpoints are not supported. '
+            'Select an SDXL checkpoint instead.'
         )
     if resolved_taxonomy.architecture != model_taxonomy.ARCHITECTURE_SDXL:
         raise RuntimeError('SD 1.5 execution is no longer supported.')

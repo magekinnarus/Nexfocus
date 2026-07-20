@@ -280,7 +280,7 @@ def load_models_gpu(models, memory_required=0, force_patch_weights=False, minimu
         else:
             vram_set_state = current_vram_state
 
-        model_role, _, _, _ = _classify_model_role(model)
+        model_role, _, _ = _classify_model_role(model)
         residency_mode = residency_plan.mode_for(model_role) or 'evictable'
         profile_name = residency_plan.notes.get('profile')
         pinned_full_load = (
@@ -374,7 +374,7 @@ def loaded_model_state():
             continue
 
         model_obj = getattr(model_patcher, "model", None)
-        role, patcher_name, model_name, gguf_suffix = _classify_model_role(model_patcher)
+        role, patcher_name, model_name = _classify_model_role(model_patcher)
 
         try:
             current_device = model_patcher.current_loaded_device()
@@ -403,7 +403,6 @@ def loaded_model_state():
             "role": role,
             "patcher_class": patcher_name,
             "model_class": model_name,
-            "gguf": bool(gguf_suffix),
             "load_device": str(getattr(model_patcher, "load_device", None)),
             "offload_device": str(getattr(model_patcher, "offload_device", None)),
             "current_loaded_device": str(current_device),

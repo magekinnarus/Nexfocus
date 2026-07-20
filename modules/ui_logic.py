@@ -38,10 +38,6 @@ from modules.sdxl_styles import legal_style_names
 from modules.private_logger import get_current_html_path
 from modules.ui_gradio_extensions import javascript_html, css_html
 from modules.auth import auth_enabled, check_auth
-from modules.lora_channel_policy import (
-    PRESET_SPEED_LORAS,
-    build_explicit_lora_channel_overrides,
-)
 from modules.route_intent import normalize_current_tab
 from modules.pipeline.workflow_legacy_adapter import capture_workflow_selection
 from modules.util import get_enabled_loras, is_json
@@ -900,21 +896,11 @@ def _merge_preset_lora_state(preset_prepared, lora_args):
         if key in preset_prepared:
             preset_loras[slot_index] = _parse_lora_metadata(preset_prepared[key])
 
-    preset_has_speed_lora = any(
-        lora_state[1] in PRESET_SPEED_LORAS for lora_state in preset_loras.values()
-    )
-
-    if preset_has_speed_lora:
-        for slot_index in range(1, slot_count):
-            if merged_loras[slot_index][1] in PRESET_SPEED_LORAS:
-                merged_loras[slot_index] = [True, 'None', 1.0]
-
     if 0 in preset_loras:
         slot1_lora = merged_loras[0]
         preset_slot1_lora = preset_loras[0]
         if (
             slot1_lora[1] not in {'', 'None'}
-            and slot1_lora[1] not in PRESET_SPEED_LORAS
             and slot1_lora != preset_slot1_lora
         ):
             free_slot_index = next(
@@ -1387,19 +1373,6 @@ def get_tasks(*args):
     task_args['image_number'] = 1
     task_args['generate_image_grid'] = False
     task_args['current_tab'] = normalize_current_tab(task_args.get('current_tab'))
-
-    lora_data = []
-    for i in range(modules.config.default_max_lora_number):
-        lora_data.append(
-            (
-                bool(task_args.get(f'lora_{i}_enabled', False)),
-                str(task_args.get(f'lora_{i}_model', 'None')),
-                float(task_args.get(f'lora_{i}_weight', 1.0)),
-            )
-        )
-    task_args['lora_channel_overrides'] = build_explicit_lora_channel_overrides(
-        get_enabled_loras(lora_data)
-    )
 
     # Freeze the selected UI surface only.  The complete route and ControlNet
     # overlay are compiled after AsyncTask has parsed the raw CN slots; doing

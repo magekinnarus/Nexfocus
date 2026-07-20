@@ -18,8 +18,6 @@ PROCESS_FAMILY_SDXL = "sdxl"
 PROCESS_FAMILY_FLUX_FILL = "flux_fill"
 
 PROCESS_CLASS_STANDARD_SDXL = "standard_sdxl"
-PROCESS_CLASS_SDXL_GGUF_STAGED = "sdxl_gguf_staged"
-PROCESS_CLASS_SDXL_GGUF_TRUE_STREAMING = "sdxl_gguf_true_streaming"
 PROCESS_CLASS_FLUX_FILL = "flux_fill"
 
 _TOKEN_ALIASES = {
@@ -34,14 +32,6 @@ _TOKEN_ALIASES = {
     "unified streaming": PROCESS_CLASS_STANDARD_SDXL,
     "full resident": PROCESS_CLASS_STANDARD_SDXL,
     "full": PROCESS_CLASS_STANDARD_SDXL,
-    "gguf staged": PROCESS_CLASS_SDXL_GGUF_STAGED,
-    "sdxl gguf staged": PROCESS_CLASS_SDXL_GGUF_STAGED,
-    "gguf_staged_residency": PROCESS_CLASS_SDXL_GGUF_STAGED,
-    "gguf staged residency": PROCESS_CLASS_SDXL_GGUF_STAGED,
-    "gguf true streaming": PROCESS_CLASS_SDXL_GGUF_TRUE_STREAMING,
-    "sdxl gguf true streaming": PROCESS_CLASS_SDXL_GGUF_TRUE_STREAMING,
-    "benchmark only": PROCESS_CLASS_SDXL_GGUF_TRUE_STREAMING,
-    "benchmark-only": PROCESS_CLASS_SDXL_GGUF_TRUE_STREAMING,
 }
 
 
@@ -92,19 +82,6 @@ def normalize_process_class(value: Any, *, family: Any = None) -> str:
             "standard_sdxl",
         }:
             return PROCESS_CLASS_STANDARD_SDXL
-        if token in {
-            PROCESS_CLASS_SDXL_GGUF_STAGED,
-            "gguf_staged_residency",
-            "staged",
-            "gguf_staged",
-        }:
-            return PROCESS_CLASS_SDXL_GGUF_STAGED
-        if token in {
-            PROCESS_CLASS_SDXL_GGUF_TRUE_STREAMING,
-            "gguf_true_streaming",
-            "true_streaming",
-        }:
-            return PROCESS_CLASS_SDXL_GGUF_TRUE_STREAMING
     return token
 
 
@@ -250,8 +227,8 @@ class SharedProcessRegistry:
                 curr_id = current.authoritative_identity
                 req_id = requested.authoritative_identity
                 if isinstance(curr_id, tuple) and isinstance(req_id, tuple):
-                    curr_base_len = 1 if getattr(current, 'route_family', None) == 'gguf' else 2
-                    req_base_len = 1 if getattr(requested, 'route_family', None) == 'gguf' else 2
+                    curr_base_len = 2
+                    req_base_len = 2
                     if curr_base_len == req_base_len and len(curr_id) >= curr_base_len and len(req_id) >= req_base_len:
                         if curr_id[:curr_base_len] == req_id[:req_base_len]:
                             is_same_base_components = True
@@ -401,9 +378,8 @@ def _sdxl_identity_components(key: ProcessKey | None) -> tuple[Any | None, Any |
         identity = (raw_identity,)
 
     checkpoint_identity = identity[0] if len(identity) > 0 else None
-    is_gguf_route = str(getattr(key, "route_family", "") or "").lower() == "gguf"
-    clip_identity = None if is_gguf_route else (identity[1] if len(identity) > 1 else None)
-    lora_offset = 1 if is_gguf_route else 2
+    clip_identity = identity[1] if len(identity) > 1 else None
+    lora_offset = 2
     lora_identity = tuple(identity[lora_offset:]) if len(identity) > lora_offset else ()
     return checkpoint_identity, clip_identity, lora_identity
 

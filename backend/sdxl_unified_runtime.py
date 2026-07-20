@@ -280,8 +280,6 @@ def _release_shared_sdxl_base_components(entry: SharedSDXLBaseComponents, teardo
                 delattr(model, "_nex_resident_compile_metrics")
             if hasattr(model, "_nex_resident_lora_signature"):
                 delattr(model, "_nex_resident_lora_signature")
-            if hasattr(model, "_nex_resident_scheduler"):
-                delattr(model, "_nex_resident_scheduler")
 
     if entry.clip is not None:
         _detach_cached_component(entry.clip)
@@ -486,7 +484,6 @@ class UnifiedSDXLRuntime(
             # Resident SDXL always reloads clean UNet weights from the runtime source.
             # The deprecated CPU/GPU clean-shadow policy is intentionally ignored here.
             self.unet.runtime_release_to_meta = True
-            self._reapply_scheduler_patches()
         if self.clip is not None:
             self.clip.runtime_policy = self.policy
             if hasattr(self.clip, "clip_layer"):
@@ -1156,18 +1153,6 @@ class UnifiedSDXLRuntime(
         if hasattr(model, "model_lowvram"):
             model.model_lowvram = False
 
-    def _reapply_scheduler_patches(self) -> None:
-        if self.unet is None:
-            return
-        orig_scheduler = self.config.original_scheduler_name or self.config.scheduler
-        if orig_scheduler == 'lcm':
-            from modules import core as modules_core
-            self.unet = modules_core.opModelSamplingDiscrete.patch(self.unet, orig_scheduler, False)[0]
-        
-        model = getattr(self.unet, "model", None)
-        if model is not None:
-            model._nex_resident_scheduler = str(orig_scheduler)
-
     def _restore_clean_resident_component(self, patcher: Any, *, fallback_device: Any | None = None) -> bool:
         if patcher is None:
             return False
@@ -1210,19 +1195,17 @@ class UnifiedSDXLRuntime(
         unet_host_pinned_bytes = 0
         self._compiled_unet_cache_hit = False
         desired_signature = self._lora_signature()
-        desired_scheduler = str(self.config.original_scheduler_name or self.config.scheduler or "")
         
         clip_patcher = getattr(self.clip, "patcher", None)
         current_clip_signature = self._current_resident_lora_signature(clip_patcher)
         current_unet_signature = self._current_resident_lora_signature(self.unet)
-        current_scheduler = getattr(getattr(self.unet, "model", None), "_nex_resident_scheduler", "")
 
         has_compiled_state = (
             getattr(self.unet.model, "_nex_resident_compile_metrics", None) is not None
             or (not desired_signature and not self._should_pin_unet_host_for_compile())
         )
 
-        if desired_signature == current_clip_signature and desired_signature == current_unet_signature and desired_scheduler == current_scheduler and has_compiled_state:
+        if desired_signature == current_clip_signature and desired_signature == current_unet_signature and has_compiled_state:
             self._compiled_unet_cache_hit = True
             clip_compile_metrics = self._current_resident_compile_metrics(clip_patcher)
             unet_compile = self._current_resident_compile_metrics(self.unet)
@@ -1246,7 +1229,6 @@ class UnifiedSDXLRuntime(
         # Clear active patched states and restore clean resident components
         self._restore_clean_resident_component(clip_patcher, fallback_device=torch.device("cpu"))
         self._restore_clean_resident_component(self.unet)
-        self._reapply_scheduler_patches()
 
         if not self._resolved_lora_specs:
             unet_compile = self._default_compile_metrics()

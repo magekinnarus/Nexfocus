@@ -137,11 +137,6 @@ class SDXLStreamingRuntime(UnifiedSDXLRuntime):
 
         if self.unet is not None:
             self.unet.runtime_release_to_meta = False
-            # Apply scheduler-specific patch to the UNet
-            orig_scheduler = self.config.original_scheduler_name or self.config.scheduler
-            if orig_scheduler == 'lcm':
-                from modules import core as modules_core
-                self.unet = modules_core.opModelSamplingDiscrete.patch(self.unet, orig_scheduler, False)[0]
         if self.clip is not None:
             self.clip.runtime_policy = self.policy
             if hasattr(self.clip, "clip_layer"):

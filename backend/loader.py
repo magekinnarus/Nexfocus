@@ -1074,46 +1074,23 @@ def load_sdxl_unet(
     dtype=None,
     reload_source=None,
     reload_prefixes=None,
-    *,
-    execution_class=None,
 ):
-    """
-    Loads the SDXL UNet using sdxl_def.UNET_CONFIG.
-    Supports .gguf integration.
-    """
+    """Load a supported safetensors or checkpoint SDXL Unet."""
+    if str(source).lower().endswith(".gguf"):
+        raise ValueError("GGUF model execution is not supported.")
     load_device = load_device or resources.get_torch_device()
     offload_device = offload_device or resources.unet_offload_device()
     effective_dtype = dtype or torch.float16
     
-    custom_operations = None
-    patcher_class = patching.NexModelPatcher
-    runtime_reload = None
-
-    if isinstance(source, str) and source.endswith(".gguf"):
-        from backend.gguf.loader import gguf_sd_loader, is_streaming_execution_class
-        from backend.gguf.ops import GGMLOps
-        from backend.gguf.patcher import GGUFModelPatcher
-
-        streaming = is_streaming_execution_class(execution_class)
-        if streaming:
-            load_device = torch.device("cpu") if load_device is None else torch.device(load_device)
-            offload_device = torch.device("cpu") if offload_device is None else torch.device(offload_device)
-            if load_device.type != "cpu" or offload_device.type != "cpu":
-                raise RuntimeError("Streaming-class SDXL GGUF loads must stage weights on CPU pinned host memory.")
-        sd = gguf_sd_loader(source, pin_memory=streaming, execution_class=execution_class, require_pinned_host=streaming)
-        custom_operations = GGMLOps
-        patcher_class = GGUFModelPatcher
-    else:
-        sd = resolve_source(source, device=load_device)
-        runtime_reload = _build_unet_runtime_reload(
-            reload_source if reload_source is not None else source,
-            dtype=effective_dtype,
-            prefixes=reload_prefixes,
-        )
+    sd = resolve_source(source, device=load_device)
+    runtime_reload = _build_unet_runtime_reload(
+        reload_source if reload_source is not None else source,
+        dtype=effective_dtype,
+        prefixes=reload_prefixes,
+    )
 
     model = model_base.SDXL(
-        model_config=ModelConfig(sdxl_def.UNET_CONFIG, latent_formats.SDXL()),
-        operations=custom_operations
+        model_config=ModelConfig(sdxl_def.UNET_CONFIG, latent_formats.SDXL())
     )
     
     # User Requirement: SDXL UNet should be in fp16 to avoid casting to fp32 (saving RAM/VRAM)
@@ -1132,9 +1109,7 @@ def load_sdxl_unet(
         "runtime_reload": runtime_reload,
         "runtime_release_to_meta": runtime_reload is not None,
     }
-    if isinstance(source, str) and source.endswith(".gguf"):
-        patcher_kwargs["preserve_source_artifact"] = is_streaming_execution_class(execution_class)
-    return patcher_class(model, **patcher_kwargs)
+    return patching.NexModelPatcher(model, **patcher_kwargs)
 
 def patch_unet_for_quality(unet_patcher: Any, quality: Dict[str, Any]):
     """

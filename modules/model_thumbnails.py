@@ -19,8 +19,6 @@ THUMBNAIL_EXTENSION = '.png'
 THUMBNAIL_ROOT_KEY_MAP = {
     'checkpoints': 'checkpoints',
     'loras': 'loras',
-    'loras_lcm': 'loras',
-    'loras_lightning': 'loras',
     'embeddings': 'embeddings',
     'vae': 'vae',
     'unet': 'unet',
@@ -63,8 +61,6 @@ def _default_model_type(root_key: str | None) -> str:
     return {
         'checkpoints': 'checkpoint',
         'loras': 'lora',
-        'loras_lcm': 'lora',
-        'loras_lightning': 'lora',
         'embeddings': 'embedding',
         'vae': 'vae',
         'unet': 'unet',

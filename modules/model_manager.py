@@ -18,7 +18,6 @@ from modules.model_download.spec import (
     REGISTRATION_STATE_UNREGISTERED,
     ModelCatalogEntry,
 )
-from modules.lora_channel_policy import is_preset_speed_lora
 from modules.model_manager_companions import ModelManagerCompanions
 from modules.model_manager_helpers import (
     MODEL_FILE_EXTENSIONS,
@@ -1126,7 +1125,7 @@ class ModelManager:
         choices: list[str] = []
         seen: set[str] = set()
 
-        for root_key in ('loras', 'loras_lcm', 'loras_lightning'):
+        for root_key in ('loras',):
             roots = self._root_map.get(root_key, [])
             for root in roots:
                 root_index = installed_index.get(root)
@@ -1136,9 +1135,6 @@ class ModelManager:
                     normalized_relative_path = _normalize_path(relative_path)
                     if normalized_relative_path is None or normalized_relative_path in seen:
                         continue
-                    if is_preset_speed_lora(normalized_relative_path) and not include_preset_managed:
-                        continue
-
                     entry = self.get_entry(normalized_relative_path, root_keys=[root_key])
                     if entry is not None:
                         if entry.model_type != 'lora':
@@ -1150,8 +1146,6 @@ class ModelManager:
                         candidate_architecture = entry.architecture
                         candidate_sub_architecture = entry.sub_architecture
                     else:
-                        if root_key in {'loras_lcm', 'loras_lightning'} and not include_preset_managed:
-                            continue
                         taxonomy = config.resolve_model_taxonomy(
                             normalized_relative_path,
                             root_keys=(root_key,),

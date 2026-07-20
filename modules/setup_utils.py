@@ -141,20 +141,9 @@ def download_models(
                 downloaded_user_visible_assets = True
         except Exception as e:
             print(f'{log_prefix} Error downloading embedding {file_name}: {e}')
-    lora_download_roots = {
-        'sdxl_lcm_lora.safetensors': config.path_loras_lcm,
-        'sdxl_lightning_4step_lora.safetensors': config.path_loras_lightning,
-        'sdxl_lightning_8step_lora.safetensors': config.path_loras_lightning,
-    }
-    lora_lookup_paths = [
-        config.paths_loras[0],
-        config.path_loras_lcm,
-        config.path_loras_lightning,
-    ]
-
     for file_name, url in lora_downloads.items():
-        preferred_root = lora_download_roots.get(file_name, config.paths_loras[0])
-        existing_path = get_file_from_folder_list(file_name, [preferred_root] + [p for p in lora_lookup_paths if p != preferred_root])
+        preferred_root = config.paths_loras[0]
+        existing_path = get_file_from_folder_list(file_name, [preferred_root])
         if os.path.exists(existing_path):
             continue
         try:

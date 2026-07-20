@@ -52,10 +52,10 @@ Checkpoint layout:
 - `checkpoints/sdxl/illustrious/`
 - `checkpoints/sdxl/noob/`
 
-GGUF quantized assets are SDXL-only in this project:
-- quantized UNet files go under `unet/`
-- extracted CLIP files go under `clip/`
-- there is no `unet/sd15/base/`
+GGUF model execution is not part of the supported product surface. Active
+catalog entries use supported checkpoint and LoRA formats; generic
+quantization naming may still be retained in historical or user-authored
+metadata without creating a runtime GGUF route.
 
 Recommended UNet layout:
 - `unet/sdxl/base/`

@@ -29,7 +29,6 @@ class SDXLStreamingSpineKey:
     prefetch_depth: int
     prefetch_chunk_mb: int
     lora_stack_hash: str
-    scheduler_signature: str
 
 
 @dataclass(frozen=True)
@@ -85,14 +84,6 @@ def _unet_lora_signature(request: SDXLAssemblyRequest) -> Tuple[Tuple[str, float
         for spec in request.lora_specs
         if spec.enabled and spec.unet_weight != 0.0
     )
-
-
-def get_request_scheduler_name(request: SDXLAssemblyRequest) -> str:
-    return str(getattr(request, "original_scheduler_name", "") or request.scheduler or "").strip().lower()
-
-
-def get_request_scheduler_signature(request: SDXLAssemblyRequest) -> str:
-    return "lcm" if get_request_scheduler_name(request) == "lcm" else "standard"
 
 
 def _patched_text_encoder_key(request: SDXLAssemblyRequest) -> SDXLPatchedTextEncoderKey | None:
@@ -453,9 +444,6 @@ class SDXLStreamingRuntimeState:
             prefetch_depth=request.prefetch_depth,
             prefetch_chunk_mb=request.prefetch_chunk_mb,
             lora_stack_hash=request.lora_stack_hash,
-            # Only the LCM patch changes UNet state. Ordinary scheduler changes
-            # affect sampling, not the already-loaded/patched UNet spine.
-            scheduler_signature=get_request_scheduler_signature(request),
         )
 
     def acquire(self, request: SDXLAssemblyRequest, *, lora_worker: Any | None = None) -> Tuple[Any, bool]:

@@ -637,20 +637,7 @@ class UnifiedSDXLRuntimeExecutionMixin:
                 out = out * active_mask + latent_ref * latent_mask
             return out
 
-        class _DirectModelInner:
-            def __init__(self, inner_model: Any):
-                self.inner_model = inner_model
-
-        class _DirectModelCallable:
-            def __init__(self, fn, inner_model: Any):
-                self._fn = fn
-                # `sample_lcm()` reaches into `model.inner_model.inner_model.model_sampling`.
-                self.inner_model = _DirectModelInner(inner_model)
-
-            def __call__(self, x: torch.Tensor, sigma: torch.Tensor, **kwargs: Any) -> torch.Tensor:
-                return self._fn(x, sigma, **kwargs)
-
-        return _DirectModelCallable(model_fn, execution_unet.model)
+        return model_fn
 
     def _run_prepared_denoise(
         self,

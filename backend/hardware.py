@@ -662,12 +662,11 @@ def _classify_model_role(model_patcher):
         ):
             role = "vae"
 
-    gguf_suffix = "[gguf]" if "GGUF" in patcher_name else ""
-    return role, patcher_name, model_name, gguf_suffix
+    return role, patcher_name, model_name
 
 def _describe_model_for_logs(model_patcher):
-    role, patcher_name, model_name, gguf_suffix = _classify_model_role(model_patcher)
-    return f"{role}:{patcher_name}/{model_name}{gguf_suffix}"
+    role, patcher_name, model_name = _classify_model_role(model_patcher)
+    return f"{role}:{patcher_name}/{model_name}"
 
 def _residency_plan_for_phase(target_phase=None, task=None):
     phase_name = memory_governor.normalize_phase(target_phase) if target_phase is not None else memory_governor.current_phase()
@@ -698,25 +697,16 @@ def _emit_residency_log(prefix, *, plan, notes=None, role=None, item=None, actio
 
 SDXL_RESIDENCY_CLASS_FULL = "full_resident"
 SDXL_RESIDENCY_CLASS_UNIFIED_STREAMING = "unified_streaming"
-SDXL_RESIDENCY_CLASS_GGUF_STAGED = "gguf_staged_residency"
-SDXL_RESIDENCY_CLASS_GGUF_TRUE_STREAMING = "gguf_true_streaming"
 
 
-def normalize_sdxl_residency_class(residency_class=None, *, gguf=False, staged=False, true_streaming=False):
+def normalize_sdxl_residency_class(residency_class=None):
     if residency_class is not None:
         normalized = str(residency_class).strip().lower()
         if normalized in {
             SDXL_RESIDENCY_CLASS_FULL,
             SDXL_RESIDENCY_CLASS_UNIFIED_STREAMING,
-            SDXL_RESIDENCY_CLASS_GGUF_STAGED,
-            SDXL_RESIDENCY_CLASS_GGUF_TRUE_STREAMING,
         }:
             return normalized
-
-    if true_streaming:
-        return SDXL_RESIDENCY_CLASS_GGUF_TRUE_STREAMING
-    if gguf and staged:
-        return SDXL_RESIDENCY_CLASS_GGUF_STAGED
     return SDXL_RESIDENCY_CLASS_FULL
 
 
@@ -739,10 +729,7 @@ def get_component_plan(role: str, policy: Any = None) -> Tuple[torch.device, str
                 is_streaming = (execution_mode == "streaming")
             else:
                 normalized_residency_class = normalize_sdxl_residency_class(getattr(policy, "residency_class", None))
-                is_streaming = normalized_residency_class in {
-                    SDXL_RESIDENCY_CLASS_UNIFIED_STREAMING,
-                    SDXL_RESIDENCY_CLASS_GGUF_TRUE_STREAMING,
-                }
+                is_streaming = normalized_residency_class == SDXL_RESIDENCY_CLASS_UNIFIED_STREAMING
             if is_streaming:
                 return torch.device("cpu"), "cpu_resident"
             return get_torch_device(), "gpu_resident"

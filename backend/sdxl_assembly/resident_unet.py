@@ -10,7 +10,6 @@ from backend.sdxl_assembly.contracts import SDXLAssemblyRequest
 from backend.sdxl_assembly.progress import log_telemetry
 from backend.sdxl_assembly.runtime_state import (
     acquire_resident_unet_component,
-    get_request_scheduler_name,
 )
 from backend.sdxl_assembly.gpu_lora_worker import GpuLoraWorker
 
@@ -32,47 +31,37 @@ class ResidentUnetSpine:
         request: SDXLAssemblyRequest,
         lora_worker: GpuLoraWorker | None = None,
     ) -> bool:
-        """Explicitly reloads clean weights (if needed), applies LoRA patches, compiles,
-        and applies scheduler patches. Returns True if there was a warm hit, False otherwise.
+        """Explicitly reloads clean weights (if needed), applies LoRA patches, and compiles.
+        Returns True if there was a warm hit, False otherwise.
         """
-        # Determine desired signatures
-        from backend.sdxl_assembly.runtime_state import _unet_lora_signature, get_request_scheduler_name
+        # Determine the desired LoRA signature.
+        from backend.sdxl_assembly.runtime_state import _unet_lora_signature
         desired_lora_signature = _unet_lora_signature(request)
-        desired_scheduler = get_request_scheduler_name(request)
-        desired_scheduler_norm = "lcm" if desired_scheduler == "lcm" else ""
 
         # Get current markers from model
         model = self.unet.model
         current_lora_signature = getattr(model, "_nex_resident_lora_signature", None)
-        current_scheduler = getattr(model, "_nex_resident_scheduler", "")
-        current_scheduler_norm = "lcm" if current_scheduler == "lcm" else ""
 
         # Get compile metrics
         compile_metrics = getattr(model, "_nex_resident_compile_metrics", None)
         has_compiled_state = (
             compile_metrics is not None
-            or (
-                not desired_lora_signature
-                and desired_scheduler_norm != "lcm"
-            )
+            or not desired_lora_signature
         )
 
         # 1. Warm-hit check: everything matches and we have compiled state
         if (
             current_lora_signature == desired_lora_signature
-            and current_scheduler_norm == desired_scheduler_norm
             and has_compiled_state
         ):
             logger.debug("[SDXL Telemetry] Warm resident UNet spine hit for materialize.")
             return True
 
         # 2. Coordinated restore check
-        scheduler_transition = current_scheduler_norm != desired_scheduler_norm
         needs_restore = (
             current_lora_signature is not None  # Not initial load
             and (
                 current_lora_signature != desired_lora_signature
-                or scheduler_transition
                 or bool(getattr(model, "_patched_marker", False))
                 or not has_compiled_state
             )
@@ -98,7 +87,6 @@ class ResidentUnetSpine:
             model.current_weight_patches_uuid = None
             if hasattr(model, "_patched_marker"):
                 delattr(model, "_patched_marker")
-            model._nex_resident_scheduler = ""
 
         # Update requests and workers
         self.request = request
@@ -114,15 +102,7 @@ class ResidentUnetSpine:
         # 5. Compile patches on GPU using compile_unet_patches
         compile_metrics = self.lora_worker.compile_unet_patches(self.unet)
 
-        # 6. Apply LCM scheduler patch if desired
-        if desired_scheduler_norm == "lcm":
-            from modules import core as modules_core
-            self.unet = modules_core.opModelSamplingDiscrete.patch(self.unet, desired_scheduler, False)[0]
-            self.unet.model._nex_resident_scheduler = "lcm"
-        else:
-            self.unet.model._nex_resident_scheduler = ""
-
-        # 7. Record markers on model
+        # 6. Record markers on model
         self.unet.model._nex_resident_lora_signature = desired_lora_signature
         self.unet.model._nex_resident_compile_metrics = compile_metrics or {
             "status": "noop",
@@ -133,8 +113,8 @@ class ResidentUnetSpine:
         return False
 
     def start(self) -> None:
-        """Acquires the base UNet (if not already loaded), applies scheduler-specific patches
-        and UNet-side LoRAs (GPU patch compilation), and registers residency.
+        """Acquires the base UNet (if not already loaded), applies UNet-side LoRAs
+        (GPU patch compilation), and registers residency.
         """
         if self.unet is None:
             try:
@@ -142,7 +122,7 @@ class ResidentUnetSpine:
                 # acquire_resident_unet_component is defined in runtime_state.py
                 self.unet = acquire_resident_unet_component(self.request)
 
-                # 2. Materialize LoRA stack and scheduler patches.
+                # 2. Materialize the LoRA stack.
                 self.materialize_scheduler_and_loras(self.request, self.lora_worker)
 
                 # Since compile_unet_patches cleared the patches, we mark it.
@@ -287,13 +267,12 @@ class ResidentUnetSpine:
                 )
                 try:
                     from backend.sdxl_assembly.runtime_state import release_active_sdxl_resident_spine
-                    scheduler_marker = getattr(self.unet.model, "_nex_resident_scheduler", "")
                     lora_sig = getattr(self.unet.model, "_nex_resident_lora_signature", ())
                     metrics = getattr(self.unet.model, "_nex_resident_compile_metrics", None)
                     logger.error(
                         "[SDXL Telemetry] Non-finite latent detected in resident spine! "
-                        "Evicting resident state. Scheduler: %s, LoRA Signature: %s, Compile Metrics: %s",
-                        scheduler_marker, lora_sig, metrics
+                        "Evicting resident state. LoRA Signature: %s, Compile Metrics: %s",
+                        lora_sig, metrics
                     )
                     release_active_sdxl_resident_spine("non-finite resident latent")
                 except Exception as evict_err:

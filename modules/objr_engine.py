@@ -37,25 +37,10 @@ from backend.legacy_runtime_errors import LegacyFluxArchivedError
 
 logger = logging.getLogger(__name__)
 
-FLUX_FILL_TIER_FP8 = "fp8"
-FLUX_FILL_TIER_Q8 = "q8_0"
-FLUX_FILL_TIER_Q4 = "q4_k_s"
 FLUX_FILL_GUIDANCE_DEFAULT = 15.0
-FLUX_FILL_AE_ASSET_ID = "inpaint.flux_fill.ae"
-FLUX_FILL_EMPTY_CONDITIONING_ASSET_ID = "inpaint.flux_fill.empty_conditioning"
-FLUX_FILL_CLIP_L_ASSET_ID = "inpaint.flux_fill.text_encoder.clip_l"
-FLUX_FILL_T5XXL_FP16_ASSET_ID = "inpaint.flux_fill.text_encoder.t5xxl.fp16"
-FLUX_FILL_T5XXL_Q8_ASSET_ID = "inpaint.flux_fill.text_encoder.t5xxl.q8_0"
-FLUX_FILL_T5XXL_Q4_ASSET_ID = "inpaint.flux_fill.text_encoder.t5xxl.q4_k_m"
-FLUX_FILL_T5_VARIANT_FP16 = "fp16"
-FLUX_FILL_T5_VARIANT_Q8 = "q8_0"
-FLUX_FILL_T5_VARIANT_Q4 = "q4_k_m"
-FLUX_FILL_T5_RESIDENT_RESERVE_RAM_MB = 4 * 1024
-FLUX_FILL_T5_HYBRID_RESERVE_RAM_MB = 8 * 1024
-FLUX_FILL_T5_FP16_MIN_BUDGET_MB = 24 * 1024
-FLUX_FILL_T5_Q8_MIN_BUDGET_MB = 12 * 1024
 FLUX_FILL_CONDITIONING_EMPTY = "empty"
 FLUX_FILL_CONDITIONING_PROMPT = "prompt"
+FLUX_FILL_EMPTY_CONDITIONING_ASSET_ID = "inpaint.flux_fill.empty_conditioning"
 FLUX_FILL_CONDITIONING_BY_KIND = {
     FLUX_FILL_CONDITIONING_EMPTY: FLUX_FILL_EMPTY_CONDITIONING_ASSET_ID,
 }
@@ -63,26 +48,6 @@ FLUX_FILL_PROMPT_CACHE_TEMP = "temp"
 FLUX_FILL_PROMPT_CACHE_PERMANENT = "permanent"
 FLUX_FILL_MASK_GROW = 16
 FLUX_FILL_MASK_BLUR = 6
-FLUX_FILL_UNET_ASSET_BY_TIER = {
-    FLUX_FILL_TIER_FP8: "inpaint.flux_fill.unet.fp8",
-    FLUX_FILL_TIER_Q8: "inpaint.flux_fill.unet.q8_0",
-    FLUX_FILL_TIER_Q4: "inpaint.flux_fill.unet.q4_k_s",
-}
-FLUX_FILL_MODEL_VARIANT_BY_TIER = {
-    FLUX_FILL_TIER_FP8: "flux_fill_fp8",
-    FLUX_FILL_TIER_Q8: "flux_fill_q8",
-    FLUX_FILL_TIER_Q4: "flux_fill_q4_k_s",
-}
-FLUX_FILL_TIER_BY_MODEL_VARIANT = {variant: tier for tier, variant in FLUX_FILL_MODEL_VARIANT_BY_TIER.items()}
-FLUX_FILL_UNET_ASSET_BY_MODEL_VARIANT = {
-    model_variant: FLUX_FILL_UNET_ASSET_BY_TIER[tier]
-    for tier, model_variant in FLUX_FILL_MODEL_VARIANT_BY_TIER.items()
-}
-FLUX_FILL_T5_ASSET_BY_VARIANT = {
-    FLUX_FILL_T5_VARIANT_FP16: FLUX_FILL_T5XXL_FP16_ASSET_ID,
-    FLUX_FILL_T5_VARIANT_Q8: FLUX_FILL_T5XXL_Q8_ASSET_ID,
-    FLUX_FILL_T5_VARIANT_Q4: FLUX_FILL_T5XXL_Q4_ASSET_ID,
-}
 FLUX_FILL_EMPTY_CONDITIONING_RELATIVE_PATH = os.path.join("flux", "flux_empty_conditioning.pt")
 
 FLUX_FILL_VRAM_CLASS_RESIDENT = "16gb_plus"
@@ -184,9 +149,6 @@ def reconcile_flux_fill_text_encoder_residency(*, profile: Any | None = None, ne
     return {"text_encoder_action": "cleared"}
 
 def select_flux_fill_t5_variant(profile: Any | None = None, *, variant: str | None = None) -> str:
-    if variant is not None and str(variant).strip() != "":
-        return str(variant).strip()
-
     from backend.flux_fill_v3.contracts import UNetSpineKind
     from backend.flux_fill_v3.activation import resolve_flux_fill_t5_posture
 
@@ -199,6 +161,8 @@ def select_flux_fill_t5_variant(profile: Any | None = None, *, variant: str | No
         unet_spine = UNetSpineKind.RESIDENT
 
     resolve_flux_fill_t5_posture(unet_spine, total_ram_gb)
+    if variant is not None and str(variant).strip().lower() not in {"", "fp16"}:
+        raise ValueError("Only the native Flux Fill fp16 text encoder is supported.")
     return "fp16"
 
 def get_flux_fill_t5_asset_id(variant: str | None = None, *, profile: Any | None = None) -> str:

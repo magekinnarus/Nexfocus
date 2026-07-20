@@ -104,27 +104,6 @@ def rescale_zero_terminal_snr_sigmas(sigmas):
     alphas_bar[-1] = 4.8973451890853435e-08
     return ((1 - alphas_bar) / alphas_bar) ** 0.5
 
-class ModelSamplingDiscrete:
-    def patch(self, model, sampling, zsnr):
-        m = model.clone()
-        sampling_base = ldm_patched.modules.model_sampling.ModelSamplingDiscrete
-        if sampling in ["eps", "lcm", "tcd"]:
-            sampling_type = ldm_patched.modules.model_sampling.EPS
-        elif sampling == "v_prediction":
-            sampling_type = ldm_patched.modules.model_sampling.V_PREDICTION
-        else:
-            raise NotImplementedError(f"Sampling type {sampling} not inlined.")
-
-        class ModelSamplingAdvanced(sampling_base, sampling_type):
-            pass
-
-        model_sampling = ModelSamplingAdvanced(model.model.model_config)
-        if zsnr:
-            model_sampling.set_sigmas(rescale_zero_terminal_snr_sigmas(model_sampling.sigmas))
-
-        m.add_object_patch("model_sampling", model_sampling)
-        return (m, )
-
 class ModelSamplingContinuousEDM:
     def patch(self, model, sampling, sigma_max, sigma_min):
         m = model.clone()
@@ -155,7 +134,6 @@ opVAEEncode = VAEEncode()
 opVAEDecodeTiled = VAEDecodeTiled()
 opVAEEncodeTiled = VAEEncodeTiled()
 opControlNetApplyAdvanced = ControlNetApplyAdvanced()
-opModelSamplingDiscrete = ModelSamplingDiscrete()
 opModelSamplingContinuousEDM = ModelSamplingContinuousEDM()
 
 
@@ -335,22 +313,18 @@ def load_model(
     clip_load_device=None,
     clip_offload_device=None,
 ):
+    basename = os.path.basename(ckpt_filename).lower()
+    if basename.endswith('.gguf'):
+        raise ValueError(
+            'GGUF model checkpoints are not supported. Select an SDXL checkpoint instead.'
+        )
+
     # Check file existence first
     if not os.path.isfile(ckpt_filename):
         print(f'[Nex Error] Model file not found: {ckpt_filename}')
         return StableDiffusionModel(filename=ckpt_filename)
 
-    basename = os.path.basename(ckpt_filename).lower()
     resolved_taxonomy = modules.config.resolve_model_taxonomy(ckpt_filename)
-
-    if sdxl_runtime_policy.is_legacy_sdxl_gguf_selection(
-        architecture=resolved_taxonomy.architecture,
-        base_model_name=ckpt_filename,
-    ):
-        raise ValueError(
-            'SDXL GGUF base models are deprecated and no longer supported. '
-            'Select an SDXL checkpoint base model instead.'
-        )
 
     unet, clip, vae = None, None, None
     unet_plan = resources.get_component_plan('unet', policy=sdxl_policy)
@@ -360,23 +334,7 @@ def load_model(
     if vae_filename is not None and vae_filename != 'None':
         external_vae_filename_abs = get_file_from_folder_list(vae_filename, modules.config.path_vae)
 
-    if basename.endswith('.gguf'):
-        # GGUF UNet-only file -- load via backend GGUF path
-        # CLIP and VAE must be provided separately via UI dropdowns
-        print(f'[Nex] Loading GGUF UNet: {basename}')
-        try:
-            unet = loader.load_sdxl_unet(
-                ckpt_filename, 
-                load_device=unet_plan[0], 
-                offload_device=unet_plan[0] if unet_plan[1] == 'cpu_resident' else None,
-                execution_class=getattr(sdxl_policy, 'execution_class', None),
-            )
-            print(f'[Nex] GGUF UNet loaded successfully.')
-            if clip is None or vae is None:
-                print(f'[Nex Warning] GGUF requires separate CLIP/VAE. No matching companion CLIP found; please select one manually.')
-        except Exception as e:
-            print(f'[Nex Error] Failed to load GGUF UNet: {e}')
-    elif resolved_taxonomy.architecture == modules.model_taxonomy.ARCHITECTURE_SDXL:
+    if resolved_taxonomy.architecture == modules.model_taxonomy.ARCHITECTURE_SDXL:
         unet, clip, vae = loader.load_sdxl_checkpoint(
             ckpt_filename,
             load_device=unet_plan[0],
@@ -408,7 +366,6 @@ def load_model(
         if os.path.exists(clip_filename_abs) and clip_filename_abs != ckpt_filename:
             try:
                 if is_sdxl_base:
-                    # GGUF and SDXL use the same CLIP loader pattern
                     clip = loader.load_sdxl_clip(
                         clip_filename_abs,
                         clip_filename_abs,

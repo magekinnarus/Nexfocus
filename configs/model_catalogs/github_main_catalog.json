@@ -29,48 +29,6 @@
                 "url": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/sdxl_vae.safetensors"
             },
             "registration_state": "sourced_registered"
-        },
-        {
-            "id": "github.lora.sdxl.base.sdxl_lcm_lora",
-            "alias": "sdxl_lcm_lora",
-            "name": "sdxl_lcm_lora.safetensors",
-            "display_name": "SDXL LCM LoRA",
-            "model_type": "lora",
-            "architecture": "sdxl",
-            "sub_architecture": "base",
-            "root_key": "loras",
-            "asset_group_key": "base.sdxl_lcm_lora",
-            "thumbnail_library_relative": "thumbnails/loras/sdxl/base/sdxl_base_lora_sdxl_lcm_lora.png",
-            "source_provider": "github",
-            "source_version_id": "support_models",
-            "visibility": "preset",
-            "preset_managed": true,
-            "token_required": false,
-            "source": {
-                "url": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/sdxl_lcm_lora.safetensors"
-            },
-            "registration_state": "sourced_registered"
-        },
-        {
-            "id": "github.lora.sdxl.base.sdxl_lightning_8step_lora",
-            "alias": "sdxl_lightning_8step_lora",
-            "name": "sdxl_lightning_8step_lora.safetensors",
-            "display_name": "SDXL Lightning 8-step LoRA",
-            "model_type": "lora",
-            "architecture": "sdxl",
-            "sub_architecture": "base",
-            "root_key": "loras",
-            "asset_group_key": "base.sdxl_lightning_8step_lora",
-            "thumbnail_library_relative": "thumbnails/loras/sdxl/base/sdxl_base_lora_sdxl_lightning_8step_lora.png",
-            "source_provider": "github",
-            "source_version_id": "support_models",
-            "visibility": "preset",
-            "preset_managed": true,
-            "token_required": false,
-            "source": {
-                "url": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/sdxl_lightning_8step_lora.safetensors"
-            },
-            "registration_state": "sourced_registered"
         }
     ]
 }

@@ -17,7 +17,6 @@ MODEL_FILE_EXTENSIONS = [
     '.bin',
     '.safetensors',
     '.fooocus.patch',
-    '.gguf',
     '.sft',
 ]
 
@@ -209,8 +208,6 @@ def _build_default_root_map() -> dict[str, list[str]]:
     root_map: dict[str, list[str]] = {
         'checkpoints': _normalize_paths(config.paths_checkpoints),
         'loras': _normalize_paths(config.paths_loras),
-        'loras_lcm': _normalize_paths(config.path_loras_lcm),
-        'loras_lightning': _normalize_paths(config.path_loras_lightning),
         'embeddings': _normalize_paths(config.path_embeddings),
         'vae_approx': _normalize_paths(config.path_vae_approx),
         'vae': _normalize_paths(config.path_vae),
@@ -343,7 +340,7 @@ def _normalize_match_name(value: str | None) -> str:
         return ''
     normalized = Path(str(value)).stem.lower()
     normalized = re.sub(r'[\W_]+', ' ', normalized)
-    normalized = re.sub(r'\b(sd15|sd 15|sdxl|xl|checkpoint|model|lora|vae|clip|clips|embedding|embeddings|gguf)\b', ' ', normalized)
+    normalized = re.sub(r'\b(sd15|sd 15|sdxl|xl|checkpoint|model|lora|vae|clip|clips|embedding|embeddings)\b', ' ', normalized)
     normalized = re.sub(r'\s+', ' ', normalized).strip()
     return normalized
 

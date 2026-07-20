@@ -33,7 +33,6 @@ KSAMPLER = {
     "dpmpp_3m_sde": "",
     "dpmpp_3m_sde_gpu": "",
     "ddpm": "",
-    "lcm": "LCM",
     "tcd": "TCD",
     "restart": "Restart"
 }
@@ -49,11 +48,7 @@ SAMPLERS = KSAMPLER | SAMPLER_EXTRA
 KSAMPLER_NAMES = list(KSAMPLER.keys())
 
 sampler_list = SAMPLER_NAMES
-# UI-compatible scheduler aliases that map to patched backend behavior before
-# the sampler layer runs.
-UI_SCHEDULER_ALIASES = ['lcm']
-
-scheduler_list = SCHEDULER_NAMES + [name for name in UI_SCHEDULER_ALIASES if name not in SCHEDULER_NAMES]
+scheduler_list = list(SCHEDULER_NAMES)
 
 clip_skip_max = 12
 

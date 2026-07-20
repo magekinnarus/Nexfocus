@@ -9,7 +9,7 @@
         "Authoritative runtime catalog for user-facing HuggingFace models.",
         "Entries were converted from the external HuggingFace source catalog.",
         "CivitAI-referenced entries were restored to the CivitAI catalog.",
-        "GGUF companion assets and alternate VAEs are no longer part of the active catalog.",
+        "GGUF model execution is unsupported; active entries use supported native formats.",
         "Missing thumbnails currently fall back to default_0001.png."
     ],
     "entries": [

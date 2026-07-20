@@ -20,7 +20,6 @@ import time
 from typing import Any, Deque, Dict, Optional
 
 from backend import environment_profile as environment_profiles
-from backend import sdxl_runtime_policy
 from modules.route_intent import resolve_route_intent
 
 import psutil
@@ -100,100 +99,6 @@ def _move_resource_to_evictable(resource_id: str, pinned: list[str], warm: list[
     if resource_id not in evictable:
         evictable.append(resource_id)
 
-
-def _task_uses_dedicated_gguf_runtime(task) -> bool:
-    if task is None:
-        return False
-
-    try:
-        policy = getattr(task, 'sdxl_execution_policy', None)
-        runtime_family = str(
-            getattr(policy, 'runtime_family', None)
-            or getattr(task, 'sdxl_runtime_family', None)
-            or ''
-        ).strip().lower()
-
-        if sdxl_runtime_policy.policy_marks_legacy_sdxl_gguf(policy):
-            return False
-
-        if runtime_family == "gguf_sdxl":
-            return True
-
-        execution_family = str(
-            getattr(task, 'sdxl_execution_family', None)
-            or getattr(policy, 'execution_family', None)
-            or ''
-        ).strip().lower()
-        residency_class = str(
-            getattr(task, 'sdxl_residency_class', None)
-            or getattr(policy, 'residency_class', None)
-            or ''
-        ).strip().lower()
-
-        return (
-            execution_family == sdxl_runtime_policy.EXECUTION_FAMILY_GGUF_STAGED
-            or residency_class == sdxl_runtime_policy.SDXL_RESIDENCY_CLASS_GGUF_STAGED
-            or residency_class == sdxl_runtime_policy.SDXL_RESIDENCY_CLASS_GGUF_TRUE_STREAMING
-        )
-    except Exception:
-        return False
-
-
-GGUF_RESIDENCY_PLANS = {
-    MemoryPhase.TASK.value: _plan(
-        warm=('unet',),
-        evictable=('clip', 'vae') + RESIDENCY_RESOURCE_GROUPS['support_caches'] + ('route_state',),
-    ),
-    MemoryPhase.ROUTE_SELECT.value: _plan(
-        warm=('unet',),
-        evictable=('clip', 'vae') + RESIDENCY_RESOURCE_GROUPS['support_caches'] + ('route_state',),
-    ),
-    MemoryPhase.MODEL_REFRESH.value: _plan(
-        pinned=('unet', 'clip'),
-        evictable=('vae',) + RESIDENCY_RESOURCE_GROUPS['support_caches'] + RESIDENCY_RESOURCE_GROUPS['route_artifacts'],
-    ),
-    MemoryPhase.PROMPT_ENCODE.value: _plan(
-        pinned=('clip',),
-        warm=('unet',),
-        evictable=('vae',) + RESIDENCY_RESOURCE_GROUPS['support_caches'] + ('route_state',),
-    ),
-    MemoryPhase.IMAGE_INPUT_PREPARE.value: _plan(
-        pinned=('vae',),
-        warm=('unet',),
-        evictable=('clip', 'controlnet') + RESIDENCY_RESOURCE_GROUPS['support_caches'],
-    ),
-    MemoryPhase.INPAINT_PREPARE.value: _plan(
-        pinned=('vae',),
-        warm=('unet',),
-        evictable=('clip', 'controlnet') + RESIDENCY_RESOURCE_GROUPS['support_caches'],
-    ),
-    MemoryPhase.OUTPAINT_PREPARE.value: _plan(
-        pinned=('vae',),
-        warm=('unet',),
-        evictable=('clip', 'controlnet') + RESIDENCY_RESOURCE_GROUPS['support_caches'],
-    ),
-    MemoryPhase.VAE_ENCODE.value: _plan(
-        pinned=('vae',),
-        warm=('unet',),
-        evictable=('clip', 'controlnet') + RESIDENCY_RESOURCE_GROUPS['support_caches'],
-    ),
-    MemoryPhase.DIFFUSION.value: _plan(
-        pinned=('unet',),
-        evictable=('clip', 'vae', 'controlnet') + RESIDENCY_RESOURCE_GROUPS['support_caches'],
-    ),
-    MemoryPhase.DECODE.value: _plan(
-        pinned=('vae',),
-        warm=('unet',),
-        evictable=('clip', 'controlnet') + RESIDENCY_RESOURCE_GROUPS['support_caches'],
-    ),
-    MemoryPhase.STITCH.value: _plan(
-        evictable=('clip', 'vae') + RESIDENCY_RESOURCE_GROUPS['support_caches'] + ('route_state',),
-    ),
-    MemoryPhase.FINALIZE.value: _plan(
-        warm=('unet',),
-        evictable=('clip', 'vae') + RESIDENCY_RESOURCE_GROUPS['support_caches'] + RESIDENCY_RESOURCE_GROUPS['route_artifacts'],
-    ),
-}
 
 BASE_RESIDENCY_PLANS = {
     MemoryPhase.IDLE.value: _plan(evictable=RESIDENCY_RESOURCE_GROUPS['support_caches'] + RESIDENCY_RESOURCE_GROUPS['route_artifacts']),
@@ -451,9 +356,7 @@ class MemoryGovernor:
 
         # This governor only decides phase-local warmth and eviction for compatibility surfaces.
         # It must not re-plan model family, runtime posture, or Flux fallback policy.
-        uses_dedicated_gguf_route = _task_uses_dedicated_gguf_runtime(task)
-        plan_table = GGUF_RESIDENCY_PLANS if uses_dedicated_gguf_route else BASE_RESIDENCY_PLANS
-        base_plan = plan_table.get(phase_name, BASE_RESIDENCY_PLANS[MemoryPhase.IDLE.value])
+        base_plan = BASE_RESIDENCY_PLANS.get(phase_name, BASE_RESIDENCY_PLANS[MemoryPhase.IDLE.value])
         pinned = list(base_plan['pinned'])
         warm = [item for item in base_plan['warm'] if item not in pinned]
         evictable = [item for item in base_plan['evictable'] if item not in pinned and item not in warm]
@@ -492,9 +395,7 @@ class MemoryGovernor:
         if phase_name in {MemoryPhase.DIFFUSION.value, MemoryPhase.DECODE.value} and not _task_expects_controlnet(task):
             _move_resource_to_evictable('controlnet', pinned, warm, evictable)
             notes['controlnet_expected'] = False
-        notes['source'] = 'gguf_phase_residency' if uses_dedicated_gguf_route else 'profile_phase_residency'
-        if uses_dedicated_gguf_route:
-            notes['route_family'] = 'gguf'
+        notes['source'] = 'profile_phase_residency'
         return ResidencyPlan(
             pinned=tuple(pinned),
             warm=tuple(warm),

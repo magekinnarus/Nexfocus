@@ -23,7 +23,6 @@ from modules.pipeline.workflow_legacy_adapter import (
     capture_workflow_selection,
 )
 from modules.lora_channel_policy import (
-    build_explicit_lora_channel_overrides,
     merge_lora_channel_overrides,
 )
 
@@ -121,10 +120,7 @@ class AsyncTask:
             weight = float(args.get(f'lora_{i}_weight', 1.0))
             lora_data.append((enabled, name, weight))
         s.loras = get_enabled_loras(lora_data)
-        s.lora_channel_overrides = merge_lora_channel_overrides(
-            build_explicit_lora_channel_overrides(s.loras),
-            args.get("lora_channel_overrides"),
-        )
+        s.lora_channel_overrides = merge_lora_channel_overrides(args.get("lora_channel_overrides"))
 
         if not getattr(args_manager.args, 'disable_metadata', False):
             s.save_metadata_to_images = args.get('save_metadata_to_images', False)
@@ -314,13 +310,10 @@ def handler(async_task: AsyncTask):
 
     # Resolve model taxonomy first
     resolved_taxonomy = modules.config.resolve_model_taxonomy(task_state.base_model_name)
-    if sdxl_runtime_policy.is_legacy_sdxl_gguf_selection(
-        architecture=getattr(resolved_taxonomy, 'architecture', None),
-        base_model_name=task_state.base_model_name,
-    ):
+    if str(task_state.base_model_name).lower().endswith('.gguf'):
         message = (
-            'SDXL GGUF base models are deprecated and no longer supported. '
-            'Select an SDXL checkpoint base model instead.'
+            'GGUF model checkpoints are not supported. '
+            'Select an SDXL checkpoint instead.'
         )
         print(f'[Nex Error] {message}')
         task_state.yields.append(['preview', (0, message, None)])

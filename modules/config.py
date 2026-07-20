@@ -389,8 +389,6 @@ path_clip_vision = get_dir_or_set_default('path_clip_vision', '../models/vision_
 path_preprocessors = get_dir_or_set_default('path_preprocessors', '../models/preprocessors/', make_directory=True)
 path_insightface = get_dir_or_set_default('path_insightface', '../models/insightface/', make_directory=True)
 path_removals = get_dir_or_set_default('path_removals', '../models/removals/', make_directory=True)
-path_loras_lcm = get_dir_or_set_default('path_loras_lcm', '../models/performance_loras/lcm/', make_directory=True)
-path_loras_lightning = get_dir_or_set_default('path_loras_lightning', '../models/performance_loras/lightning/', make_directory=True)
 
 
 # Add unet path to checkpoints for base model selection
@@ -411,10 +409,7 @@ if isinstance(path_clip, list):
 else:
     paths_clips.append(path_clip)
 
-paths_lora_discovery = []
-for folder in paths_loras + [path_loras_lcm, path_loras_lightning]:
-    if folder not in paths_lora_discovery:
-        paths_lora_discovery.append(folder)
+paths_lora_discovery = list(paths_loras)
 paths_lora_lookup = list(paths_lora_discovery)
 
 
@@ -458,8 +453,6 @@ def get_model_thumbnail_size():
 asset_root_paths = {
     'checkpoints': paths_checkpoints[0],
     'loras': paths_loras[0],
-    'loras_lcm': path_loras_lcm,
-    'loras_lightning': path_loras_lightning,
     'embeddings': path_embeddings,
     'vae_approx': path_vae_approx,
     'vae': path_vae[0] if isinstance(path_vae, list) else path_vae,
@@ -479,8 +472,6 @@ asset_root_paths = {
 asset_root_path_groups = {
     'checkpoints': list(paths_checkpoints),
     'loras': list(paths_loras),
-    'loras_lcm': [path_loras_lcm],
-    'loras_lightning': [path_loras_lightning],
     'embeddings': [path_embeddings],
     'vae_approx': [path_vae_approx],
     'vae': list(path_vae) if isinstance(path_vae, list) else [path_vae],
@@ -1169,7 +1160,7 @@ embedding_path_lookup = {}
 
 def get_model_filenames(folder_paths, extensions=None, name_filter=None):
     if extensions is None:
-        extensions = ['.pth', '.ckpt', '.bin', '.safetensors', '.fooocus.patch', '.gguf', '.sft']
+        extensions = ['.pth', '.ckpt', '.bin', '.safetensors', '.fooocus.patch', '.sft']
     files = []
 
     if not isinstance(folder_paths, list):
@@ -1401,24 +1392,6 @@ def downloading_inpaint_models(v):
     from modules import model_registry
 
     return model_registry.ensure_asset(asset_id)
-
-def downloading_sdxl_lcm_lora():
-    load_file_from_url(
-        url='https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/sdxl_lcm_lora.safetensors',
-        model_dir=path_loras_lcm,
-        file_name='sdxl_lcm_lora.safetensors'
-    )
-    return 'sdxl_lcm_lora.safetensors'
-
-
-def downloading_sdxl_lightning_lora():
-    load_file_from_url(
-        url='https://huggingface.co/mashb1t/misc/resolve/main/sdxl_lightning_4step_lora.safetensors',
-        model_dir=path_loras_lightning,
-        file_name='sdxl_lightning_4step_lora.safetensors'
-    )
-    return 'sdxl_lightning_4step_lora.safetensors'
-
 
 def downloading_sdxl_hyper_sd_lora():
     load_file_from_url(

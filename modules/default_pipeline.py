@@ -259,7 +259,7 @@ def refresh_base_model(name, vae_name=None, clip_name=None, sdxl_policy=None):
                     if hasattr(component, 'fcs_cond_cache'):
                         component.fcs_cond_cache.clear()
             
-            # 2. GGUF Specific Destruction (Fixes UNet destruction bug)
+            # 2. Release the previous UNet state before a checkpoint switch.
             for unet in [getattr(previous_model, 'unet', None), getattr(previous_model, 'unet_with_lora', None)]:
                 if unet is not None:
                     if hasattr(unet, 'unpatch_model'):

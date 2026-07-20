@@ -137,12 +137,7 @@ def patch_samplers(task_state):
     Scheduler-specific UNet patching now happens inside the unified runtime so
     the production path does not mutate any shared default-pipeline surfaces.
     """
-    final_scheduler_name = task_state.scheduler_name
-
-    if task_state.scheduler_name == 'lcm':
-        final_scheduler_name = 'sgm_uniform'
-
-    return final_scheduler_name
+    return task_state.scheduler_name
 def process_prompt(task_state, base_model_additional_loras, progressbar_callback=None, *, route_context=None, route_family=None, residency_class=None):
     """
     Gathers prompts, styles, and LoRAs. Encodes prompts via CLIP.

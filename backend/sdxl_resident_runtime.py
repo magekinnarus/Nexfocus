@@ -265,7 +265,6 @@ class ResidentSDXLRuntime(UnifiedSDXLRuntime):
             # Resident SDXL always reloads clean UNet weights from the runtime source.
             # The deprecated CPU/GPU clean-shadow policy is intentionally ignored here.
             self.unet.runtime_release_to_meta = True
-            self._reapply_scheduler_patches()
         if self.clip is not None:
             self.clip.runtime_policy = self.policy
             if hasattr(self.clip, "clip_layer"):
@@ -746,24 +745,18 @@ class ResidentSDXLRuntime(UnifiedSDXLRuntime):
     def _materialize_lora_stack(self) -> dict[str, Any]:
         self._compiled_unet_cache_hit = False
         desired_signature = self._lora_signature()
-        desired_scheduler = str(self.config.original_scheduler_name or self.config.scheduler or "")
         
         current_unet_signature = self._current_resident_lora_signature(self.unet)
-        current_scheduler = getattr(getattr(self.unet, "model", None), "_nex_resident_scheduler", "")
-
-        desired_scheduler_norm = "lcm" if desired_scheduler == "lcm" else ""
-        current_scheduler_norm = "lcm" if current_scheduler == "lcm" else ""
 
         has_compiled_state = (
             getattr(self.unet.model, "_nex_resident_compile_metrics", None) is not None
             or (
                 not desired_signature
-                and desired_scheduler_norm != "lcm"
                 and getattr(self.unet.model, "_nex_clean_unet_source", None) is None
             )
         )
 
-        if desired_signature == current_unet_signature and desired_scheduler_norm == current_scheduler_norm and has_compiled_state:
+        if desired_signature == current_unet_signature and has_compiled_state:
             self._compiled_unet_cache_hit = True
             unet_compile = self._current_resident_compile_metrics(self.unet)
             unet_patch_count = int(unet_compile.get("patch_count", 0))
@@ -778,19 +771,13 @@ class ResidentSDXLRuntime(UnifiedSDXLRuntime):
             }
 
         model = getattr(self.unet, "model", None)
-        scheduler_dirty = (
-            current_scheduler_norm == "lcm"
-            and desired_scheduler_norm != "lcm"
-        )
         needs_restore = (
             getattr(model, "_nex_clean_unet_source", None) is not None
             or current_unet_signature != ()
-            or scheduler_dirty
             or bool(getattr(model, "_patched_marker", False))
         )
         if needs_restore:
             self._restore_clean_unet_component()
-            current_scheduler_norm = ""
 
         if not self._resolved_lora_specs:
             self._remember_resident_lora_state(self.unet, (), self._default_compile_metrics())
@@ -816,13 +803,6 @@ class ResidentSDXLRuntime(UnifiedSDXLRuntime):
             unet_host_pinned_bytes = int(unet_compile.get("host_pinned_bytes", 0))
             
             self._remember_resident_lora_state(self.unet, desired_signature, unet_compile)
-
-        if desired_scheduler_norm == "lcm":
-            if current_scheduler_norm != "lcm":
-                self._reapply_scheduler_patches()
-            self.unet.model._nex_resident_scheduler = "lcm"
-        else:
-            self.unet.model._nex_resident_scheduler = ""
 
         return {
             "spec_count": float(len(self._resolved_lora_specs)),
@@ -1177,18 +1157,6 @@ class ResidentSDXLRuntime(UnifiedSDXLRuntime):
             model.lowvram_patch_counter = 0
         if hasattr(model, "model_lowvram"):
             model.model_lowvram = False
-
-    def _reapply_scheduler_patches(self) -> None:
-        if self.unet is None:
-            return
-        orig_scheduler = self.config.original_scheduler_name or self.config.scheduler
-        model = getattr(self.unet, "model", None)
-        if orig_scheduler == 'lcm':
-            from modules import core as modules_core
-            self.unet = modules_core.opModelSamplingDiscrete.patch(self.unet, orig_scheduler, False)[0]
-            model = getattr(self.unet, "model", None)
-            if model is not None:
-                model._nex_resident_scheduler = "lcm"
 
     def _build_clip_identity(self) -> str:
         clip_identity = self.config.checkpoint_path
