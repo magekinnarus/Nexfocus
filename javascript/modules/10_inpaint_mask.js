@@ -875,6 +875,7 @@
           setStatus("Press the Refresh button, remove all the loaded images and try again.");
           return;
         }
+        setActiveMode("bb");
         setStatus("Refreshing BB image...");
         nonceField.value = String(Date.now());
         nonceField.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1065,6 +1066,12 @@
     surface.sourceKey = nextKey;
     syncCanvasToImage(mode, clearForNewImage);
     syncCanvasInteractivity();
+    if (mode === state.activeMode) {
+      const statusEl = getStatus(mode);
+      if (statusEl && statusEl.textContent === "Refreshing BB image...") {
+        setStatus("Step 2 Inpaint BB mask ready.", mode);
+      }
+    }
   }
 
   function refreshAll() {
