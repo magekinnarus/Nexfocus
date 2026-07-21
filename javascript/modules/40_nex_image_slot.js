@@ -120,7 +120,7 @@
                 '      <button type="button" class="nex-slot__clear" hidden>Remove</button>',
                 '    </div>',
                 '  </div>',
-                '  <div class="nex-slot__drop" tabindex="0" draggable="true">',
+                '  <div class="nex-slot__drop" draggable="true">',
                 `    <div class="nex-slot__placeholder">${this.placeholder}</div>`,
                 '    <img class="nex-slot__img" alt="" draggable="false">',
                 '  </div>',
@@ -137,12 +137,6 @@
 
         bindEvents() {
             this.dropZone.addEventListener('click', () => this.fileInput.click());
-            this.dropZone.addEventListener('keydown', (event) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault();
-                    this.fileInput.click();
-                }
-            });
 
             this.dropZone.addEventListener('dragstart', (event) => {
                 if (!this.dropZone.classList.contains('has-image')) {

@@ -394,7 +394,7 @@
     const key = (event.key || "").toLowerCase();
     if (!key) return;
 
-    if (key === "b") {
+    if (key === "r") {
       setTool("brush");
       event.preventDefault();
       return;
@@ -406,7 +406,7 @@
       return;
     }
 
-    if (key === "c") {
+    if (key === "a") {
       clearMask(state.activeMode);
       event.preventDefault();
       return;
@@ -420,7 +420,7 @@
       return;
     }
 
-    if (key === "r") {
+    if (key === "f") {
       refreshMaskingSystem();
       event.preventDefault();
     }

@@ -207,8 +207,9 @@ Covers:
 ### 6. Phase 5 UI Surface Contract
 
 ```powershell
-.\venv\Scripts\python.exe -m py_compile modules\ui_components\advanced_panel.py modules\ui_components\models_panel.py modules\ui_components\settings_panel.py modules\ui_logic.py webui.py
-.\venv\Scripts\python.exe -m pytest tests\test_models_panel.py tests\test_settings_panel.py tests\test_environment_profiles.py tests\test_ui_logic_model_filtering.py -q
+.\venv\Scripts\python.exe -m py_compile modules\ui_components\advanced_panel.py modules\ui_components\models_panel.py modules\ui_components\settings_panel.py modules\ui_logic.py webui.py tests\test_ui_javascript_hotkeys.py
+.\venv\Scripts\python.exe -m pytest tests\test_models_panel.py tests\test_settings_panel.py tests\test_environment_profiles.py tests\test_ui_logic_model_filtering.py tests\test_ui_javascript_hotkeys.py -q
+Get-ChildItem javascript\modules\*.js | ForEach-Object { node --check $_.FullName }
 rg -n "console\.log\b" javascript\modules
 git diff --check
 ```
@@ -219,11 +220,30 @@ Covers:
 - model-dependent VAE and LoRA callback input/output alignment
 - environment-sensitive SDXL and Flux Fill posture defaults
 - disk-paged T5 host-RAM cleanup cadence label, choices, and default
+- Director-approved mask hotkeys, click-only image slots, and Escape overlay
+  priority
+- syntax of every auto-injected JavaScript module
 - no ordinary debug logging in the auto-injected JavaScript module surface
 - UI Python syntax and patch whitespace sanity
 
 The `rg` command is expected to produce no output. Keep `console.warn` and
 `console.error` calls that report actionable browser/runtime failures.
+
+### W02 Hotkey and Interaction Replay
+
+Run on a fresh local UI before M01 freeze:
+
+1. On an enabled mask surface, verify R=brush, E=erase, A=clear, Q/W=brush
+   size, and F=refresh. Confirm typing in prompt/search inputs is unaffected.
+2. Open the staging marker picker and verify Escape closes it.
+3. Open Image Compare and verify Escape closes it, R resets its camera,
+   Ctrl+Scroll zooms, and Ctrl+Click+Drag pans a zoomed image.
+4. Verify an image-slot click opens the file browser. The slot must not expose
+   a custom Tab/Enter/Space activation path.
+5. Verify ordinary typing works in the Model Browser search input; no custom
+   search shortcut is expected.
+6. Confirm Generate, Stop, and Skip remain explicit click controls and inspect
+   the browser console for interaction-related errors.
 
 ## Manual Acceptance Replay (historical/manual)
 

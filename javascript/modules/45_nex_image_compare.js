@@ -689,6 +689,9 @@
         if (!state.panel || state.panel.classList.contains("is-hidden")) {
             return;
         }
+        if (event.defaultPrevented) {
+            return;
+        }
         if (event.metaKey || event.altKey) {
             return;
         }

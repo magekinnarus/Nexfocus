@@ -365,8 +365,9 @@
         panel.addEventListener('click', closeMarkerPicker);
         document.addEventListener('click', closeMarkerPicker);
         document.addEventListener('keydown', (event) => {
-            if (event.key === 'Escape') {
+            if (event.key === 'Escape' && markerPicker && markerPicker.style.display !== 'none') {
                 closeMarkerPicker();
+                event.preventDefault();
             }
         });
 
