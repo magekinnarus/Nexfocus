@@ -380,6 +380,22 @@
     return clamped;
   }
 
+  function isModalOverlayActive() {
+    const compareOverlay = document.getElementById("nex-compare-overlay");
+    if (compareOverlay && !compareOverlay.classList.contains("is-hidden")) {
+      return true;
+    }
+    const markerPicker = document.querySelector(".staging-marker-picker");
+    if (
+      markerPicker &&
+      markerPicker.style.display !== "none" &&
+      markerPicker.classList.contains("is-open")
+    ) {
+      return true;
+    }
+    return false;
+  }
+
   function handleMaskHotkeys(event) {
     if (
       event.defaultPrevented ||
@@ -389,6 +405,7 @@
     )
       return;
     if (isEditableTarget(event.target)) return;
+    if (isModalOverlayActive()) return;
     if (!state.enabledModes[state.activeMode]) return;
 
     const key = (event.key || "").toLowerCase();
