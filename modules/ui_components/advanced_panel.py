@@ -39,7 +39,7 @@ def build_debug_tab():
         label='SDXL Posture Override',
         choices=[('Default', 'auto'), ('CLIP in GPU', 'gpu_text'), ('Streaming', 'streaming')],
         value=resolve_default_sdxl_assembly_posture(),
-        info='Colab Free defaults to CLIP in GPU, which pins both resident UNet and CLIP to GPU and requires at least 10GB VRAM. Other profiles default to Default. Use Streaming to force the streaming lane on roomier hardware.'
+        info='Default automatically sets the posture based on the user hardware profile. CLIP in GPU moves CLIPs to GPU-resident memory; if your GPU has at least 12 GB VRAM, you can choose this option. Streaming forces the streaming posture on hardware that typically defaults to the GPU UNet posture.'
     )
 
     # --- Flux Fill Settings ---
@@ -48,7 +48,7 @@ def build_debug_tab():
         label='Flux Fill Posture Override',
         choices=[('Default', 'auto'), ('Streaming', 'streaming')],
         value='auto',
-        info='Debug/benchmark override. Keep Default for normal use; force Streaming only when benchmarking Flux Fill on high-RAM Colab sessions.'
+        info='Debug override. Keep Default for normal use; force Streaming only when benchmarking Flux Fill on high-RAM machines.'
     )
 
     total_ram_gb = 0.0
