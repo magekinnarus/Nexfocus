@@ -32,7 +32,6 @@ def build_models_tab():
     vae_choices = [flags.default_vae]
     if getattr(base_model_entry, 'root_key', None) != 'checkpoints':
         vae_choices += compatible_vae_choices
-    clip_choices = ['None'] + modules.config.get_compatible_clip_choices_for_model(base_model_value)
 
     with gr.Group():
         with gr.Row():
@@ -50,19 +49,6 @@ def build_models_tab():
                 show_label=True,
                 elem_id='model_vae_dropdown',
             )
-
-        results['clip_model'] = gr.Dropdown(
-            label='Force CLIP',
-            choices=clip_choices,
-            value=modules.config.resolve_dropdown_choice(
-                modules.config.default_clip,
-                clip_choices,
-                folder_paths=modules.config.paths_clips,
-                root_keys=('clip',),
-            ) or 'None',
-            show_label=True,
-            elem_id='model_clip_dropdown',
-        )
 
     with gr.Accordion(label='Prompt Presets', open=False, elem_id='style_selections_accordion') as style_selections_accordion:
         results['style_selections_accordion'] = style_selections_accordion

@@ -74,19 +74,16 @@ def _normalize_flux_fill_disk_paged_t5_gc_interval_value(value: Any) -> str:
 # and are NOT listed as static ParamDefs here.
 PARAM_REGISTRY: List[ParamDef] = [
     # --- Generation ---
-    ParamDef('generate_image_grid', 'generate_image_grid', False, bool),
     ParamDef('prompt', 'prompt', '', str),
     ParamDef('negative_prompt', 'negative_prompt', '', str),
     ParamDef('style_selections', 'style_selections', [], list),
     ParamDef('aspect_ratios_selection', 'aspect_ratios_selection', '1024x1024', str),
-    ParamDef('image_number', 'image_number', 1, int),
     ParamDef('output_format', 'output_format', 'png', str),
     ParamDef('image_seed', 'seed', -1, int),
     ParamDef('sharpness', 'sharpness', 2.0, float),
     ParamDef('guidance_scale', 'cfg_scale', 7.0, float),
     ParamDef('base_model', 'base_model_name', 'None', str),
     ParamDef('vae_model', 'vae_name', 'None', str),
-    ParamDef('clip_model', 'clip_model_name', 'None', str),
     # LoRAs intentionally omitted here (15 parameters handled explicitly)
 
     # --- Mode & Inputs ---
@@ -159,8 +156,6 @@ PARAM_REGISTRY: List[ParamDef] = [
     # --- Settings & Toggles ---
     ParamDef('disable_preview', 'disable_preview', False, bool),
     ParamDef('preview_update_interval', 'preview_update_interval', 1, int),
-    ParamDef('disable_intermediate_results', 'disable_intermediate_results', False, bool),
-    ParamDef('disable_seed_increment', 'disable_seed_increment', False, bool),
     ParamDef('prefetch_depth', 'prefetch_depth', 1, int),
     ParamDef('prefetch_chunk_mb', 'prefetch_chunk_mb', 64, int),
     # --- Advanced Sampling ---
@@ -172,10 +167,6 @@ PARAM_REGISTRY: List[ParamDef] = [
     ParamDef('sampler_name', 'sampler_name', 'dpmpp_2m_sde_gpu', str),
     ParamDef('scheduler_name', 'scheduler_name', 'karras', str),
     ParamDef('steps', 'steps', 30, int),
-    ParamDef('overwrite_width', 'overwrite_width', -1, int),
-    ParamDef('overwrite_height', 'overwrite_height', -1, int),
-    ParamDef('overwrite_upscale_strength', 'overwrite_upscale_strength', -1.0, float),
-
     # --- Control / Image Prompts ---
     ParamDef('mixing_image_prompt_and_inpaint', 'mixing_image_prompt_and_inpaint', False, bool),
     ParamDef('mixing_image_prompt_and_outpaint', 'mixing_image_prompt_and_outpaint', False, bool),

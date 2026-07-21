@@ -1,13 +1,13 @@
 /* Step 2 Toolbox Outline */
 .step2-toolbox {
-  margin: 16px 0 !important;
-  padding: 18px !important;
+  margin: 8px 0 !important;
+  padding: 10px !important;
   border: 1px solid rgba(128, 128, 128, 0.25) !important;
   border-radius: 12px !important;
   background: transparent !important;
   display: flex !important;
   flex-direction: column !important;
-  gap: 12px !important;
+  gap: 8px !important;
   align-items: flex-start !important;
   /* Prevents children from stretching */
 }

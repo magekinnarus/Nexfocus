@@ -853,7 +853,7 @@
           "inpaint_input_workspace_id",
         );
         if (basePending) {
-          setStatus("Base Image is still saving. Wait a moment, then retry.");
+          setStatus("Press the Refresh button, reload the Base Image, and try again.");
           return;
         }
 
@@ -864,7 +864,7 @@
         );
         const contextMaskData = getFieldValue("inpaint_context_mask_data");
         if (contextPending || (slotHasVisibleImage("inpaint_context_mask_canvas") && !getFieldValue("inpaint_context_mask_image_path") && !contextMaskData)) {
-          setStatus("Context Mask is still saving. Wait a moment, then retry.");
+          setStatus("Press the Refresh button, reload the context mask, and try again.");
           return;
         }
 
@@ -872,7 +872,7 @@
           "#inpaint_replace_bb_nonce textarea, #inpaint_replace_bb_nonce input",
         );
         if (!nonceField) {
-          setStatus("Refresh bridge unavailable.");
+          setStatus("Press the Refresh button, remove all the loaded images and try again.");
           return;
         }
         setStatus("Refreshing BB image...");

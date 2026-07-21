@@ -197,7 +197,6 @@ def load_parameter_button_click(raw_metadata: dict | str, is_generating: bool):
         active_base_model_name or modules.config.default_base_model_name
     )
 
-    get_image_number('image_number', 'Image Number', normalized_parameter_dict, results)
     get_str('prompt', 'Prompt', normalized_parameter_dict, results)
     get_str('negative_prompt', 'Negative Prompt', normalized_parameter_dict, results)
     get_list('styles', 'Styles', normalized_parameter_dict, results)
@@ -210,7 +209,6 @@ def load_parameter_button_click(raw_metadata: dict | str, is_generating: bool):
     get_number('clip_skip', 'CLIP Skip', normalized_parameter_dict, results, cast_type=int)
     get_str('base_model', 'Base Model', normalized_parameter_dict, results)
     get_str('vae', 'VAE', normalized_parameter_dict, results)
-    get_str('clip_model', 'Force CLIP', normalized_parameter_dict, results)
     get_str('sampler', 'Sampler', normalized_parameter_dict, results)
     get_str('scheduler', 'Scheduler', normalized_parameter_dict, results)
     get_seed('seed', 'Seed', normalized_parameter_dict, results)

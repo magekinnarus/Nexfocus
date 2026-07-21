@@ -39,16 +39,6 @@ def build_settings_tab():
             elem_id='aspect_ratios_selection'
         )
 
-    results['image_number'] = gr.Slider(
-        label='Images Per Click',
-        minimum=1,
-        maximum=1,
-        step=1,
-        value=1,
-        interactive=False,
-        info='Each Generate click queues one image. Click Generate again to queue another task.'
-    )
-
     results['steps'] = gr.Slider(
         label='Sampling Steps',
         minimum=1, maximum=200, step=1,

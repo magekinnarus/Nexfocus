@@ -112,7 +112,7 @@ with shared.gradio_root:
                 input_image_checkbox = gr.Checkbox(label='Input Image', value=modules.config.default_image_prompt_checkbox, container=False, elem_classes='min_check')
             with gr.Row(visible=modules.config.default_image_prompt_checkbox) as image_input_panel:
                 with gr.Tabs(selected=modules.config.default_selected_image_input_tab_id):
-                    with gr.Tab(label='Upscale / Super / Color', id='uov_tab') as uov_tab:
+                    with gr.Tab(label='Upscale', id='uov_tab') as uov_tab:
                         with gr.Row():
                             with gr.Column():
                                 gr.HTML(make_nex_image_slot('uov_input_slot', 'uov_input_image_bridge', 'Image', 'data-upload-mode="api" data-path-field-id="uov_input_image_path" data-workspace-field-id="uov_input_workspace_id"'))
@@ -146,24 +146,6 @@ with shared.gradio_root:
                                 remove_base_image = gr.Image(label='Base Image', sources='upload', type='filepath', height=500, show_label=False, elem_id='remove_base_image_bridge', elem_classes=['nex-image-slot-bridge'])
                                 remove_base_image_path = gr.Textbox(value='', visible=True, elem_id='remove_base_image_path', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
                                 remove_base_workspace_id = gr.Textbox(value='', visible=True, elem_id='remove_base_workspace_id', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
-                                with gr.Row():
-                                    remove_bg_enabled = gr.Checkbox(label='Background pass', value=False, elem_id='remove_bg_enabled')
-                                    remove_obj_enabled = gr.Checkbox(label='Object pass', value=False, elem_id='remove_obj_enabled')
-
-                                objr_engine = gr.Dropdown(label='Removal Pass', choices=OBJR_ENGINE_DROPDOWN_CHOICES, value=OBJR_ENGINE_MAT)
-                                remove_prompt = gr.Textbox(placeholder='Optional prompt for the Flux Fill refinement pass. Empty uses the downloaded empty conditioning cache.', elem_id='remove_prompt', label='Remove Prompt', visible=True)
-                                flux_fill_conditioning = gr.Textbox(value='empty', visible=False, elem_id='flux_fill_conditioning', show_label=False, container=False)
-                                flux_fill_prompt_cache = gr.Textbox(value='temp', visible=False, elem_id='flux_fill_prompt_cache', show_label=False, container=False)
-                                objr_blend_mode = gr.Textbox(value=FLUX_FILL_BLEND_MORPHOLOGICAL, visible=False, elem_id='objr_blend_mode', show_label=False, container=False)
-                                gr.HTML('* <b>Background pass</b> extracts the person.<br>'
-                                        '* <b>Object pass</b> runs MAT512 first, then Flux Fill refinement. Morphological blending is fixed on.')
-
-                            with gr.Column():
-                                remove_mask_data = gr.Textbox(value='', visible=True, elem_id='remove_mask_data', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
-                                gr.HTML(make_nex_image_slot('remove_mask_image_slot', 'remove_mask_image_bridge', 'Mask', 'data-upload-mode="api" data-path-field-id="remove_mask_image_path" data-workspace-field-id="remove_mask_workspace_id"'))
-                                remove_mask_image = gr.Image(label='Mask', sources='upload', type='filepath', height=500, elem_id='remove_mask_image_bridge', elem_classes=['nex-image-slot-bridge'])
-                                remove_mask_image_path = gr.Textbox(value='', visible=True, elem_id='remove_mask_image_path', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
-                                remove_mask_workspace_id = gr.Textbox(value='', visible=True, elem_id='remove_mask_workspace_id', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
                                 gr.HTML("""
 <div id="remove-mask-tools" class="mask-workflow-toolbar" style="display:flex; flex-direction:column; gap:14px; margin:8px 0 16px; padding:14px; border:1px solid rgba(128,128,128,0.2); border-radius:12px; background:rgba(128,128,128,0.03);">
   <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center;">
@@ -183,10 +165,28 @@ with shared.gradio_root:
   </div>
 </div>
 """)
+                                with gr.Row():
+                                    remove_bg_enabled = gr.Checkbox(label='Background pass', value=False, elem_id='remove_bg_enabled')
+                                    remove_obj_enabled = gr.Checkbox(label='Object pass', value=False, elem_id='remove_obj_enabled')
+
+                                remove_prompt = gr.Textbox(placeholder='Optional prompt for the Flux Fill refinement pass. Empty uses the downloaded empty conditioning cache.', elem_id='remove_prompt', label='Remove Prompt', visible=True)
+                                objr_engine = gr.Dropdown(label='Removal Pass', choices=OBJR_ENGINE_DROPDOWN_CHOICES, value=OBJR_ENGINE_MAT)
+
+                            with gr.Column():
+                                remove_mask_data = gr.Textbox(value='', visible=True, elem_id='remove_mask_data', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
+                                gr.HTML(make_nex_image_slot('remove_mask_image_slot', 'remove_mask_image_bridge', 'Mask', 'data-upload-mode="api" data-path-field-id="remove_mask_image_path" data-workspace-field-id="remove_mask_workspace_id"'))
+                                remove_mask_image = gr.Image(label='Mask', sources='upload', type='filepath', height=500, elem_id='remove_mask_image_bridge', elem_classes=['nex-image-slot-bridge'])
+                                remove_mask_image_path = gr.Textbox(value='', visible=True, elem_id='remove_mask_image_path', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
+                                remove_mask_workspace_id = gr.Textbox(value='', visible=True, elem_id='remove_mask_workspace_id', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
                                 bgr_threshold = gr.Slider(label='BGR Threshold', minimum=0.0, maximum=1.0, step=0.01, value=0.5, info='Higher = tighter cutout; Lower = keep softer edges.')
                                 bgr_jit = gr.Checkbox(label='Use JIT (Optimized)', value=True)
                                 objr_mask_dilate = gr.Slider(label='Mask Dilate', minimum=0, maximum=128, step=1, value=16, info='Shared default for MAT512 and Flux Fill.')
                                 objr_mask_blur = gr.Slider(label='Flux Mask Blur', minimum=0, maximum=64, step=1, value=6, info='Lower keeps refinement sharper; higher softens the edge more.')
+                                flux_fill_conditioning = gr.Textbox(value='empty', visible=False, elem_id='flux_fill_conditioning', show_label=False, container=False)
+                                flux_fill_prompt_cache = gr.Textbox(value='temp', visible=False, elem_id='flux_fill_prompt_cache', show_label=False, container=False)
+                                objr_blend_mode = gr.Textbox(value=FLUX_FILL_BLEND_MORPHOLOGICAL, visible=False, elem_id='objr_blend_mode', show_label=False, container=False)
+                                gr.HTML('* <b>Background pass</b> extracts the person.<br>'
+                                        '* <b>Object pass</b> runs MAT512 first, then Flux Fill refinement. Morphological blending is fixed on.')
                     with gr.Tab(label='Controlnet', id='ip_tab') as ip_tab:
                         ip_images = []
                         cn_image_paths = []
@@ -347,13 +347,13 @@ with shared.gradio_root:
                                     outpaint_prepare_button = gr.Button(value='Prepare Outpaint', variant='primary', elem_id='outpaint_prepare_button')
                                     outpaint_step2_checkbox = gr.Checkbox(label='Prepared Outpaint Assets', value=False, visible=False, elem_id='outpaint_step2_checkbox', elem_classes=['step2-status-btn'], container=False)
                                     outpaint_prepare_notice = gr.Markdown(value='')
-                                    gr.HTML('<p class="step2-desc">Prepare the expanded canvas and BB assets first, then Generate runs inference with those resolved slots.</p>')
+                                    gr.HTML('<p class="step2-desc">Press to generate the expanded mask and BB image needed for the next step.</p>')
 
+                                outpaint_additional_prompt = gr.Textbox(placeholder="Describe what you want to outpaint.", elem_id='outpaint_additional_prompt', label='Outpaint Additional Prompt', visible=True)
                                 outpaint_panel_result = outpaint_panel.build_outpaint_tab()
                                 outpaint_engine = outpaint_panel_result['outpaint_engine']
                                 outpaint_strength = outpaint_panel_result['outpaint_strength']
                                 inpaint_outpaint_expansion_size = outpaint_panel_result['inpaint_outpaint_expansion_size']
-                                outpaint_additional_prompt = gr.Textbox(placeholder="Describe what you want to outpaint.", elem_id='outpaint_additional_prompt', label='Outpaint Additional Prompt', visible=True)
 
                                 gr.HTML('* Powered by Fooocus Inpaint Engine <a href="https://github.com/lllyasviel/Fooocus/discussions/414" target="_blank">\U0001F4D4 Documentation</a>')
 
@@ -484,7 +484,6 @@ with shared.gradio_root:
                 if not args_manager.args.disable_preset_selection:
                     preset_selection = settings_panel_result['preset_selection']
                 aspect_ratios_selection = settings_panel_result['aspect_ratios_selection']
-                image_number = settings_panel_result['image_number']
                 steps = settings_panel_result['steps']
                 sampler_name = settings_panel_result['sampler_name']
                 scheduler_name = settings_panel_result['scheduler_name']
@@ -504,8 +503,6 @@ with shared.gradio_root:
                 models_panel_result = models_panel.build_models_tab()
                 base_model = models_panel_result['base_model']
                 vae_model = models_panel_result['vae_model']
-                clip_model = models_panel_result['clip_model']
-
                 style_search_bar = models_panel_result['style_search_bar']
                 style_selections = models_panel_result['style_selections']
                 style_selections_accordion = models_panel_result['style_selections_accordion']
@@ -520,14 +517,8 @@ with shared.gradio_root:
                 adm_scaler_negative = debug_panel_result['adm_scaler_negative']
                 adm_scaler_end = debug_panel_result['adm_scaler_end']
                 adaptive_cfg = debug_panel_result['adaptive_cfg']
-                generate_image_grid = debug_panel_result['generate_image_grid']
-                overwrite_width = debug_panel_result['overwrite_width']
-                overwrite_height = debug_panel_result['overwrite_height']
-                overwrite_upscale_strength = debug_panel_result['overwrite_upscale_strength']
                 disable_preview = debug_panel_result['disable_preview']
                 preview_update_interval = debug_panel_result['preview_update_interval']
-                disable_intermediate_results = debug_panel_result['disable_intermediate_results']
-                disable_seed_increment = debug_panel_result['disable_seed_increment']
                 prefetch_depth = debug_panel_result['prefetch_depth']
                 prefetch_chunk_mb = debug_panel_result['prefetch_chunk_mb']
                 flux_fill_runtime_posture = debug_panel_result['flux_fill_runtime_posture']
@@ -553,29 +544,26 @@ with shared.gradio_root:
 
         state_is_generating = gr.State(False)
 
-        load_data_outputs = [image_number, prompt, negative_prompt, style_selections,
+        load_data_outputs = [prompt, negative_prompt, style_selections,
                              steps, aspect_ratios_selection,
-                             overwrite_width, overwrite_height, guidance_scale, sharpness, adm_scaler_positive,
+                             guidance_scale, sharpness, adm_scaler_positive,
                              adm_scaler_negative, adm_scaler_end, adaptive_cfg, clip_skip,
-                             base_model, vae_model, clip_model, sampler_name, scheduler_name,
+                             base_model, vae_model, sampler_name, scheduler_name,
                              seed_random, image_seed, outpaint_engine_state, inpaint_engine_state, inpaint_route,
                              generate_button,
                              load_parameter_button] + lora_ctrls
 
         ctrls_dict = {
-            'generate_image_grid': generate_image_grid,
             'prompt': prompt,
             'negative_prompt': negative_prompt,
             'style_selections': style_selections,
             'aspect_ratios_selection': aspect_ratios_selection,
-            'image_number': image_number,
             'output_format': output_format,
             'image_seed': image_seed,
             'sharpness': sharpness,
             'guidance_scale': guidance_scale,
             'base_model': base_model,
             'vae_model': vae_model,
-            'clip_model': clip_model,
         }
 
         for i in range(modules.config.default_max_lora_number):
@@ -607,8 +595,6 @@ with shared.gradio_root:
             'inpaint_bb_image': inpaint_bb_image_path,
             'disable_preview': disable_preview,
             'preview_update_interval': preview_update_interval,
-            'disable_intermediate_results': disable_intermediate_results,
-            'disable_seed_increment': disable_seed_increment,
             'prefetch_depth': prefetch_depth,
             'prefetch_chunk_mb': prefetch_chunk_mb,
             'flux_fill_runtime_posture': flux_fill_runtime_posture,
@@ -622,9 +608,6 @@ with shared.gradio_root:
             'clip_skip': clip_skip,
             'sampler_name': sampler_name,
             'scheduler_name': scheduler_name,
-            'overwrite_width': overwrite_width,
-            'overwrite_height': overwrite_height,
-            'overwrite_upscale_strength': overwrite_upscale_strength,
             'mixing_image_prompt_and_inpaint': mixing_image_prompt_and_inpaint,
             'mixing_image_prompt_and_outpaint': mixing_image_prompt_and_outpaint,
             'skipping_cn_preprocessor': skipping_cn_preprocessor,

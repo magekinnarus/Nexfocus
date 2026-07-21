@@ -59,6 +59,7 @@ def javascript_html():
             head += f'<script type="text/javascript">{content}</script>\n'
     head += f'<meta name="samples-path" content="{samples_path}">\n'
 
+    head += '<style>footer { display: none !important; }</style>\n'
     return head
 
 
