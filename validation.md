@@ -204,6 +204,27 @@ Covers:
   transformer-tile caps, CPU-side tile accumulation, and final output
   shape/range contracts
 
+### 6. Phase 5 UI Surface Contract
+
+```powershell
+.\venv\Scripts\python.exe -m py_compile modules\ui_components\advanced_panel.py modules\ui_components\models_panel.py modules\ui_components\settings_panel.py modules\ui_logic.py webui.py
+.\venv\Scripts\python.exe -m pytest tests\test_models_panel.py tests\test_settings_panel.py tests\test_environment_profiles.py tests\test_ui_logic_model_filtering.py -q
+rg -n "console\.log\b" javascript\modules
+git diff --check
+```
+
+Covers:
+
+- retired Force CLIP and Images Per Click controls remaining absent
+- model-dependent VAE and LoRA callback input/output alignment
+- environment-sensitive SDXL and Flux Fill posture defaults
+- disk-paged T5 host-RAM cleanup cadence label, choices, and default
+- no ordinary debug logging in the auto-injected JavaScript module surface
+- UI Python syntax and patch whitespace sanity
+
+The `rg` command is expected to produce no output. Keep `console.warn` and
+`console.error` calls that report actionable browser/runtime failures.
+
 ## Manual Acceptance Replay (historical/manual)
 
 These are recommended scenario checks for Flux Fill route ownership changes and

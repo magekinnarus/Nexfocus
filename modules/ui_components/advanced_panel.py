@@ -79,10 +79,10 @@ def build_debug_tab():
     )
 
     results['flux_fill_disk_paged_t5_gc_interval'] = gr.Radio(
-        label='T5 Disk-Paged Worker CPU Threads Override',
+        label='T5 Host-RAM Cleanup Cadence',
         choices=['auto', '8', '16'],
         value='auto',
-        info='Debug/benchmark override. auto keeps the adaptive 4/2/1 policy; fixed 8 or 16 only affects disk-paged prompt-cache misses and can raise RAM usage.'
+        info='Controls disk-paged T5 prompt encoding garbage collection. Auto collects every 4 blocks while selecting 8 or 16 reduces cleanup overhead while increasing memory pressure.'
     )
 
     # --- Image & Metadata ---

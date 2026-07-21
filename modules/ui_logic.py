@@ -526,50 +526,6 @@ def get_filtered_vae_choices_for_model(base_model_name):
     return [modules.flags.default_vae] + modules.config.get_compatible_vae_choices_for_model(base_model_name)
 
 
-def get_synced_clip_update_for_base_model(base_model_name, current_clip_model):
-    clip_choices = ['None'] + modules.config.get_compatible_clip_choices_for_model(base_model_name)
-    current_clip_value = modules.config.resolve_dropdown_choice(
-        current_clip_model,
-        clip_choices,
-        folder_paths=modules.config.paths_clips,
-        root_keys=('clip',),
-    ) or 'None'
-    companion_entry = default_model_manager.resolve_companion_clip(base_model_name, installed_only=True)
-    if companion_entry is None:
-        return gr.update(choices=clip_choices, value=current_clip_value)
-
-    companion_candidates = []
-
-    def add_candidate(candidate):
-        if candidate is not None and candidate not in companion_candidates:
-            companion_candidates.append(candidate)
-
-    for entry in (
-        companion_entry,
-        default_model_manager.resolve_companion_clip(base_model_name, installed_only=False),
-    ):
-        if entry is None:
-            continue
-        record = default_model_manager.inventory_record(entry)
-        add_candidate(getattr(record, 'installed_relative_path', None))
-        add_candidate(getattr(entry, 'relative_path', None))
-        add_candidate(getattr(entry, 'name', None))
-        add_candidate(getattr(entry, 'alias', None))
-        add_candidate(getattr(entry, 'id', None))
-
-    for candidate in companion_candidates:
-        clip_value = modules.config.resolve_dropdown_choice(
-            candidate,
-            clip_choices,
-            folder_paths=modules.config.paths_clips,
-            root_keys=('clip',),
-        )
-        if clip_value is not None:
-            return gr.update(choices=clip_choices, value=clip_value)
-
-    return gr.update(choices=clip_choices, value=current_clip_value)
-
-
 def _get_base_model_dropdown_state(current_base_model=None):
     base_choices = list(modules.config.model_filenames or [])
     if not base_choices:

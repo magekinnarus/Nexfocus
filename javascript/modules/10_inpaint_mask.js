@@ -1055,9 +1055,6 @@
     // --- Priority Activation: Retry if Connection is Queued ---
     if (surface.img.naturalWidth === 0 && state.retries[mode] < 10) {
       state.retries[mode]++;
-      console.log(
-        `[Masking] Priority Activation: Retrying ${mode} (${state.retries[mode]}/10)...`,
-      );
       window.setTimeout(() => refreshMode(mode), 200);
       return;
     }

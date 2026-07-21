@@ -168,7 +168,6 @@
                     pathValue: pathValue,
                 });
                 event.dataTransfer.setData('application/json', payload);
-                console.log('[Slot] Drag start:', absoluteUrl);
             });
 
             this.fileInput.addEventListener('change', () => {

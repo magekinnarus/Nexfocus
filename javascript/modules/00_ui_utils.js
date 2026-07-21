@@ -201,15 +201,6 @@ document.addEventListener("DOMContentLoaded", function () {
 
     bind_aspect_ratio_label_sync();
 
-    // Connection recovery monitor
-    let lastStatus = true;
-    setInterval(() => {
-        const status = window.navigator.onLine;
-        if (!lastStatus && status) {
-            console.log("[Nex] Connection restored. Use 'Reconnect' button if UI is stuck.");
-        }
-        lastStatus = status;
-    }, 5000);
 });
 
 onUiUpdate(function () {

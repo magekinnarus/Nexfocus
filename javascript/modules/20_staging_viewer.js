@@ -698,7 +698,6 @@
                 e.dataTransfer.setData('text/uri-list', absoluteUrl);
                 e.dataTransfer.setData('application/json', payload);
                 e.dataTransfer.setData('fooocus/staging-internal', 'true'); // Flag to prevent self-drop
-                console.log('[Staging] Drag start:', absoluteUrl);
             });
             item.addEventListener('dragend', () => {
                 finalizeImageDrag();
@@ -746,11 +745,6 @@
                             const isQueued = currentGimpQueue.includes(el.dataset.imageName);
                             el.classList.toggle('gimp-targeted', isQueued);
                         });
-                        if (result.queued) {
-                            console.log('[Staging] GIMP queued:', img.name);
-                        } else {
-                            console.log('[Staging] GIMP dequeued:', img.name);
-                        }
                     }
                 } catch (err) {
                     console.error('[Staging] GIMP Target error:', err);
@@ -844,20 +838,12 @@
 
         // Prevent duplicate upload if dragged from within the staging panel
         if (dataTransfer.types.includes('fooocus/staging-internal')) {
-            console.log('[Staging] Ignored internal drag to prevent duplication.');
             return;
         }
 
         const files = dataTransfer.files;
         const html = dataTransfer.getData('text/html');
         const plain = dataTransfer.getData('text/plain');
-
-        console.log('[Staging] Drop detected:', {
-            fileCount: files.length,
-            hasHtml: !!html,
-            hasPlain: !!plain,
-            plainData: plain.substring(0, 100)
-        });
 
         let url = null;
         if (html) {
@@ -873,14 +859,12 @@
         }
 
         if (files.length > 0) {
-            console.log('[Staging] Processing files...');
             for (let file of files) {
                 const formData = new FormData();
                 formData.append('file', file);
                 await uploadImage(formData);
             }
         } else if (url) {
-            console.log('[Staging] Processing URL:', url.substring(0, 50) + '...');
             const formData = new FormData();
             formData.append('url', url);
             await uploadImage(formData);
