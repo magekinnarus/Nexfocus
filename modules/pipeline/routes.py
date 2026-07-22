@@ -107,6 +107,19 @@ def _save_step1_result(context: PipelineRouteContext, payload, description: str)
         context.yield_result_callback(task_state, img_paths, 100, do_not_show_finished_images=True)
 
 
+def _report_controlnet_preprocess_status(context: PipelineRouteContext) -> None:
+    if context.progressbar_callback is None:
+        return
+    if context.route_notes.get('controlnet_preprocess_status_reported', False):
+        return
+    context.route_notes['controlnet_preprocess_status_reported'] = True
+    context.progressbar_callback(
+        context.task_state,
+        context.task_state.current_progress,
+        'Processing ControlNet inputs ...',
+    )
+
+
 def _load_logged_image_payload(payload):
     if isinstance(payload, str):
         with Image.open(payload) as image:
@@ -543,17 +556,7 @@ class StructuralControlNetStage(PipelineStage):
         if eligible:
             return PipelineStageResult(notes={'status': 'assembly_delegated'})
 
-        if context.progressbar_callback is not None:
-            for cn_type, status in (
-                (flags.cn_canny, 'Running canny preprocessor ...'),
-                (flags.cn_depth, 'Running depth preprocessor ...'),
-            ):
-                if structural_tasks.get(cn_type):
-                    context.progressbar_callback(
-                        context.task_state,
-                        context.task_state.current_progress,
-                        status,
-                    )
+        _report_controlnet_preprocess_status(context)
 
         preprocess_structural_controlnets(
             context.task_state,
@@ -615,12 +618,7 @@ class ContextualControlNetStage(PipelineStage):
         if eligible:
             return PipelineStageResult(notes={'status': 'assembly_delegated'})
 
-        if contextual_tasks.get(flags.cn_ip) and context.progressbar_callback is not None:
-            context.progressbar_callback(
-                context.task_state,
-                context.task_state.current_progress,
-                'Running IP-Adapter preprocessor ...',
-            )
+        _report_controlnet_preprocess_status(context)
 
         preprocess_contextual_controlnets(
             context.task_state,

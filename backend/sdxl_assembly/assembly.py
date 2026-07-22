@@ -121,13 +121,12 @@ class SDXLAssembly:
 
             # 4.5. Streaming structural preprocess
             prepared_hints = {}
+            if (
+                (self.st_preprocess_worker is not None and len(request.structural_controls) > 0)
+                or (self.ctx_control_worker is not None and len(request.contextual_controls) > 0)
+            ):
+                self._report_status('Processing ControlNet inputs ...')
             if self.st_preprocess_worker is not None and len(request.structural_controls) > 0:
-                for control_type, status in (
-                    ('PyraCanny', 'Running canny preprocessor ...'),
-                    ('Depth', 'Running depth preprocessor ...'),
-                ):
-                    if any(getattr(item, 'control_type', None) == control_type for item in request.structural_controls):
-                        self._report_status(status)
                 preprocess_start = time.perf_counter()
                 prepared_hints = self.st_preprocess_worker.preprocess()
                 timings["structural_preprocess"] = time.perf_counter() - preprocess_start
@@ -141,8 +140,6 @@ class SDXLAssembly:
 
             # 4.7. Streaming contextual control preprocess
             if self.ctx_control_worker is not None and len(request.contextual_controls) > 0:
-                if any(getattr(item, 'control_type', None) == 'ImagePrompt' for item in request.contextual_controls):
-                    self._report_status('Running IP-Adapter preprocessor ...')
                 preprocess_start = time.perf_counter()
                 self.ctx_control_worker.preprocess()
                 timings["contextual_preprocess"] = time.perf_counter() - preprocess_start
