@@ -45,6 +45,23 @@ def apply_contextual_residency(mode='offload'):
     return actions
 
 
+def release_preprocess_support(*, reclaim_device_memory=True):
+    """Release all contextual support after the reusable CPU payload exists."""
+    actions = apply_contextual_residency('destroy')
+    actions['contextual'] = contextual_ip_adapter.release_contextual_preprocess_support(
+        reclaim_device_memory=reclaim_device_memory,
+    )
+    return actions
+
+
+def has_preprocess_support():
+    return bool(
+        eva_clip_models
+        or face_parsers
+        or contextual_ip_adapter.has_contextual_preprocess_support()
+    )
+
+
 def image_to_tensor(image):
     tensor = torch.clamp(torch.from_numpy(image).float() / 255.0, 0, 1)
     return tensor[..., [2, 1, 0]]
@@ -109,6 +126,16 @@ def _detect_faces(face_app, bgr_image):
 @torch.no_grad()
 @torch.inference_mode()
 def preprocess(img, model_path, eva_clip_path, insightface_model_names=None):
+    if has_preprocess_support():
+        release_preprocess_support(reclaim_device_memory=True)
+    try:
+        return _preprocess(img, model_path, eva_clip_path, insightface_model_names)
+    finally:
+        if has_preprocess_support():
+            release_preprocess_support(reclaim_device_memory=True)
+
+
+def _preprocess(img, model_path, eva_clip_path, insightface_model_names=None):
     try:
         from backend.sdxl_unified_runtime import _PREPROCESSOR_METRICS
     except ImportError:

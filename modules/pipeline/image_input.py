@@ -1,6 +1,7 @@
 import numpy as np
 import hashlib
 import json
+import gc
 from collections import OrderedDict
 import modules.config as config
 import modules.core as core
@@ -766,8 +767,9 @@ def preprocess_contextual_controlnets(task_state, contextual_assets=None):
             preprocess_contextual_tasks(flags.cn_ip, contextual_tasks.get(flags.cn_ip, []), resize_to=224)
             preprocess_contextual_tasks(flags.cn_pulid, contextual_tasks.get(flags.cn_pulid, []))
     finally:
-        contextual_ip_adapter.apply_contextual_residency('destroy')
-        pulid_runtime.apply_contextual_residency('destroy')
+        pulid_runtime.release_preprocess_support(reclaim_device_memory=False)
+        gc.collect()
+        resources.soft_empty_cache(force=True)
 
     planned_contextual = task_state.get_cn_tasks_for_channel(flags.cn_contextual)
     all_contextual_tasks = list(planned_contextual.get(flags.cn_ip, []))

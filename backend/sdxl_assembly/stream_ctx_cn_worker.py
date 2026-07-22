@@ -5,6 +5,7 @@ import time
 import hashlib
 import json
 import warnings
+import gc
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
@@ -152,10 +153,55 @@ class StreamingContextualControlWorker:
 
     def release_owned_resources(self) -> None:
         self.clear_support_cache()
-        import gc
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    @classmethod
+    def has_preprocess_support(cls) -> bool:
+        return bool(
+            cls._CONTEXTUAL_MODELS
+            or cls._CLIP_VISION_MODELS
+            or cls._IP_NEGATIVES
+            or cls._EVA_CLIP_MODELS
+            or cls._FACE_PARSERS
+            or cls._INSIGHTFACE_APPS
+        )
+
+    @classmethod
+    def release_preprocess_support(cls) -> Dict[str, Any]:
+        """Release all contextual support while retaining CPU payload artifacts."""
+        support_counts = {
+            'contextual_models': len(cls._CONTEXTUAL_MODELS),
+            'clip_vision_models': len(cls._CLIP_VISION_MODELS),
+            'ip_negatives': len(cls._IP_NEGATIVES),
+            'eva_clip_models': len(cls._EVA_CLIP_MODELS),
+            'face_parsers': len(cls._FACE_PARSERS),
+            'insightface_apps': len(cls._INSIGHTFACE_APPS),
+        }
+        cls.clear_support_cache()
+
+        from backend import ip_adapter as contextual_ip_adapter
+        from backend import pulid_runtime
+
+        compatibility_pulid_actions = pulid_runtime.apply_contextual_residency('destroy')
+        compatibility_actions = contextual_ip_adapter.release_contextual_preprocess_support(
+            reclaim_device_memory=False,
+        )
+        gc.collect()
+        runtime_resources.soft_empty_cache(force=True)
+
+        actions = {
+            **support_counts,
+            'payload_cache_entries': len(cls._PAYLOAD_CACHE),
+            'compatibility': compatibility_actions,
+            'compatibility_pulid': compatibility_pulid_actions,
+        }
+        log_telemetry(
+            'contextual_preprocess_support_released',
+            f"payloads={len(cls._PAYLOAD_CACHE)} support={actions}",
+        )
+        return actions
 
     def _get_contextual_cache_key(self, desc: SDXLContextualControlDescriptor) -> str:
         payload = {
@@ -298,6 +344,16 @@ class StreamingContextualControlWorker:
         return []
 
     def preprocess(self) -> Dict[int, ContextualPayloadArtifact]:
+        has_contextual_controls = bool(self.request.contextual_controls)
+        if has_contextual_controls and self.has_preprocess_support():
+            self.release_preprocess_support()
+        try:
+            return self._preprocess()
+        finally:
+            if has_contextual_controls and self.has_preprocess_support():
+                self.release_preprocess_support()
+
+    def _preprocess(self) -> Dict[int, ContextualPayloadArtifact]:
         """Preprocesses the contextual control tasks with lazy caching and CPU parking."""
         prepared_payloads = {}
         if not self.request.contextual_controls:

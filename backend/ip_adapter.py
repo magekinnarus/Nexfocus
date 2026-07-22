@@ -3,6 +3,7 @@ import os
 import shutil
 import warnings
 import hashlib
+import gc
 from collections import OrderedDict
 
 import numpy as np
@@ -139,6 +140,37 @@ def apply_contextual_residency(mode='offload', *, clip_vision_action=None, insig
         ip_negative = {}
 
     return actions
+
+
+def release_contextual_preprocess_support(*, reclaim_device_memory=True):
+    """Destroy all contextual support while preserving reusable CPU payloads."""
+    actions = apply_contextual_residency(
+        'destroy',
+        clip_vision_action='destroy',
+        insightface_action='destroy',
+    )
+    actions['payload_cache_entries'] = len(_CONTEXTUAL_PAYLOAD_CACHE)
+
+    if reclaim_device_memory:
+        gc.collect()
+        runtime_resources.soft_empty_cache(force=True)
+    return actions
+
+
+def has_contextual_preprocess_support():
+    return bool(
+        contextual_models
+        or clip_vision_models
+        or ip_negative
+        or insightface_apps
+    )
+
+
+def release_pulid_preprocess_support(*, reclaim_device_memory=True):
+    """Compatibility alias for payload-only contextual retention."""
+    return release_contextual_preprocess_support(
+        reclaim_device_memory=reclaim_device_memory,
+    )
 
 
 def sdp(q, k, v, extra_options):
@@ -658,6 +690,23 @@ def load_insightface(model_name="antelopev2", providers=None, root=None):
 
 
 def preprocess(img, model_path, clip_vision_path=None, ip_negative_path=None, insightface_model_names=None, cache_kind=None):
+    if has_contextual_preprocess_support():
+        release_contextual_preprocess_support(reclaim_device_memory=True)
+    try:
+        return _preprocess(
+            img,
+            model_path,
+            clip_vision_path=clip_vision_path,
+            ip_negative_path=ip_negative_path,
+            insightface_model_names=insightface_model_names,
+            cache_kind=cache_kind,
+        )
+    finally:
+        if has_contextual_preprocess_support():
+            release_contextual_preprocess_support(reclaim_device_memory=True)
+
+
+def _preprocess(img, model_path, clip_vision_path=None, ip_negative_path=None, insightface_model_names=None, cache_kind=None):
     try:
         from backend.sdxl_unified_runtime import _PREPROCESSOR_METRICS
     except ImportError:
