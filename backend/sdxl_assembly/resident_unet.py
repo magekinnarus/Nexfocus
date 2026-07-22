@@ -112,17 +112,29 @@ class ResidentUnetSpine:
         }
         return False
 
-    def start(self) -> None:
+    def start(self, status_callback: Any = None, progress_state: Any = None) -> None:
         """Acquires the base UNet (if not already loaded), applies UNet-side LoRAs
         (GPU patch compilation), and registers residency.
         """
         if self.unet is None:
             try:
                 # 1. Acquire the owned UNet for this resident spine.
-                # acquire_resident_unet_component is defined in runtime_state.py
+                if status_callback is not None and progress_state is not None:
+                    status_callback(
+                        progress_state,
+                        int(getattr(progress_state, 'current_progress', 0) or 0),
+                        'Loading UNet spine ...',
+                    )
                 self.unet = acquire_resident_unet_component(self.request)
 
                 # 2. Materialize the LoRA stack.
+                unet_patches = int(getattr(self.lora_worker, 'unet_patch_count', 0) or 0)
+                if unet_patches > 0 and status_callback is not None and progress_state is not None:
+                    status_callback(
+                        progress_state,
+                        int(getattr(progress_state, 'current_progress', 0) or 0),
+                        f'Compiling {unet_patches} UNet LoRA patches ...',
+                    )
                 self.materialize_scheduler_and_loras(self.request, self.lora_worker)
 
                 # Since compile_unet_patches cleared the patches, we mark it.

@@ -19,7 +19,7 @@ class CpuTextEncodeWorker:
         self.request = request
         self.lora_worker = lora_worker or CpuLoraWorker(request)
 
-    def get_conditioning(self) -> Dict[str, Any]:
+    def get_conditioning(self, status_callback: Any = None, progress_state: Any = None) -> Dict[str, Any]:
         """Encodes positive and negative prompts on CPU.
         
         Uses isolated conditioning cache to reuse prompt conditioning fast.
@@ -39,6 +39,8 @@ class CpuTextEncodeWorker:
             clip = acquire_patched_text_encoder_component(
                 self.request,
                 lora_worker=self.lora_worker,
+                status_callback=status_callback,
+                progress_state=progress_state,
             )
 
             from backend import conditioning

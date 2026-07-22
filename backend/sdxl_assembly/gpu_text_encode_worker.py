@@ -24,7 +24,7 @@ class GpuTextEncodeWorker:
         self.request = request
         self.lora_worker = lora_worker or GpuLoraWorker(request)
 
-    def get_conditioning(self) -> Dict[str, Any]:
+    def get_conditioning(self, status_callback: Any = None, progress_state: Any = None) -> Dict[str, Any]:
         """Encode positive and negative prompts on the resident CUDA CLIP."""
         log_telemetry("prompt_encode_begin")
 

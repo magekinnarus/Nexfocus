@@ -241,7 +241,7 @@ def progressbar(task_state, number, text):
     resources.throw_exception_if_processing_interrupted()
     task_state.current_progress = int(number)
     task_state.current_status_text = str(text or '')
-    print(f'[Fooocus] {text}')
+    print(f'[Nex] {text}')
     task_state.yields.append(['preview', (number, text, None)])
 
 

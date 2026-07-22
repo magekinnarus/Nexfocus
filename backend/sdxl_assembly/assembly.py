@@ -77,13 +77,20 @@ class SDXLAssembly:
         try:
             # 2. Materialize LoRA patches first
             lora_start = time.perf_counter()
+            if len(request.lora_specs) > 0:
+                self._report_status('Applying LoRA stack ...')
             patches = self.lora_worker.materialize_patches()
             timings["lora_patch"] = time.perf_counter() - lora_start
 
             # 3. Resolve text conditioning (avoid holding extra latent memory)
+            self._report_status('Encoding prompt ...')
             text_start = time.perf_counter()
-            conditioning = self.text_encode_worker.get_conditioning()
+            conditioning = self.text_encode_worker.get_conditioning(
+                status_callback=self.status_callback,
+                progress_state=self.progress_state,
+            )
             timings["text_encode"] = time.perf_counter() - text_start
+
             if bool(request.metadata.get("release_text_encoder_after_task", False)):
                 text_release_start = time.perf_counter()
                 if hasattr(self.text_encode_worker, "teardown_assembly_order"):
@@ -142,7 +149,10 @@ class SDXLAssembly:
 
             # 5. Coordinate UNet spine denoise
             unet_start = time.perf_counter()
-            self.unet_spine.start()
+            self.unet_spine.start(
+                status_callback=self.status_callback,
+                progress_state=self.progress_state,
+            )
             unet_started = True
             timings["unet_start"] = time.perf_counter() - unet_start
 

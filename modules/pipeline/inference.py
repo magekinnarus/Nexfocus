@@ -60,11 +60,7 @@ def _format_sampling_bar(completed_steps: int, total_steps: int, *, width: int =
     filled = int(round(width * completed / resolved_total_steps))
     if completed > 0 and filled == 0:
         filled = 1
-    if completed < resolved_total_steps:
-        bar = '=' * max(0, filled - 1) + ('>' if filled else '')
-        bar += ' ' * max(0, width - len(bar))
-    else:
-        bar = '=' * width
+    bar = '█' * filled + ' ' * (width - filled)
     return bar[:width], percent
 
 
@@ -121,10 +117,7 @@ def get_sampling_callback(
         progress_val = int(preparation_steps + task_state.callback_steps)
         task_state.current_progress = progress_val
         bar, percent = _format_sampling_bar(completed_steps, total_steps)
-        status_text = (
-            f'Sampling: [{bar}] {percent:3d}%  '
-            f'Step {step + 1}/{total_steps}, image {current_task_id + 1}/{total_count}'
-        )
+        status_text = f'Sampling step {step + 1}/{total_steps} ({percent}%)'
         task_state.current_status_text = status_text
         now = time.perf_counter()
         step_wall = now - last_step_at
@@ -133,20 +126,18 @@ def get_sampling_callback(
         remaining_steps = max(int(total_steps) - completed_steps, 0)
         eta_wall = average_step_wall * float(remaining_steps)
         last_step_at = now
-        should_emit_console_log = debug_mode
-        if not should_emit_console_log:
-            if completed_steps == 1 or completed_steps == int(total_steps):
-                should_emit_console_log = True
-            else:
-                cadence = max(5, int(total_steps) // 10 or 1)
-                should_emit_console_log = (completed_steps % cadence) == 0
+        should_emit_console_log = True
         if disable_pbar and should_emit_console_log:
-            timing = f'last={step_wall:.2f}s/it'
+            timing = f'({step_wall:.2f}s)'
             if debug_mode:
                 timing += f' avg={average_step_wall:.2f}s/it eta={eta_wall:.1f}s'
             is_final_step = completed_steps >= int(total_steps)
+            console_line = (
+                f'[Nex] Sampling: [{bar}] {percent:3d}%  '
+                f'Step {step + 1}/{total_steps} {timing}'
+            )
             print(
-                f'[Fooocus] {status_text} {timing}',
+                console_line,
                 end='\n' if debug_mode or is_final_step else '\r',
                 flush=True,
             )

@@ -83,11 +83,7 @@ def _format_sampling_bar(completed_steps: int, total_steps: int, *, width: int =
     filled = int(round(width * completed / resolved_total_steps))
     if completed > 0 and filled == 0:
         filled = 1
-    if completed < resolved_total_steps:
-        bar = '=' * max(0, filled - 1) + ('>' if filled else '')
-        bar += ' ' * max(0, width - len(bar))
-    else:
-        bar = '=' * width
+    bar = '█' * filled + ' ' * (width - filled)
     return bar[:width], percent
 
 
@@ -239,12 +235,7 @@ class SDXLAssemblyProgressCallback:
 
             current_progress = int(getattr(progress_state, "current_progress", 0) or 0)
             bar, percent = _format_sampling_bar(step + 1, total_steps)
-            status_text = (
-                f"Sampling: [{bar}] {percent:3d}%  "
-                f"Step {step + 1}/{total_steps}, "
-                f"image {int(getattr(self.request, 'image_index', 0)) + 1}/"
-                f"{int(getattr(self.request, 'image_count', 1) or 1)}"
-            )
+            status_text = f"Sampling step {step + 1}/{total_steps} ({percent}%)"
             # The surrounding route owns the global percentage for nested
             # stages such as W11c.  Preserve that percentage and update only
             # the status text while forwarding the legacy callback shape.

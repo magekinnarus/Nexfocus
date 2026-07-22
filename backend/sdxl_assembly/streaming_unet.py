@@ -24,12 +24,18 @@ class StreamingUnetSpine:
         self.x_center = None
         self._active_color_worker = None
 
-    def start(self) -> None:
+    def start(self, status_callback: Any = None, progress_state: Any = None) -> None:
         """Acquires the base UNet, applies UNet-side LoRAs,
         and compiles it for streaming.
         """
         if self.unet is None:
             # 1. Acquire the owned UNet for this streaming spine.
+            if status_callback is not None and progress_state is not None:
+                status_callback(
+                    progress_state,
+                    int(getattr(progress_state, 'current_progress', 0) or 0),
+                    'Loading UNet spine ...',
+                )
             self.unet = acquire_unet_component(self.request)
 
             # 2. Apply LoRAs to UNet.
@@ -38,6 +44,14 @@ class StreamingUnetSpine:
             # 3. Compile the patcher on CPU.
             from backend.cpu_compiler import CpuArtifactCompiler
             pin_model_host = bool(self.request.metadata.get("pin_unet_host", False))
+
+            unet_patches = int(getattr(self.lora_worker, 'unet_patch_count', 0) or 0)
+            if unet_patches > 0 and status_callback is not None and progress_state is not None:
+                status_callback(
+                    progress_state,
+                    int(getattr(progress_state, 'current_progress', 0) or 0),
+                    f'Compiling {unet_patches} UNet LoRA patches ...',
+                )
 
             logger.debug("[SDXL Telemetry] Compiling UNet on CPU (pin_host=%s)...", pin_model_host)
             log_telemetry("unet_compile_begin", f"pin_host={pin_model_host}")

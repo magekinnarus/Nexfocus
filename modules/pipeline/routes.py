@@ -664,8 +664,6 @@ class DiffusionTaskStage(PipelineStage):
         context.all_steps = max(steps * task_state.image_number, 1)
         context.preparation_steps = task_state.current_progress
         context.final_scheduler_name = patch_samplers(task_state)
-
-        task_state.yields.append(['preview', (task_state.current_progress, 'Moving model to GPU ...', None)])
         context.processing_start_time = time.perf_counter()
 
         for i, task_dict in enumerate(context.prompt_tasks):
@@ -711,9 +709,11 @@ class DiffusionTaskStage(PipelineStage):
             if interrupted_action == 'stop':
                 break
 
-            print(f'Task {i + 1} time: {time.perf_counter() - execution_start_time:.2f}s')
+            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                print(f'Task {i + 1} time: {time.perf_counter() - execution_start_time:.2f}s')
 
-        print(f'Total processing time: {time.perf_counter() - context.processing_start_time:.2f}s')
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            print(f'Total processing time: {time.perf_counter() - context.processing_start_time:.2f}s')
         return PipelineStageResult(route_complete=True, notes={'completed': True, 'tasks_processed': len(context.prompt_tasks)})
 
 

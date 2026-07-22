@@ -215,6 +215,8 @@ def acquire_patched_text_encoder_component(
     request: SDXLAssemblyRequest,
     *,
     lora_worker: Any,
+    status_callback: Any = None,
+    progress_state: Any = None,
 ) -> Any:
     """Return a single warm patched CLIP for the active checkpoint + CLIP-side LoRAs."""
     slot_key = _patched_text_encoder_key(request)
@@ -291,6 +293,13 @@ def acquire_patched_text_encoder_component(
             lora_worker.clip_patch_count,
         )
         log_telemetry("patched_text_encoder_cache_miss", f"checkpoint={request.checkpoint.path.name}")
+        clip_patches = int(getattr(lora_worker, "clip_patch_count", 0) or 0)
+        if clip_patches > 0 and status_callback is not None and progress_state is not None:
+            status_callback(
+                progress_state,
+                int(getattr(progress_state, "current_progress", 0) or 0),
+                f"Compiling {clip_patches} CLIP LoRA patches ...",
+            )
         CpuArtifactCompiler.compile_patcher(clip.patcher)
         _PATCHED_TEXT_ENCODER_COMPONENT_SLOT_KEY = slot_key
         _PATCHED_TEXT_ENCODER_COMPONENT_SLOT = clip
