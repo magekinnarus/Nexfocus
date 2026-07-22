@@ -128,6 +128,11 @@ if args_parser.args.disable_analytics:
 if args_parser.args.disable_in_browser:
     args_parser.args.in_browser = False
 
+if getattr(args_parser.args, "port", None) is not None:
+    port_val = int(args_parser.args.port)
+    if not (1 <= port_val <= 65535):
+        raise ValueError("--port must be an integer between 1 and 65535.")
+
 if getattr(args_parser.args, "flux_attention_backend", None):
     os.environ["NEX_FLUX_ATTENTION_BACKEND"] = str(args_parser.args.flux_attention_backend)
 

@@ -42,12 +42,6 @@
     "default_prompt_negative": "ugly, duplicate, mutilated, out of frame, hand, feet, fingers, mutation, deformed, blurry, out of focus, cropped",
     "default_prompt": "masterpiece, best quality, amazing quality, very aesthetic, promotional art, newest, dynamic angle, dramatic light, intricate details, cinematic, detailed background",
     "default_save_metadata_to_images": true,
-    "path_loras_lcm": "/content/drive/MyDrive/Fooocus_Nex/models/performance_loras/lcm/",
-    "path_loras_lightning": "/content/drive/MyDrive/Fooocus_Nex/models/performance_loras/lightning/",
     "path_vision_support": "/content/drive/MyDrive/Fooocus_Nex/models/vision_support/",
     "temp_path": "/tmp/fooocus"
 }
-
-
-
-

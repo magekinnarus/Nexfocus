@@ -217,13 +217,21 @@ def resolve_environment_profile(
     is_colab: bool | None = None,
     custom_policy_overrides: Dict[str, Any] | None = None,
 ) -> EnvironmentProfile:
-    total_ram_mb = detect_total_ram_mb() if total_ram_mb is None else float(total_ram_mb)
-    total_vram_mb = detect_total_vram_mb() if total_vram_mb is None else float(total_vram_mb)
-    is_colab = detect_is_colab() if is_colab is None else bool(is_colab)
+    if total_ram_mb is not None and float(total_ram_mb) <= 0.0:
+        raise ValueError("RAM override must be greater than 0 MB.")
+    if total_vram_mb is not None and float(total_vram_mb) <= 0.0:
+        raise ValueError("VRAM override must be greater than 0 MB.")
 
     requested = str(override or PROFILE_AUTO).strip().lower()
     if requested not in KNOWN_PROFILE_OVERRIDES:
-        requested = PROFILE_AUTO
+        raise ValueError(
+            f"Invalid memory environment profile override '{override}'. "
+            f"Supported values: {', '.join(sorted(KNOWN_PROFILE_OVERRIDES))}"
+        )
+
+    total_ram_mb = detect_total_ram_mb() if total_ram_mb is None else float(total_ram_mb)
+    total_vram_mb = detect_total_vram_mb() if total_vram_mb is None else float(total_vram_mb)
+    is_colab = detect_is_colab() if is_colab is None else bool(is_colab)
 
     if requested == PROFILE_AUTO:
         profile_name = auto_detect_profile_name(
