@@ -184,7 +184,9 @@ def process_prompt(task_state, base_model_additional_loras, progressbar_callback
 
     if progressbar_callback:
         task_state.current_progress += 1
-        progressbar_callback(task_state, task_state.current_progress, 'Processing prompts ...')
+        if loras or getattr(task_state, 'base_model_additional_loras', None):
+            progressbar_callback(task_state, task_state.current_progress, 'Applying LoRA stack ...')
+        progressbar_callback(task_state, task_state.current_progress, 'Encoding prompt ...')
 
     tasks = []
     task_rng = random.Random(task_state.seed)

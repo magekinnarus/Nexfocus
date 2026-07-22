@@ -17,7 +17,12 @@ class SDXLAssemblyDirector:
     """Authoritative director for SDXL Assembly selection and validation."""
 
     @staticmethod
-    def select_assembly(request: SDXLAssemblyRequest) -> SDXLAssembly:
+    def select_assembly(
+        request: SDXLAssemblyRequest,
+        *,
+        status_callback=None,
+        progress_state=None,
+    ) -> SDXLAssembly:
         # Enforce validation of the only supported production posture combinations.
         is_w02_streaming = (
             request.unet_posture == UNetPostureKind.STREAMING
@@ -95,4 +100,6 @@ class SDXLAssemblyDirector:
             st_preprocess_worker=st_preprocess_worker,
             st_control_worker=st_control_worker,
             ctx_control_worker=ctx_control_worker,
+            status_callback=status_callback,
+            progress_state=progress_state,
         )

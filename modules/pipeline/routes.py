@@ -543,6 +543,18 @@ class StructuralControlNetStage(PipelineStage):
         if eligible:
             return PipelineStageResult(notes={'status': 'assembly_delegated'})
 
+        if context.progressbar_callback is not None:
+            for cn_type, status in (
+                (flags.cn_canny, 'Running canny preprocessor ...'),
+                (flags.cn_depth, 'Running depth preprocessor ...'),
+            ):
+                if structural_tasks.get(cn_type):
+                    context.progressbar_callback(
+                        context.task_state,
+                        context.task_state.current_progress,
+                        status,
+                    )
+
         preprocess_structural_controlnets(
             context.task_state,
             structural_preprocessor_paths=context.image_input_result.get('structural_preprocessor_paths'),
@@ -603,6 +615,13 @@ class ContextualControlNetStage(PipelineStage):
         if eligible:
             return PipelineStageResult(notes={'status': 'assembly_delegated'})
 
+        if contextual_tasks.get(flags.cn_ip) and context.progressbar_callback is not None:
+            context.progressbar_callback(
+                context.task_state,
+                context.task_state.current_progress,
+                'Running IP-Adapter preprocessor ...',
+            )
+
         preprocess_contextual_controlnets(
             context.task_state,
             contextual_assets=context.image_input_result.get('contextual_assets'),
@@ -641,11 +660,6 @@ class DiffusionTaskStage(PipelineStage):
         from modules.pipeline.inference import process_task
 
         task_state = context.task_state
-        if len(task_state.goals) > 0:
-            task_state.current_progress += 1
-            if context.progressbar_callback is not None:
-                context.progressbar_callback(task_state, task_state.current_progress, 'Image processing ...')
-
         steps, _, _ = apply_overrides(task_state)
         context.all_steps = max(steps * task_state.image_number, 1)
         context.preparation_steps = task_state.current_progress
@@ -655,8 +669,6 @@ class DiffusionTaskStage(PipelineStage):
         context.processing_start_time = time.perf_counter()
 
         for i, task_dict in enumerate(context.prompt_tasks):
-            if context.progressbar_callback is not None:
-                context.progressbar_callback(task_state, task_state.current_progress, f'Preparing task {i + 1}/{task_state.image_number} ...')
             execution_start_time = time.perf_counter()
             interrupted_action = None
 
@@ -750,6 +762,7 @@ class FluxFillInpaintStage(PipelineStage):
         if len(task_state.goals) > 0:
             task_state.current_progress += 1
             if context.progressbar_callback is not None:
+                context.progressbar_callback(task_state, task_state.current_progress, 'Loading models ...')
                 context.progressbar_callback(task_state, task_state.current_progress, 'Preparing Flux Fill Inpaint ...')
 
         ctx = task_state.inpaint_context
@@ -850,7 +863,11 @@ class FluxFillInpaintStage(PipelineStage):
                 )
 
                 director = FluxAssemblyDirector()
-                assembly = director.select_assembly(req)
+                assembly = director.select_assembly(
+                    req,
+                    status_callback=context.progressbar_callback,
+                    progress_state=task_state,
+                )
                 result = assembly.execute(req, callback=callback)
 
             except resources.InterruptProcessingException:

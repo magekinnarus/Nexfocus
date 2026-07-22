@@ -52,6 +52,22 @@ def _resolve_completed_global_steps(current_task_id, completed_steps, total_step
     return max(1, min(resolved_all_steps, completed_global_steps))
 
 
+def _format_sampling_bar(completed_steps: int, total_steps: int, *, width: int = 20) -> tuple[str, int]:
+    """Return the fixed-width sampling bar and its integer percentage."""
+    resolved_total_steps = max(1, int(total_steps or 1))
+    completed = max(0, min(resolved_total_steps, int(completed_steps or 0)))
+    percent = int(round(completed * 100.0 / resolved_total_steps))
+    filled = int(round(width * completed / resolved_total_steps))
+    if completed > 0 and filled == 0:
+        filled = 1
+    if completed < resolved_total_steps:
+        bar = '=' * max(0, filled - 1) + ('>' if filled else '')
+        bar += ' ' * max(0, width - len(bar))
+    else:
+        bar = '=' * width
+    return bar[:width], percent
+
+
 def _resolve_preview_stitch_context(task_state, workflow_plan):
     """Keep Inpaint previews crop-local while Outpaint previews show the canvas."""
     route_id = str(getattr(workflow_plan, 'route_id', '') or '').strip().lower()
@@ -104,7 +120,11 @@ def get_sampling_callback(
         task_state.callback_steps = completed_global_steps * (100 - preparation_steps) / float(all_steps)
         progress_val = int(preparation_steps + task_state.callback_steps)
         task_state.current_progress = progress_val
-        status_text = f'Sampling step {step + 1}/{total_steps}, image {current_task_id + 1}/{total_count} ...'
+        bar, percent = _format_sampling_bar(completed_steps, total_steps)
+        status_text = (
+            f'Sampling: [{bar}] {percent:3d}%  '
+            f'Step {step + 1}/{total_steps}, image {current_task_id + 1}/{total_count}'
+        )
         task_state.current_status_text = status_text
         now = time.perf_counter()
         step_wall = now - last_step_at
@@ -121,9 +141,14 @@ def get_sampling_callback(
                 cadence = max(5, int(total_steps) // 10 or 1)
                 should_emit_console_log = (completed_steps % cadence) == 0
         if disable_pbar and should_emit_console_log:
+            timing = f'last={step_wall:.2f}s/it'
+            if debug_mode:
+                timing += f' avg={average_step_wall:.2f}s/it eta={eta_wall:.1f}s'
+            is_final_step = completed_steps >= int(total_steps)
             print(
-                f'[Fooocus] {status_text} '
-                f'last={step_wall:.2f}s/it avg={average_step_wall:.2f}s/it eta={eta_wall:.1f}s'
+                f'[Fooocus] {status_text} {timing}',
+                end='\n' if debug_mode or is_final_step else '\r',
+                flush=True,
             )
 
         preview_image = None
@@ -550,6 +575,14 @@ def _run_unified_sdxl_task(
     else:
         runtime = SDXLStreamingRuntime(UnifiedSDXLRuntimeConfig(**config_kwargs))
     try:
+        if progressbar_callback and image_input_result and any(
+            goal in task_state.goals for goal in ('inpaint', 'outpaint', 'remove')
+        ):
+            progressbar_callback(
+                task_state,
+                task_state.current_progress,
+                'Encoding source image ...',
+            )
         prepared_inputs, _ = runtime.prepare_inputs()
         from backend import process_transition
 
@@ -581,10 +614,16 @@ def _run_unified_sdxl_task(
             preparation_steps,
             all_steps,
             preview_transform=preview_transform,
-            disable_pbar=False,
+            disable_pbar=True,
             preview_stitch_context=_resolve_preview_stitch_context(task_state, workflow_plan),
         )
 
+        if progressbar_callback:
+            progressbar_callback(
+                task_state,
+                task_state.current_progress,
+                'Starting inference ...',
+            )
         denoise_result = runtime.denoise_prepared_inputs(
             prepared_inputs,
             callback=callback,
@@ -711,7 +750,7 @@ def process_task(task_state, task_dict, current_task_id, total_count, all_steps,
             preparation_steps,
             all_steps,
             preview_transform=preview_transform,
-            disable_pbar=False,
+            disable_pbar=True,
             preview_stitch_context=_resolve_preview_stitch_context(task_state, workflow_plan),
         )
         if getattr(task_state, 'disable_preview', False):
@@ -736,6 +775,7 @@ def process_task(task_state, task_dict, current_task_id, total_count, all_steps,
                 base_model_additional_loras=base_model_additional_loras,
                 image_input_result=image_input_result,
                 progressbar_callback=callback,
+                status_callback=progressbar_callback,
                 preview_runtime_holder=preview_runtime_holder,
             )
             imgs = [img]

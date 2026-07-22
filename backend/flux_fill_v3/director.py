@@ -21,7 +21,12 @@ class FluxAssemblyDirector:
         raise NotImplementedError(f"Unsupported Flux Fill text-worker posture: {request.t5_posture!r}")
 
     @staticmethod
-    def select_assembly(request: FluxFillRequest) -> FluxAssembly:
+    def select_assembly(
+        request: FluxFillRequest,
+        *,
+        status_callback=None,
+        progress_state=None,
+    ) -> FluxAssembly:
         if request.unet_spine == UNetSpineKind.RESIDENT:
             spine, _reused = acquire_active_flux_resident_spine(request)
         else:
@@ -34,4 +39,6 @@ class FluxAssemblyDirector:
             text_worker,
             vae_worker,
             release_spine_after_execute=False,
+            status_callback=status_callback,
+            progress_state=progress_state,
         )

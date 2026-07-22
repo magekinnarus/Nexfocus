@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from pathlib import Path
 from threading import RLock
 from typing import Any, Optional
 
@@ -361,6 +362,32 @@ def describe_process_key(key: ProcessKey | None) -> str:
         f"identity={key.authoritative_identity!r} "
         f"composition={key.composition_identity!r}"
     )
+
+
+def user_facing_transition_status(decision: ProcessTransitionDecision | None) -> str | None:
+    """Return the concise status shown while a runtime transition begins."""
+    if decision is None or not decision.reset_required:
+        return None
+
+    current = decision.current_key
+    requested = decision.requested_key
+    if current is not None and current.family != requested.family:
+        if requested.family == PROCESS_FAMILY_FLUX_FILL:
+            return 'Switching to Flux Fill ...'
+        if requested.family == PROCESS_FAMILY_SDXL:
+            return 'Switching to SDXL ...'
+
+    if (
+        requested.family == PROCESS_FAMILY_SDXL
+        and current is not None
+        and decision.reason == 'identity_change'
+    ):
+        model_name = _resolve_process_checkpoint_label(requested)
+        if isinstance(model_name, (str, Path)):
+            model_name = Path(str(model_name)).name
+        return f'Switching checkpoint: {model_name} ...'
+
+    return None
 
 
 def _sdxl_identity_components(key: ProcessKey | None) -> tuple[Any | None, Any | None, tuple[Any, ...]]:

@@ -51,6 +51,9 @@ def _has_inpaint_asset(value):
 def _resolve_inpaint_context(task_state, inpaint_image, inpaint_mask):
     """Resolve one authoritative spatial context for SDXL and Flux Inpaint."""
     from modules.pipeline.inpaint import InpaintContext, InpaintPipeline
+    from modules.pipeline.inference import _is_debug_console_logging_enabled
+
+    debug_mode = _is_debug_console_logging_enabled()
 
     raw_input_image = getattr(task_state, 'inpaint_input_image', None)
     raw_context_mask = getattr(task_state, 'inpaint_context_mask_image', None)
@@ -112,7 +115,8 @@ def _resolve_inpaint_context(task_state, inpaint_image, inpaint_mask):
             target_h=target_h,
             blend_mask=None,
         )
-        print(f'[Debug] Using frozen Inpaint bbox: {bbox!r}')
+        if debug_mode:
+            print(f'[Debug] Using frozen Inpaint bbox: {bbox!r}')
     elif input_image is not None and context_mask is not None:
         ctx = inpaint.prepare(
             image=input_image,
@@ -120,7 +124,8 @@ def _resolve_inpaint_context(task_state, inpaint_image, inpaint_mask):
             extend_factor=1.2,
             generate_blend_mask=False,
         )
-        print(f'[Debug] Context derived from {input_image.shape[1]}x{input_image.shape[0]} image via context mask.')
+        if debug_mode:
+            print(f'[Debug] Context derived from {input_image.shape[1]}x{input_image.shape[0]} image via context mask.')
     else:
         ctx = inpaint.prepare(
             image=inpaint_image,
@@ -128,15 +133,18 @@ def _resolve_inpaint_context(task_state, inpaint_image, inpaint_mask):
             extend_factor=1.2,
             generate_blend_mask=False,
         )
-        print('[Debug] Context derived from standard inpaint inputs.')
+        if debug_mode:
+            print('[Debug] Context derived from standard inpaint inputs.')
 
     if bb_img_data is not None:
         ctx.bb_image = bb_img_data
         ctx.target_h, ctx.target_w = bb_img_data.shape[:2]
-        print(f'[Debug] Using resolved BB image: {ctx.target_w}x{ctx.target_h}')
+        if debug_mode:
+            print(f'[Debug] Using resolved BB image: {ctx.target_w}x{ctx.target_h}')
     if bb_mask_2d is not None:
         ctx.bb_mask = bb_mask_2d
-        print('[Debug] Using resolved BB mask.')
+        if debug_mode:
+            print('[Debug] Using resolved BB mask.')
     return inpaint, ctx
 
 

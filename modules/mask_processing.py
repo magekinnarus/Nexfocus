@@ -727,7 +727,10 @@ def refresh_inpaint_bb_image(base_image_path, base_workspace_id, context_image_p
         prefix='inpaint_bb'
     )
 
-    print('[Debug] Refreshed BB image from current Base Image and Context Mask.')
+    from modules.pipeline.inference import _is_debug_console_logging_enabled
+
+    if _is_debug_console_logging_enabled():
+        print('[Debug] Refreshed BB image from current Base Image and Context Mask.')
 
     return (
         gr.update(value=bb_path),

@@ -362,6 +362,10 @@ def handler(async_task: AsyncTask):
         task_state.process_transition_requested_family = ""
         task_state.process_transition_reuse_allowed = False
 
+    transition_status = process_transition.user_facing_transition_status(transition_decision)
+    if transition_status:
+        progressbar(task_state, task_state.current_progress, transition_status)
+
     route_context = PipelineRouteContext(
         async_task=async_task,
         task_state=task_state,

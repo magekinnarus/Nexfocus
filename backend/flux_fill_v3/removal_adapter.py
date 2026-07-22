@@ -162,7 +162,11 @@ def execute_flux_fill_removal(context, *, progress_percent_start: int = 10):
         )
 
         director = FluxAssemblyDirector()
-        assembly = director.select_assembly(req)
+        assembly = director.select_assembly(
+            req,
+            status_callback=context.progressbar_callback,
+            progress_state=task_state,
+        )
         _publish_flux_removal_runtime(context, task_state)
         result = assembly.execute(req, callback=callback)
 

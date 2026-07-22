@@ -361,9 +361,14 @@ def inpaint_mode_change(mode, inpaint_engine_version):
 
 
 def expand_mask(outpaint_selections, inpaint_mask_image):
-    print(f"[Debug] Mask Expansion Requested. Direction: {outpaint_selections}")
+    from modules.pipeline.inference import _is_debug_console_logging_enabled
+
+    debug_mode = _is_debug_console_logging_enabled()
+    if debug_mode:
+        print(f"[Debug] Mask Expansion Requested. Direction: {outpaint_selections}")
     if inpaint_mask_image is None:
-        print("[Debug] Mask Image is None. Aborting.")
+        if debug_mode:
+            print("[Debug] Mask Image is None. Aborting.")
         return gr.update()
 
     from modules.mask_processing import combine_image_and_mask, to_binary_mask, expand_mask_direction, extract_mask_from_layers
@@ -376,10 +381,12 @@ def expand_mask(outpaint_selections, inpaint_mask_image):
     if merged is None:
         return gr.update()
 
-    print(f"[Debug Expand Mask] merged shape: {merged.shape}, max: {merged.max()}, min: {merged.min()}, mean: {merged.mean()}")
+    if debug_mode:
+        print(f"[Debug Expand Mask] merged shape: {merged.shape}, max: {merged.max()}, min: {merged.min()}, mean: {merged.mean()}")
 
     new_mask = to_binary_mask(merged)
-    print(f"[Debug Expand Mask] binary_mask shape: {new_mask.shape}, sum (white pixels): {new_mask.sum() // 255} out of {new_mask.size}")
+    if debug_mode:
+        print(f"[Debug Expand Mask] binary_mask shape: {new_mask.shape}, sum (white pixels): {new_mask.sum() // 255} out of {new_mask.size}")
 
     for direction in outpaint_selections:
         new_mask = expand_mask_direction(new_mask, direction, pixels=32)

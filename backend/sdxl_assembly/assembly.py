@@ -31,6 +31,8 @@ class SDXLAssembly:
         st_preprocess_worker: Optional[Any] = None,
         st_control_worker: Optional[Any] = None,
         ctx_control_worker: Optional[Any] = None,
+        status_callback: Optional[Any] = None,
+        progress_state: Any = None,
     ) -> None:
         self.unet_spine = unet_spine
         self.text_encode_worker = text_encode_worker
@@ -41,6 +43,17 @@ class SDXLAssembly:
         self.st_preprocess_worker = st_preprocess_worker
         self.st_control_worker = st_control_worker
         self.ctx_control_worker = ctx_control_worker
+        self.status_callback = status_callback
+        self.progress_state = progress_state
+
+    def _report_status(self, text: str) -> None:
+        if self.status_callback is None or self.progress_state is None:
+            return
+        self.status_callback(
+            self.progress_state,
+            int(getattr(self.progress_state, 'current_progress', 0) or 0),
+            text,
+        )
 
     def execute(self, request: SDXLAssemblyRequest, callback: Optional[Any] = None) -> SDXLAssemblyResult:
         """Executes the pipeline steps in strict chronological order."""
@@ -86,6 +99,7 @@ class SDXLAssembly:
                 timings["spatial_prep"] = time.perf_counter() - spatial_prep_start
                 
                 vae_encode_start = time.perf_counter()
+                self._report_status('Encoding source image ...')
                 spatial_artifacts = self.vae_encode_worker.encode(prepared_context)
                 timings["vae_encode"] = time.perf_counter() - vae_encode_start
                 
@@ -101,6 +115,12 @@ class SDXLAssembly:
             # 4.5. Streaming structural preprocess
             prepared_hints = {}
             if self.st_preprocess_worker is not None and len(request.structural_controls) > 0:
+                for control_type, status in (
+                    ('PyraCanny', 'Running canny preprocessor ...'),
+                    ('Depth', 'Running depth preprocessor ...'),
+                ):
+                    if any(getattr(item, 'control_type', None) == control_type for item in request.structural_controls):
+                        self._report_status(status)
                 preprocess_start = time.perf_counter()
                 prepared_hints = self.st_preprocess_worker.preprocess()
                 timings["structural_preprocess"] = time.perf_counter() - preprocess_start
@@ -114,6 +134,8 @@ class SDXLAssembly:
 
             # 4.7. Streaming contextual control preprocess
             if self.ctx_control_worker is not None and len(request.contextual_controls) > 0:
+                if any(getattr(item, 'control_type', None) == 'ImagePrompt' for item in request.contextual_controls):
+                    self._report_status('Running IP-Adapter preprocessor ...')
                 preprocess_start = time.perf_counter()
                 self.ctx_control_worker.preprocess()
                 timings["contextual_preprocess"] = time.perf_counter() - preprocess_start
@@ -140,6 +162,7 @@ class SDXLAssembly:
             timings["latent_materialize"] = time.perf_counter() - materialize_start
             
             denoise_start = time.perf_counter()
+            self._report_status('Starting inference ...')
             samples = self.unet_spine.denoise(
                 latent_samples_gpu,
                 conditioning,

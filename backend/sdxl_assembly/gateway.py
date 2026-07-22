@@ -276,6 +276,7 @@ def run_sdxl_assembly_task(
     base_model_additional_loras: Optional[List[Tuple[str, float]]] = None,
     image_input_result: Optional[Dict[str, Any]] = None,
     progressbar_callback: Optional[Any] = None,
+    status_callback: Optional[Any] = None,
     preview_runtime_holder: Optional[Dict[str, Any]] = None,
 ) -> np.ndarray:
     """Gateway entry point that executes an eligible task via the SDXL Assembly lane."""
@@ -384,7 +385,11 @@ def run_sdxl_assembly_task(
         _LAST_REQUEST_STATE = request_state
 
         # 2. Select assembly
-        assembly = SDXLAssemblyDirector.select_assembly(request)
+        assembly = SDXLAssemblyDirector.select_assembly(
+            request,
+            status_callback=status_callback,
+            progress_state=task_state,
+        )
 
         if preview_runtime_holder is not None:
             preview_runtime_holder["assembly"] = assembly

@@ -32,11 +32,24 @@ class FluxAssembly:
         vae_worker: TransientVaeWorker,
         *,
         release_spine_after_execute: bool = True,
+        status_callback=None,
+        progress_state=None,
     ) -> None:
         self.spine = spine
         self.text_worker = text_worker
         self.vae_worker = vae_worker
         self.release_spine_after_execute = bool(release_spine_after_execute)
+        self.status_callback = status_callback
+        self.progress_state = progress_state
+
+    def _report_status(self, text: str) -> None:
+        if self.status_callback is None or self.progress_state is None:
+            return
+        self.status_callback(
+            self.progress_state,
+            int(getattr(self.progress_state, 'current_progress', 0) or 0),
+            text,
+        )
 
     def execute(self, request: FluxFillRequest, callback: Any | None = None) -> FluxFillResult:
         request.validate_dispatch_ready(require_existing_assets=True)
@@ -46,9 +59,11 @@ class FluxAssembly:
 
         # 1. Resolve text conditioning first so prompt-artifact failures do not
         # force us to spend VAE work or hold extra latent memory beforehand.
+        self._report_status('Encoding prompt ...')
         empty_cond = self.text_worker.get_conditioning()
 
         # 2. Coordinate VAE worker to check cache or encode latents
+        self._report_status('Encoding source image ...')
         bundle = self.vae_worker.prepare_latents(device)
         timings["vae_load_encode"] = bundle.vae_load_time
         timings["vae_encode"] = bundle.vae_encode_time
@@ -60,6 +75,7 @@ class FluxAssembly:
 
         try:
             denoise_start = time.perf_counter()
+            self._report_status('Starting inference ...')
             samples, sigmas = self.spine.denoise(
                 bundle, empty_cond, callback=callback
             )
