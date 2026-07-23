@@ -274,13 +274,6 @@ def _should_aggressively_cleanup_flux_remove(task_state) -> bool:
     return not reuse_allowed
 
 
-def sync_flux_fill_route_session(route: PipelineRoute, task_state, *, progress: bool = False):
-    # Legacy Flux Fill is archived during the greenfield rebuild.
-    # Shared route code keeps the symbol as a compatibility shim, but it no
-    # longer owns or synchronizes any Flux runtime/session state.
-    return None
-
-
 class ImageInputPreparationStage(PipelineStage):
     stage_id = 'image_input_prepare'
     phase_name = 'image_input_prepare'

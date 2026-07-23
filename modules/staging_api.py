@@ -510,81 +510,10 @@ def _safe_staging_path(name: str):
     return staging_dir, filepath
 
 
-def _center_crop_square(image: Image.Image) -> Image.Image:
-    width, height = image.size
-    side = min(width, height)
-    left = max(0, (width - side) // 2)
-    top = max(0, (height - side) // 2)
-    return image.crop((left, top, left + side, top + side))
-
-
-@staging_router.post("/staging_api/compose_face_grid")
-async def compose_face_grid(payload: dict = Body(...)):
-    names = payload.get('names') if isinstance(payload, dict) else None
-    if not isinstance(names, list) or not names:
-        raise HTTPException(status_code=400, detail='Please select at least one staged image')
-
-    selected_names = []
-    for name in names:
-        if not isinstance(name, str):
-            continue
-        clean_name = name.strip()
-        if clean_name and clean_name not in selected_names:
-            selected_names.append(clean_name)
-
-    if not selected_names:
-        raise HTTPException(status_code=400, detail='Please select at least one staged image')
-
-    selected_names = selected_names[:9]
-    grid_size = 1 if len(selected_names) == 1 else 2 if len(selected_names) <= 4 else 3
-    canvas_size = 1024
-    cell_size = canvas_size // grid_size
-
-    tiles = []
-    for name in selected_names:
-        _, filepath = _safe_staging_path(name)
-        if not os.path.exists(filepath):
-            raise HTTPException(status_code=404, detail=f'Staged image not found: {name}')
-        with Image.open(filepath) as source_img:
-            tile = _center_crop_square(source_img.convert('RGBA')).resize((cell_size, cell_size), Image.Resampling.LANCZOS)
-            tiles.append(tile)
-
-    if not tiles:
-        raise HTTPException(status_code=400, detail='No staged images were available to compose')
-
-    canvas = Image.new('RGBA', (cell_size * grid_size, cell_size * grid_size), (255, 255, 255, 255))
-    total_cells = grid_size * grid_size
-    for index in range(total_cells):
-        tile = tiles[index % len(tiles)]
-        x = (index % grid_size) * cell_size
-        y = (index // grid_size) * cell_size
-        canvas.paste(tile, (x, y))
-
-    import datetime
-    time_str = datetime.datetime.now().strftime('%Y%m%d-%H%M%S_%f')
-    filename = f'face_grid_{grid_size}x{grid_size}_{time_str}.png'
-    staging_dir = get_staging_dir()
-    filepath = os.path.join(staging_dir, filename)
-    canvas.save(filepath, format='PNG')
-
-    return JSONResponse(content={
-        'status': 'success',
-        'file': filename,
-        'filepath': filepath,
-        'url': f'/staging_api/image/{filename}',
-        'selected_count': len(selected_names),
-        'grid_size': grid_size,
-    })
-
-
 @staging_router.get("/staging_api/image/{name}")
 async def get_staging_image(name: str):
     """Serves a specific image from the staging directory."""
-    staging_dir = get_staging_dir()
-    filepath = os.path.join(staging_dir, name)
-
-    if not os.path.abspath(filepath).startswith(os.path.abspath(staging_dir)):
-        raise HTTPException(status_code=403, detail="Forbidden")
+    staging_dir, filepath = _safe_staging_path(name)
 
     if os.path.exists(filepath):
         return FileResponse(filepath)
