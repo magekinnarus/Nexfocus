@@ -543,22 +543,21 @@ Covers:
 ### 9. Full Suite
 
 ```powershell
-.\venv\Scripts\python.exe -m pytest tests\ --ignore=tests\test_bgr.py --ignore=tests\test_objr.py -q
+.\venv\Scripts\python.exe -m pytest tests\ -q
 ```
 
 Notes:
 
-- `tests/test_bgr.py` and `tests/test_objr.py` remain outside the closure bundle
-  because of the pre-existing `args_manager` argparse incompatibility.
+- The BGR/OBJR surfaces are now included in the maintained local sweep. Their
+  historical `args_manager` collection incompatibility did not reproduce in
+  the current maintainer environment: both files collected and their three
+  tests passed directly during the W05 audit.
 - Treat this command as the broad regression sweep after the targeted matrix is
-  already green.
-- At the W13f candidate, this command reports `842 passed, 12 failed, 3
-  warnings`. The exact 12 node IDs reproduce against the untouched pre-W13f
-  `cd27bef` source and are ignored maintainer-fixture debt: one contextual
-  tuple-shape fixture, two pinned-loader allocation fixtures, four superseded
-  W07-W09 assembly eligibility/slot fixtures, and five workflow-plan-free
-  super-upscale fixtures. They are not fresh-clone/public gates. See the local
-  ignored W13f report for exact node IDs and baseline replay evidence.
+  already green. W05's final replay of the prior W13f baseline nodes is
+  recorded in `.agent/missions/active/P5-M02-W05_work_report.md`.
+- The W13f result (`842 passed, 12 failed, 3 warnings`) remains historical
+  provenance only. The twelve nodes were repaired or updated to the current
+  queue-frozen, loader, assembly, and tiled-refinement contracts in W05.
 
 ## W13d Legacy-Surface Quarantine Checks
 

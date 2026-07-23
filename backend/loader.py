@@ -409,7 +409,12 @@ def _resolve_streaming_target_tensor(
     empty_kwargs = {"device": empty_device}
     if target_dtype is not None and torch.is_floating_point(live_tensor):
         empty_kwargs["dtype"] = target_dtype
-    if should_pin and empty_device == "cpu":
+    # ``realize_device`` is normally a ``torch.device`` by the time this
+    # helper is called.  Compare its type rather than relying on string
+    # equality so the explicit pinned-target contract also holds for meta
+    # parameters realized onto ``torch.device('cpu')``.
+    empty_device_type = getattr(empty_device, "type", empty_device)
+    if should_pin and empty_device_type == "cpu":
         empty_kwargs["pin_memory"] = True
     realized_target = torch.empty_like(live_tensor, **empty_kwargs)
     realized_bytes = int(realized_target.numel() * realized_target.element_size())
