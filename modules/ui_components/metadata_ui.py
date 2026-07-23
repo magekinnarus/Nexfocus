@@ -24,6 +24,8 @@ METADATA_OUTPUT_INDEX = {
     'scheduler': 15,
     'seed_random': 16,
     'seed': 17,
+    'outpaint_engine': 18,
+    'inpaint_engine': 19,
     'inpaint_route': 20,
     'inpaint_prompt': 21,
     'outpaint_prompt': 22,
@@ -129,24 +131,30 @@ def get_seed(key: str, fallback: str | None, source_dict: dict, results: list, d
 
 def get_inpaint_engine_version(key: str, fallback: str | None, source_dict: dict, results: list, default=None) -> str | None:
     try:
-        h = source_dict.get(key, source_dict.get(fallback, default))
-        h = modules.flags.normalize_inpaint_engine_version(h, default=modules.config.default_inpaint_engine_version)
+        h = source_dict.get(key, source_dict.get(fallback, None))
+        if h is None:
+            results.append(gr.update())
+            return None
+        h = modules.flags.normalize_inpaint_engine_version(h, default=modules.flags.INPAINT_ENGINE_NONE)
         assert isinstance(h, str) and h in modules.flags.inpaint_engine_versions
         results.append(h)
         return h
     except Exception:
-        results.append('empty')
+        results.append(modules.flags.INPAINT_ENGINE_NONE)
         return None
 
 def get_outpaint_engine_version(key: str, fallback: str | None, source_dict: dict, results: list, default=None) -> str | None:
     try:
-        h = source_dict.get(key, source_dict.get(fallback, default))
-        h = modules.flags.normalize_inpaint_engine_version(h, default=modules.config.default_outpaint_engine_version)
+        h = source_dict.get(key, source_dict.get(fallback, None))
+        if h is None:
+            results.append(gr.update())
+            return None
+        h = modules.flags.normalize_inpaint_engine_version(h, default=modules.flags.INPAINT_ENGINE_NONE)
         assert isinstance(h, str) and h in modules.flags.inpaint_engine_versions
         results.append(h)
         return h
     except Exception:
-        results.append('empty')
+        results.append(modules.flags.INPAINT_ENGINE_NONE)
         return None
 
 def get_inpaint_route(key: str, fallback: str | None, source_dict: dict, results: list, default=None) -> str | None:
@@ -301,9 +309,16 @@ def _load_parameter_button_click(raw_metadata: dict | str, is_generating: bool, 
     else:
         results.extend([gr.update(), gr.update()])
 
-    # 19-20. Engine versions skipped
-    results.append(gr.update())
-    results.append(gr.update())
+    # 19-20. Route-owned inpaint patch engines
+    if workflow == 'outpaint_sdxl':
+        get_outpaint_engine_version('outpaint_engine', None, loaded_parameter_dict, results)
+    else:
+        results.append(gr.update())
+
+    if workflow == 'inpaint_sdxl':
+        get_inpaint_engine_version('inpaint_engine', None, loaded_parameter_dict, results)
+    else:
+        results.append(gr.update())
 
     # 21. Inpaint Route
     if workflow == 'inpaint_sdxl':

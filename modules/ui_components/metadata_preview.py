@@ -89,10 +89,10 @@ def format_metadata_preview(parameters, metadata_scheme=None):
         deployable_keys = ['prompt', 'negative_prompt', 'styles', 'base_model', 'seed', 'resolution', 'sampler', 'scheduler', 'steps', 'cfg_scale', 'loras']
         display_only_keys = ['vae', 'cn']
     elif workflow == 'inpaint_sdxl':
-        deployable_keys = ['prompt', 'inpaint_prompt', 'negative_prompt', 'styles', 'base_model', 'seed', 'sampler', 'scheduler', 'steps', 'cfg_scale', 'loras', 'inpaint_route']
+        deployable_keys = ['prompt', 'inpaint_prompt', 'negative_prompt', 'styles', 'base_model', 'seed', 'sampler', 'scheduler', 'steps', 'cfg_scale', 'loras', 'inpaint_route', 'inpaint_engine']
         display_only_keys = ['resolution', 'vae', 'cn']
     elif workflow == 'outpaint_sdxl':
-        deployable_keys = ['prompt', 'outpaint_prompt', 'negative_prompt', 'styles', 'base_model', 'seed', 'sampler', 'scheduler', 'steps', 'cfg_scale', 'loras']
+        deployable_keys = ['prompt', 'outpaint_prompt', 'negative_prompt', 'styles', 'base_model', 'seed', 'sampler', 'scheduler', 'steps', 'cfg_scale', 'loras', 'outpaint_engine']
         display_only_keys = ['resolution', 'vae', 'cn']
     elif workflow == 'flux_fill_inpaint':
         deployable_keys = ['prompt', 'inpaint_prompt', 'seed', 'steps', 'sampler', 'scheduler']

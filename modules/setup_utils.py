@@ -119,12 +119,15 @@ def download_models(
         print(f'{log_prefix} Checkpoint downloads completed in {time.perf_counter() - checkpoint_start:.2f}s')
 
     if validate_checkpoint_dirs:
-        # Check if any model exists in checkpoints
+        # Check if any model exists in checkpoints (including subdirectories)
         model_found = False
         for folder in config.paths_checkpoints:
             if os.path.isdir(folder):
-                if any(f.endswith(('.safetensors', '.ckpt')) for f in os.listdir(folder)):
-                    model_found = True
+                for _, _, files in os.walk(folder):
+                    if any(f.endswith(('.safetensors', '.ckpt')) for f in files):
+                        model_found = True
+                        break
+                if model_found:
                     break
 
         if not model_found:

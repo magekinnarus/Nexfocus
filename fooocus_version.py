@@ -1,2 +1,2 @@
-﻿app_name = 'Fooocus_Nex'
+app_name = 'Nexfocus'
 version = 'V1.0.0'

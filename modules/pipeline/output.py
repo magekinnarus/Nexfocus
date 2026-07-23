@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import fooocus_version
 import modules.config as config
+import modules.flags as flags
 import modules.meta_parser as meta_parser
 from modules.hash_cache import sha256_from_cache
 from modules.util import HWC3, get_file_from_folder_list, resize_image
@@ -190,9 +191,17 @@ def save_and_log(task_state, height, width, images, task_dict, use_expansion, lo
             v2_record['prompt'] = str(getattr(task_state, 'prompt', '') or '')
             v2_record['inpaint_prompt'] = str(getattr(task_state, 'inpaint_additional_prompt', '') or '')
             v2_record['inpaint_route'] = str(getattr(task_state, 'inpaint_route', 'sdxl'))
+            v2_record['inpaint_engine'] = flags.normalize_inpaint_engine_version(
+                getattr(task_state, 'inpaint_engine', flags.INPAINT_ENGINE_NONE),
+                default=flags.INPAINT_ENGINE_NONE,
+            )
         elif workflow_id == 'outpaint_sdxl':
             v2_record['prompt'] = str(getattr(task_state, 'prompt', '') or '')
             v2_record['outpaint_prompt'] = str(getattr(task_state, 'outpaint_additional_prompt', '') or '')
+            v2_record['outpaint_engine'] = flags.normalize_inpaint_engine_version(
+                getattr(task_state, 'outpaint_engine', flags.INPAINT_ENGINE_NONE),
+                default=flags.INPAINT_ENGINE_NONE,
+            )
         elif workflow_id == 'color_enhance':
             v2_record['prompt_description'] = str(getattr(task_state, 'upscale_prompt', '') or '')
 
