@@ -435,8 +435,7 @@ def decode_vae(vae, latent_image, tiled=False):
         perf_message = (
             f"[Nex-Perf] vae decode tiled={tiled} load=compat_wrapper decode={decode_duration:.3f}s total={total_duration:.3f}s"
         )
-        print(perf_message)
-        logging.info(perf_message)
+        logging.debug(perf_message)
 
 @torch.inference_mode()
 def encode_vae(vae, pixels):
@@ -450,8 +449,7 @@ def encode_vae(vae, pixels):
             f"[Nex-Perf] vae encode load=cpu-default "
             f"encode={encode_duration:.3f}s total={time.perf_counter() - overall_start:.3f}s"
         )
-        print(perf_message)
-        logging.info(perf_message)
+        logging.debug(perf_message)
 
 
 @torch.no_grad()

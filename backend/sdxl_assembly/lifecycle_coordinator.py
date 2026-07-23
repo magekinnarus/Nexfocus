@@ -497,8 +497,10 @@ def release_domains(
         if d in (LifecycleDomain.STRUCTURAL_CN, LifecycleDomain.CONTEXTUAL_CN):
             before_counts[d.value] = _get_cn_cache_counts(d)
 
-    print(f"[SDXL LIFECYCLE RELEASE BEGIN] Domains: {[d.value for d in plan.domains]} | "
-          f"Reason: {clear_reason} | Before RSS: {rss_before:.1f} MB | Counts: {before_counts}")
+    logger.debug(
+        f"[SDXL LIFECYCLE RELEASE BEGIN] Domains: {[d.value for d in plan.domains]} | "
+        f"Reason: {clear_reason} | Before RSS: {rss_before:.1f} MB | Counts: {before_counts}"
+    )
     log_telemetry("release_begin", f"domains={[d.value for d in plan.domains]} reason={clear_reason} rss_before={rss_before:.1f}")
 
     for domain in plan.domains:
@@ -535,9 +537,11 @@ def release_domains(
         if d in (LifecycleDomain.STRUCTURAL_CN, LifecycleDomain.CONTEXTUAL_CN):
             after_counts[d.value] = _get_cn_cache_counts(d)
 
-    print(f"[SDXL LIFECYCLE RELEASE END] Domains: {[d.value for d in plan.domains]} | "
-          f"Reason: {clear_reason} | After RSS: {rss_after:.1f} MB | Counts: {after_counts} | "
-          f"Delta RSS: {rss_after - rss_before:.1f} MB (Note: memory allocator or OS page cache may retain pages immediately after references are dropped)")
+    logger.debug(
+        f"[SDXL LIFECYCLE RELEASE END] Domains: {[d.value for d in plan.domains]} | "
+        f"Reason: {clear_reason} | After RSS: {rss_after:.1f} MB | Counts: {after_counts} | "
+        f"Delta RSS: {rss_after - rss_before:.1f} MB (Note: memory allocator or OS page cache may retain pages immediately after references are dropped)"
+    )
     log_telemetry("release_end", f"domains={[d.value for d in plan.domains]} reason={clear_reason} rss_after={rss_after:.1f}")
 
     result = LifecycleReleaseResult(plan=plan, errors=tuple(errors))

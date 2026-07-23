@@ -474,7 +474,7 @@ def refresh_seed(r, seed_string):
             pass
         return random.randint(constants.MIN_SEED, constants.MAX_SEED)
 
-def update_history_link():
+def update_history_link(output_format=None):
     if args_manager.args.disable_image_log:
         return gr.update(value='')
 
@@ -1142,7 +1142,13 @@ def register_all_events(ctrls_dict, currentTask_component, ui_elements):
             .then(fn=style_sorter.sort_styles, inputs=style_selections, outputs=style_selections, queue=False, show_progress=False) \
             .then(lambda: None, js='()=>{refresh_style_localization();}')
 
-    output_format.input(lambda x: gr.update(output_format=x), inputs=output_format)
+    output_format.change(
+        update_history_link,
+        inputs=[output_format],
+        outputs=[history_link],
+        queue=False,
+        show_progress=False,
+    )
 
     # load configured default_inpaint_method
     shared.gradio_root.load(inpaint_engine_state_change, inputs=[inpaint_engine_state], outputs=[

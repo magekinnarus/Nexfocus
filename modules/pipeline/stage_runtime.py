@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import logging
 
 from backend import memory_governor
 from dataclasses import dataclass, field
@@ -153,7 +154,7 @@ class PipelineStageRunner:
             resources = tuple(stage.describe_resources(context))
             memory_estimate = stage.estimate_memory(context)
             residency_plan = memory_governor.plan_for_task(task=context.task_state, phase=stage.phase_name)
-            print(
+            logging.getLogger(__name__).debug(
                 f"[Residency] phase={stage.phase_name} profile={residency_plan.notes.get('profile')} "
                 f"required={','.join(residency_plan.pinned) or '-'} "
                 f"warm={','.join(residency_plan.warm) or '-'} "

@@ -410,8 +410,7 @@ def _emit_sampling_perf_logs(
         f"cond_prep={cond_duration:.3f}s denoise={denoise_duration:.3f}s "
         f"denoise_cpu_proc={denoise_cpu_duration:.3f}s total={total_duration:.3f}s"
     )
-    print(perf_message)
-    logging.info(perf_message)
+    logging.debug(perf_message)
 
 
     sampler_trace = consume_sampler_trace_stats()
@@ -426,8 +425,7 @@ def _emit_sampling_perf_logs(
                 f"cpu_proc={trace_stats.get('cpu_process_seconds', 0.0):.3f}s,avg={avg_trace_ms:.3f}ms"
             )
         sampler_trace_message = f"[Nex-Perf] sampler function trace {'; '.join(sampler_parts)}"
-        print(sampler_trace_message)
-        logging.info(sampler_trace_message)
+        logging.debug(sampler_trace_message)
 
     cond_batch_trace = consume_cond_batch_trace_stats()
     if cond_batch_trace:
@@ -441,8 +439,7 @@ def _emit_sampling_perf_logs(
                 f"cpu_proc={trace_stats.get('cpu_process_seconds', 0.0):.3f}s,avg={avg_trace_ms:.3f}ms"
             )
         cond_batch_trace_message = f"[Nex-Perf] cond batch trace {'; '.join(cond_batch_parts)}"
-        print(cond_batch_trace_message)
-        logging.info(cond_batch_trace_message)
+        logging.debug(cond_batch_trace_message)
 
     if apply_model_trace is not None:
         apply_trace = apply_model_trace.consume_apply_model_trace_stats()
@@ -457,8 +454,7 @@ def _emit_sampling_perf_logs(
                     f"cpu_proc={trace_stats.get('cpu_process_seconds', 0.0):.3f}s,avg={avg_trace_ms:.3f}ms"
                 )
             apply_trace_message = f"[Nex-Perf] apply_model trace {'; '.join(apply_parts)}"
-            print(apply_trace_message)
-            logging.info(apply_trace_message)
+            logging.debug(apply_trace_message)
     return perf_stats
 
 

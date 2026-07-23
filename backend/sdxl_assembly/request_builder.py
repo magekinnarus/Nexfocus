@@ -550,7 +550,7 @@ def build_assembly_request(
         else:
             evidence_summary = decision.evidence_status
 
-        logger.info(
+        logger.debug(
             "[SDXL LORA ADMISSION] Resolved LoRA %s | "
             "requested=(UNet=%.2f, CLIP=%.2f) | "
             "evidence=%s | "

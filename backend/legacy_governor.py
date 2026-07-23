@@ -323,8 +323,7 @@ def load_models_gpu(models, memory_required=0, force_patch_weights=False, minimu
             f"free={_memory_mb(extra_mem):.1f}MB min_req={_memory_mb(minimum_memory_required):.1f}MB "
             f"current_free={free_mem_text}MB"
         )
-        print(perf_message)
-        logging.info(perf_message)
+        logging.debug(perf_message)
 
         model_load_start = time.perf_counter()
         loaded_model.model_load(lowvram_model_memory, force_patch_weights=force_patch_weights)
@@ -338,8 +337,7 @@ def load_models_gpu(models, memory_required=0, force_patch_weights=False, minimu
             f"total={_memory_mb(loaded_model.model_memory()):.1f}MB "
             f"lowvram_patches={lowvram_patch_counter} duration={model_load_duration:.3f}s"
         )
-        print(perf_message)
-        logging.info(perf_message)
+        logging.debug(perf_message)
 
     load_time = time.time() - start_time
     logging.info(f"Nex Model Loading Time: {load_time:.2f} seconds")

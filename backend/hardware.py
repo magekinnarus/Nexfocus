@@ -691,8 +691,7 @@ def _emit_residency_log(prefix, *, plan, notes=None, role=None, item=None, actio
 
     extras = ' '.join(f"{key}={value}" for key, value in payload.items())
     message = f"[Nex-Residency] {prefix} {extras}"
-    print(message)
-    logging.info(message)
+    logging.debug(message)
 
 
 SDXL_RESIDENCY_CLASS_FULL = "full_resident"

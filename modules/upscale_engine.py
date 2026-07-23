@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from contextlib import contextmanager
 import modules.core as core
 import gc
+import logging
 import time
 import backend.resources as resources
 import backend.utils as backend_utils
@@ -129,7 +130,10 @@ class NexUpscaleEngine:
                 self.completed += amount
                 if self.completed % self.columns == 0:
                     row = self.completed // self.columns
-                    print(f'[Nex-Engine] Row {row}/{self.rows} completed in {time.time() - self.row_start:.2f}s')
+                    print(f'[Nex] Upscaling row {row}/{self.rows} ...')
+                    logging.getLogger(__name__).debug(
+                        f'[Nex-Engine] Row {row}/{self.rows} completed in {time.time() - self.row_start:.2f}s'
+                    )
                     self.row_start = time.time()
 
         # Blend and accumulate on CPU.  Keeping only the active model tile on
@@ -148,7 +152,7 @@ class NexUpscaleEngine:
 
         resources.soft_empty_cache(force=True)
         gc.collect()
-        print('[Nex-Engine] Tiled Upscale Completed.')
+        print('[Nex] Tiled upscale completed.')
         return final_output
 
     @torch.inference_mode()
@@ -186,7 +190,7 @@ class NexUpscaleEngine:
                         tile_size_val = normalize_gan_tile_size(tile_size)
                         x_count = len(split_into_segments(int(w), tile_size_val, overlap))
                         y_count = len(split_into_segments(int(h), tile_size_val, overlap))
-                        print(
+                        logging.getLogger(__name__).debug(
                             f'[Nex-Engine] User-Controlled Tile: {tile_size_val} '
                             f'| Grid: {x_count}x{y_count} ({x_count * y_count} calls) | Precision: {m_dtype}'
                         )
@@ -211,7 +215,7 @@ class NexUpscaleEngine:
 
                             tile_size_val, x_count, y_count = select_best_tile_size(w, h, max_safe_tile, overlap)
                             arch_label = architecture_id or 'unknown'
-                            print(
+                            logging.getLogger(__name__).debug(
                                 f'[Nex-Engine] VRAM: {free//1024**2}MB | Best-Fit Tile: {tile_size_val} '
                                 f'| Grid: {x_count}x{y_count} ({x_count * y_count} calls) '
                                 f'| Precision: {m_dtype} | Architecture: {arch_label} '
@@ -228,7 +232,9 @@ class NexUpscaleEngine:
                 if h <= tile_size and w <= tile_size:
                     start_t = time.time()
                     out_img = upscale_fn(in_img)
-                    print(f'[Nex-Engine] Full image processed in {time.time() - start_t:.2f}s')
+                    logging.getLogger(__name__).debug(
+                        f'[Nex-Engine] Full image processed in {time.time() - start_t:.2f}s'
+                    )
                 else:
                     attempted_tile = tile_size
                     while True:
@@ -250,7 +256,7 @@ class NexUpscaleEngine:
                                 raise
                             next_tile = max(GAN_TILE_SIZE_MIN, attempted_tile - 64)
                             print(
-                                f'[Nex-Engine] CUDA OOM at tile {attempted_tile}; '
+                                f'[Nex] Upscale ran out of VRAM at tile {attempted_tile}; '
                                 f'retrying with tile {next_tile}.'
                             )
                             attempted_tile = next_tile

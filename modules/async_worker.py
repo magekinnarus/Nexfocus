@@ -346,7 +346,9 @@ def handler(async_task: AsyncTask):
     task_state.runtime_route_family = route.family
     task_state.runtime_route_display_name = route.display_name
 
-    print(f"[Route] {route.route_id}: {' -> '.join(describe_route(route))}")
+    logging.getLogger(__name__).debug(
+        f"[Route] {route.route_id}: {' -> '.join(describe_route(route))}"
+    )
 
     transition_decision = process_transition.reconcile_runtime_state(route, task_state)
     if transition_decision is not None:

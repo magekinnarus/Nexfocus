@@ -352,20 +352,26 @@ def run_sdxl_assembly_task(
 
     cn_count = len(getattr(request, 'structural_controls', ())) + len(getattr(request, 'contextual_controls', ()))
 
-    print(
+    logger.debug(
         f"[SDXL LORA ADMISSION] Route/Workflow: {route_id} | "
         f"Additional UNet-only LoRAs ({len(additional_unet_only_loras)}): {additional_unet_only_loras}"
     )
 
-    print(f"[SDXL RUN BEGIN] Correlation ID: {req_id} | "
-          f"Composition: {composition} | "
-          f"Postures: unet={unet_p}, clip={clip_p}, vae={vae_p}, lora={lora_p} | "
-          f"Route/Workflow: {route_id} | Seed: {seed} | "
-          f"Dims: {width}x{height} | Steps: {steps} | "
-          f"Checkpoint: {ckpt_name} | "
-          f"LoRAs: UNet={unet_lora_count}, CLIP={clip_lora_count} | "
-          f"ControlNets: {cn_count} | "
-          f"Memory: RSS={rss_start:.1f}MB, CUDA_Alloc={cuda_alloc_start:.1f}MB, CUDA_Res={cuda_reserved_start:.1f}MB")
+    print(
+        f"[Nex] Inference: {route_id} | Checkpoint: {ckpt_name} | Seed: {seed} | "
+        f"Dims: {width}x{height} | Steps: {steps}"
+    )
+    logger.debug(
+        f"[SDXL RUN BEGIN] Correlation ID: {req_id} | "
+        f"Composition: {composition} | "
+        f"Postures: unet={unet_p}, clip={clip_p}, vae={vae_p}, lora={lora_p} | "
+        f"Route/Workflow: {route_id} | Seed: {seed} | "
+        f"Dims: {width}x{height} | Steps: {steps} | "
+        f"Checkpoint: {ckpt_name} | "
+        f"LoRAs: UNet={unet_lora_count}, CLIP={clip_lora_count} | "
+        f"ControlNets: {cn_count} | "
+        f"Memory: RSS={rss_start:.1f}MB, CUDA_Alloc={cuda_alloc_start:.1f}MB, CUDA_Res={cuda_reserved_start:.1f}MB"
+    )
 
     start_time = time.perf_counter()
     status = "SUCCESS"
@@ -452,11 +458,23 @@ def run_sdxl_assembly_task(
 
         err_info = f" | Error: {err_msg}" if err_msg else ""
 
-        print(f"[SDXL RUN END] Correlation ID: {getattr(request, 'request_id', 'unknown')} | "
-              f"Status: {status}{err_info} | Duration: {duration:.3f}s{output_info} | "
-              f"Resident Spine Retained: {resident_retained} | "
-              f"GPU Text Retained: {gpu_text_retained} | "
-              f"Resident UNet Bytes: {unet_bytes} | GPU Text Bytes: {gpu_text_bytes} | "
-              f"GPU Text Patches: {gpu_text_patches} | CPU Text Cache Entries: {cpu_text_entries} | "
-              f"CPU Patched Text Slot: {cpu_patched_text} | Clean Shadow Bytes: {clean_shadow} | "
-              f"Memory: RSS={rss_end:.1f}MB, CUDA_Alloc={cuda_alloc_end:.1f}MB, CUDA_Res={cuda_reserved_end:.1f}MB, CUDA_Peak={cuda_peak_end:.1f}MB")
+        logger.debug(
+            f"[SDXL RUN END] Correlation ID: {getattr(request, 'request_id', 'unknown')} | "
+            f"Status: {status}{err_info} | Duration: {duration:.3f}s{output_info} | "
+            f"Resident Spine Retained: {resident_retained} | "
+            f"GPU Text Retained: {gpu_text_retained} | "
+            f"Resident UNet Bytes: {unet_bytes} | GPU Text Bytes: {gpu_text_bytes} | "
+            f"GPU Text Patches: {gpu_text_patches} | CPU Text Cache Entries: {cpu_text_entries} | "
+            f"CPU Patched Text Slot: {cpu_patched_text} | Clean Shadow Bytes: {clean_shadow} | "
+            f"Memory: RSS={rss_end:.1f}MB, CUDA_Alloc={cuda_alloc_end:.1f}MB, CUDA_Res={cuda_reserved_end:.1f}MB, CUDA_Peak={cuda_peak_end:.1f}MB"
+        )
+        if status == "SUCCESS":
+            print(f"[Nex] Inference complete in {duration:.2f}s{output_info}")
+        elif status == "INTERRUPT":
+            print(f"[Nex] Inference interrupted after {duration:.2f}s.")
+        else:
+            compact_error = " ".join(str(err_msg or "Unknown error").split())
+            print(
+                f"[Nex] Inference failed after {duration:.2f}s | Route: {route_id} | "
+                f"Checkpoint: {ckpt_name} | Error: {compact_error}"
+            )
