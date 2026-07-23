@@ -1,34 +1,34 @@
 {
     "path_checkpoints": "/content/models/checkpoints/",
     "path_loras": "/content/models/loras/",
-    "path_embeddings": "/content/drive/MyDrive/Fooocus_Nex/models/embeddings/",
-    "path_vae_approx": "/content/drive/MyDrive/Fooocus_Nex/models/vae_approx/",
+    "path_embeddings": "/content/drive/MyDrive/Nexfocus/models/embeddings/",
+    "path_vae_approx": "/content/drive/MyDrive/Nexfocus/models/vae_approx/",
     "path_vae": "/content/models/vae/",
     "path_unet": "/content/models/unet/",
     "path_clip": [
-        "/content/drive/MyDrive/Fooocus_Nex/models/clip/",
+        "/content/drive/MyDrive/Nexfocus/models/clip/",
         "/content/models/clip/"
     ],
     "path_upscale_models": [
-        "/content/drive/MyDrive/Fooocus_Nex/models/upscale_models/",
+        "/content/drive/MyDrive/Nexfocus/models/upscale_models/",
         "/content/models/upscale_models/"
     ],
     "path_inpaint": "/content/models/inpaint/",
     "path_controlnet": "/content/models/controlnet/",
-    "path_clip_vision": "/content/drive/MyDrive/Fooocus_Nex/models/vision_support/clip_vision/",
-    "path_preprocessors": "/content/drive/MyDrive/Fooocus_Nex/models/preprocessors/",
-    "path_insightface": "/content/drive/MyDrive/Fooocus_Nex/models/insightface/",
+    "path_clip_vision": "/content/drive/MyDrive/Nexfocus/models/vision_support/clip_vision/",
+    "path_preprocessors": "/content/drive/MyDrive/Nexfocus/models/preprocessors/",
+    "path_insightface": "/content/drive/MyDrive/Nexfocus/models/insightface/",
     "path_removals": "/content/models/removals/",
-    "path_download_manifests": "/content/drive/MyDrive/Fooocus_Nex/configs/download_manifests/",
-    "path_model_catalogs_preset": "/content/drive/MyDrive/Fooocus_Nex/configs/model_catalogs/",
-    "path_model_catalogs_user": "/content/drive/MyDrive/Fooocus_Nex/configs/model_catalogs/user/",
-    "path_model_thumbnails": "/content/drive/MyDrive/Fooocus_Nex/thumbnails/",
+    "path_download_manifests": "/content/drive/MyDrive/Nexfocus/configs/download_manifests/",
+    "path_model_catalogs_preset": "/content/drive/MyDrive/Nexfocus/configs/model_catalogs/",
+    "path_model_catalogs_user": "/content/drive/MyDrive/Nexfocus/configs/model_catalogs/user/",
+    "path_model_thumbnails": "/content/drive/MyDrive/Nexfocus/thumbnails/",
     "Selected_model": "beretMixReal_v110.safetensors",
     "checkpoint_downloads": {
         "beretMixReal_v110.safetensors": "https://civitai.com/api/download/models/2619644"
     },
     "vae_downloads": {
-        "sdxl/sdxl_vae.safetensors": "https://github.com/magekinnarus/Fooocus_Nex/releases/download/support_models/sdxl_vae.safetensors"
+        "sdxl/sdxl_vae.safetensors": "https://github.com/magekinnarus/Nexfocus/releases/download/support_models/sdxl_vae.safetensors"
     },
     "default_sampler": "dpmpp_2m",
     "default_scheduler": "beta",
@@ -42,6 +42,6 @@
     "default_prompt_negative": "ugly, duplicate, mutilated, out of frame, hand, feet, fingers, mutation, deformed, blurry, out of focus, cropped",
     "default_prompt": "masterpiece, best quality, amazing quality, very aesthetic, promotional art, newest, dynamic angle, dramatic light, intricate details, cinematic, detailed background",
     "default_save_metadata_to_images": true,
-    "path_vision_support": "/content/drive/MyDrive/Fooocus_Nex/models/vision_support/",
+    "path_vision_support": "/content/drive/MyDrive/Nexfocus/models/vision_support/",
     "temp_path": "/tmp/fooocus"
 }
