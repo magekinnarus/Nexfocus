@@ -123,7 +123,7 @@ class AsyncTask:
         s.lora_channel_overrides = merge_lora_channel_overrides(args.get("lora_channel_overrides"))
 
         if not getattr(args_manager.args, 'disable_metadata', False):
-            s.save_metadata_to_images = args.get('save_metadata_to_images', False)
+            s.save_metadata_to_images = args.get('save_metadata_to_images', True)
             scheme_val = args.get('metadata_scheme', 'fooocus_nex')
             try:
                 s.metadata_scheme = MetadataScheme(scheme_val)

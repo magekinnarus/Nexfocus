@@ -550,6 +550,7 @@ with shared.gradio_root:
                              adm_scaler_negative, adm_scaler_end, adaptive_cfg, clip_skip,
                              base_model, vae_model, sampler_name, scheduler_name,
                              seed_random, image_seed, outpaint_engine_state, inpaint_engine_state, inpaint_route,
+                             inpaint_additional_prompt, outpaint_additional_prompt, remove_prompt, upscale_prompt,
                              generate_button,
                              load_parameter_button] + lora_ctrls
 

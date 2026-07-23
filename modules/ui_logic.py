@@ -901,6 +901,11 @@ def preset_selection_change(preset, is_generating, *args):
     if 'prompt' in preset_prepared and preset_prepared.get('prompt') == '':
         del preset_prepared['prompt']
 
+    # Presets are already normalized current-schema control dictionaries, not
+    # legacy image metadata. Mark them explicitly so the metadata loader does
+    # not run the v1 compatibility conversion and synthesize absent fields.
+    preset_prepared['metadata_version'] = 2
+    preset_prepared['workflow'] = 'txt2img'
     return metadata_ui.load_parameter_button_click(json.dumps(preset_prepared), is_generating)
 
 def inpaint_engine_state_change(inpaint_engine_version):

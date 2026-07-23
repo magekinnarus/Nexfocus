@@ -1,6 +1,7 @@
 import os
 import args_manager
 import modules.config
+import html
 import json
 import urllib.parse
 
@@ -21,8 +22,17 @@ def get_current_html_path(output_format=None):
     return html_name
 
 
-def log(img, metadata, metadata_parser: MetadataParser | None = None, output_format=None, task=None, persist_image=True) -> str:
-    path_outputs = modules.config.temp_path if args_manager.args.disable_image_log or not persist_image else modules.config.path_outputs
+def log(
+    img,
+    metadata,
+    metadata_parser: MetadataParser | None = None,
+    output_format=None,
+    task=None,
+    persist_image=True,
+    clipboard_metadata: dict | None = None,
+) -> str:
+    disable_image_log = getattr(args_manager.args, 'disable_image_log', False)
+    path_outputs = modules.config.temp_path if disable_image_log or not persist_image else modules.config.path_outputs
     output_format = output_format if output_format else modules.config.default_output_format
     date_string, local_temp_filename, only_name = generate_temp_filename(folder=path_outputs, extension=output_format)
     os.makedirs(os.path.dirname(local_temp_filename), exist_ok=True)
@@ -50,7 +60,7 @@ def log(img, metadata, metadata_parser: MetadataParser | None = None, output_for
     else:
         image.save(local_temp_filename)
 
-    if args_manager.args.disable_image_log:
+    if disable_image_log:
         return local_temp_filename
 
     html_name = os.path.join(os.path.dirname(local_temp_filename), 'log.html')
@@ -73,30 +83,34 @@ def log(img, metadata, metadata_parser: MetadataParser | None = None, output_for
 
     js = (
         """<script>
-        function to_clipboard(txt) { 
+        function to_clipboard(btn, txt) {
         txt = decodeURIComponent(txt);
-        if (navigator.clipboard && navigator.permissions) {
-            navigator.clipboard.writeText(txt)
+        if (navigator.clipboard) {
+            navigator.clipboard.writeText(txt);
         } else {
-            const textArea = document.createElement('textArea')
-            textArea.value = txt
-            textArea.style.width = 0
-            textArea.style.position = 'fixed'
-            textArea.style.left = '-999px'
-            textArea.style.top = '10px'
-            textArea.setAttribute('readonly', 'readonly')
-            document.body.appendChild(textArea)
+            const textArea = document.createElement('textArea');
+            textArea.value = txt;
+            textArea.style.width = 0;
+            textArea.style.position = 'fixed';
+            textArea.style.left = '-999px';
+            textArea.style.top = '10px';
+            textArea.setAttribute('readonly', 'readonly');
+            document.body.appendChild(textArea);
 
-            textArea.select()
-            document.execCommand('copy')
-            document.body.removeChild(textArea)
+            textArea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textArea);
         }
-        alert('Copied to Clipboard!\\nPaste to prompt area to load parameters.\\nCurrent clipboard content is:\\n\\n' + txt);
+        if (btn) {
+            const oldText = btn.innerText;
+            btn.innerText = 'Copied!';
+            setTimeout(() => { btn.innerText = oldText; }, 2000);
+        }
         }
         </script>"""
     )
 
-    begin_part = f"<!DOCTYPE html><html><head><title>Fooocus Log {date_string}</title>{css_styles}</head><body>{js}<p>Fooocus Log {date_string} (private)</p>\n<p>Metadata is embedded if enabled in the config or developer debug mode. You can find the information for each image in line Metadata Scheme.</p><!--fooocus-log-split-->\n\n"
+    begin_part = f"<!DOCTYPE html><html><head><title>Nexfocus Image Log {date_string}</title>{css_styles}</head><body>{js}<p>Nexfocus Image Log {date_string} (private)</p>\n<p>Metadata is embedded if enabled in the config or developer debug mode. You can find the information for each image in line Metadata Scheme.</p><!--fooocus-log-split-->\n\n"
     end_part = f'\n<!--fooocus-log-split--></body></html>'
 
     middle_part = log_cache.get(html_name, "")
@@ -114,18 +128,25 @@ def log(img, metadata, metadata_parser: MetadataParser | None = None, output_for
     item += f"<td><a href=\"{only_name}\" target=\"_blank\"><img src='{only_name}' onerror=\"this.closest('.image-container').style.display='none';\" loading='lazy'/></a><div>{only_name}</div></td>"
     item += "<td><table class='metadata'>"
     for label, key, value in metadata:
-        value_txt = str(value).replace('\n', ' </br> ')
-        item += f"<tr><td class='label'>{label}</td><td class='value'>{value_txt}</td></tr>\n"
+        label_txt = html.escape(str(label))
+        value_txt = html.escape(str(value)).replace('\n', ' <br> ')
+        item += f"<tr><td class='label'>{label_txt}</td><td class='value'>{value_txt}</td></tr>\n"
 
     if task is not None and 'positive' in task and 'negative' in task:
-        full_prompt_details = f"""<details><summary>Positive</summary>{', '.join(task['positive'])}</details>
-        <details><summary>Negative</summary>{', '.join(task['negative'])}</details>"""
+        positive_text = html.escape(', '.join(str(value) for value in task['positive']))
+        negative_text = html.escape(', '.join(str(value) for value in task['negative']))
+        full_prompt_details = f"""<details><summary>Positive</summary>{positive_text}</details>
+        <details><summary>Negative</summary>{negative_text}</details>"""
         item += f"<tr><td class='label'>Full raw prompt</td><td class='value'>{full_prompt_details}</td></tr>\n"
 
     item += "</table>"
 
-    js_txt = urllib.parse.quote(json.dumps({k: v for _, k, v, in metadata}, indent=0), safe='')
-    item += f"</br><button onclick=\"to_clipboard('{js_txt}')\">Copy to Clipboard</button>"
+    clipboard_payload = parsed_parameters or json.dumps(
+        clipboard_metadata if clipboard_metadata is not None else {k: v for _, k, v in metadata},
+        indent=2,
+    )
+    js_txt = urllib.parse.quote(clipboard_payload, safe='')
+    item += f"</br><button onclick=\"to_clipboard(this, '{js_txt}')\">Copy to Clipboard</button>"
 
     item += "</td>"
     item += "</tr></table></div>\n\n"
@@ -137,6 +158,9 @@ def log(img, metadata, metadata_parser: MetadataParser | None = None, output_for
 
     print(f'Image generated with private log at: {html_name}')
 
+    log_cache.pop(html_name, None)
     log_cache[html_name] = middle_part
+    while len(log_cache) > 100:
+        log_cache.pop(next(iter(log_cache)))
 
     return local_temp_filename

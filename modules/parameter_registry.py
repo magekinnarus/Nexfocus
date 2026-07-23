@@ -177,7 +177,7 @@ PARAM_REGISTRY: List[ParamDef] = [
     # ControlNet arrays injected dynamically
 
     # --- Metadata (Conditional) ---
-    ParamDef('save_metadata_to_images', 'save_metadata_to_images', False, bool),
+    ParamDef('save_metadata_to_images', 'save_metadata_to_images', True, bool),
     ParamDef('metadata_scheme', 'metadata_scheme', 'fooocus_nex', str),
 ]
 

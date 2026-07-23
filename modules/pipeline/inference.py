@@ -11,7 +11,7 @@ import backend.resources as resources
 import backend.loader as loader
 from backend import sdxl_runtime_policy
 from modules.util import get_file_from_folder_list
-from modules.pipeline.output import save_and_log, yield_result
+from modules.pipeline.output import resolve_workflow_identity, save_and_log, yield_result
 from modules.pipeline.workflow_contracts import require_workflow_plan
 
 
@@ -819,7 +819,8 @@ def process_task(task_state, task_dict, current_task_id, total_count, all_steps,
     try:
         img_paths = save_and_log(
             task_state, task_state.height, task_state.width, imgs,
-            task_dict, task_state.use_expansion, loras
+            task_dict, task_state.use_expansion, loras,
+            workflow=resolve_workflow_identity(task_state, task_dict),
         )
         if assembly_eligible:
             log_telemetry("assembly_route_complete", f"task_id={current_task_id}")

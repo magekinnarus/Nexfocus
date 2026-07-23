@@ -81,6 +81,20 @@ def describe_route(route: PipelineRoute) -> list[str]:
     return [stage.stage_id for stage in route.stages]
 
 
+def _metadata_workflow_for_context(context: PipelineRouteContext) -> str:
+    route_id = str(getattr(context, 'route_id', '') or '').strip().lower()
+    return {
+        'txt2img': 'txt2img',
+        'inpaint': 'inpaint_sdxl',
+        'outpaint': 'outpaint_sdxl',
+        'flux_inpaint': 'flux_fill_inpaint',
+        'flux_removal': 'flux_fill_remove',
+        'upscale': 'upscale_gan',
+        'super_upscale': 'super_upscale',
+        'color_enhanced_upscale': 'color_enhance',
+    }.get(route_id, 'txt2img')
+
+
 def _save_step1_result(context: PipelineRouteContext, payload, description: str) -> None:
     if payload is None:
         return
@@ -100,6 +114,7 @@ def _save_step1_result(context: PipelineRouteContext, payload, description: str)
             prompt_text=getattr(task_state, 'prompt', ''),
             negative_prompt=getattr(task_state, 'negative_prompt', ''),
             seed=getattr(task_state, 'seed', None),
+            workflow=_metadata_workflow_for_context(context),
         )
         if saved_path:
             img_paths.append(saved_path)
@@ -163,6 +178,7 @@ def _save_logged_output(
     prompt_text: str = "",
     negative_prompt: str = "",
     seed=None,
+    workflow: str | None = None,
 ):
     from modules.pipeline.output import save_and_log
 
@@ -195,6 +211,7 @@ def _save_logged_output(
         },
         False,
         list(getattr(task_state, 'loras', []) or []),
+        workflow=workflow or _metadata_workflow_for_context(context),
     )
     if not img_paths:
         return None
@@ -898,7 +915,16 @@ class FluxFillInpaintStage(PipelineStage):
                 'task_seed': seed,
                 'description': 'Flux Fill Inpaint',
             }
-            current_img_paths = save_and_log(task_state, output_height, output_width, [stitched_image], task_dict, False, task_state.loras)
+            current_img_paths = save_and_log(
+                task_state,
+                output_height,
+                output_width,
+                [stitched_image],
+                task_dict,
+                False,
+                task_state.loras,
+                workflow='flux_fill_inpaint',
+            )
             if context.yield_result_callback is not None:
                 context.yield_result_callback(
                     task_state,
@@ -997,6 +1023,7 @@ class UpscaleStage(PipelineStage):
             },
             task_state.use_expansion,
             task_state.loras,
+            workflow='super_upscale' if context.route_id == 'super_upscale' else 'upscale_gan',
         )
         if context.yield_result_callback is not None:
             context.yield_result_callback(task_state, img_paths, 100, do_not_show_finished_images=True)
@@ -1214,6 +1241,7 @@ class ColorEnhancedUpscaleStage(PipelineStage):
             {**output_task_dict, 'description': 'Color Enhancement'},
             task_state.use_expansion,
             task_state.loras,
+            workflow='color_enhance',
         )
         img_paths = list(enhanced_paths or [])
         if context.yield_result_callback is not None:
@@ -1323,12 +1351,14 @@ class RemovalStage(PipelineStage):
                     char_path,
                     'Background Removal Subject',
                     seed=getattr(task_state, 'seed', None),
+                    workflow='bgr_subject',
                 )
                 persisted_mask_path = _save_logged_output(
                     context,
                     mask_path,
                     'Background Removal Mask',
                     seed=getattr(task_state, 'seed', None),
+                    workflow='bgr_mask',
                 )
                 if context.yield_result_callback is not None:
                     context.yield_result_callback(
@@ -1359,6 +1389,7 @@ class RemovalStage(PipelineStage):
                         prompt_text=getattr(task_state, 'remove_prompt', ''),
                         negative_prompt=getattr(task_state, 'negative_prompt', ''),
                         seed=getattr(task_state, 'seed', None),
+                        workflow='flux_fill_remove',
                     )
 
                     if context.yield_result_callback is not None:
@@ -1389,6 +1420,7 @@ class RemovalStage(PipelineStage):
                         prompt_text=getattr(task_state, 'remove_prompt', ''),
                         negative_prompt=getattr(task_state, 'negative_prompt', ''),
                         seed=getattr(task_state, 'seed', None),
+                        workflow='remove_mat',
                     )
                     if context.yield_result_callback is not None:
                         context.yield_result_callback(
