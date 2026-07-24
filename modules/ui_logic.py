@@ -19,7 +19,11 @@ import modules.flags as flags
 import modules.gradio_hijack as grh
 import modules.style_sorter as style_sorter
 import modules.meta_parser
-from modules.flux_fill_surface import OBJR_ENGINE_FLUX_FILL, OBJR_ENGINE_MAT
+from modules.flux_fill_surface import (
+    OBJR_ENGINE_FLUX_FILL,
+    OBJR_ENGINE_MAT,
+    is_flux_fill_inpaint_route,
+)
 import modules.ui_components.metadata_ui as metadata_ui
 from modules.ui_components.metadata_preview import format_metadata_preview
 import modules.ui_components.settings_panel as settings_panel
@@ -189,16 +193,72 @@ def validate_outpaint_generate_request(named_args):
 
     return ''
 
+
+def _has_uploaded_value(value):
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        return any(_has_uploaded_value(value.get(key)) for key in ('image', 'mask', 'background'))
+    return True
+
+
+def _has_controlnet_slot_input(named_args):
+    return any(
+        _has_uploaded_value(named_args.get(f'cn_{index}_image'))
+        for index in range(modules.config.default_controlnet_image_count)
+    )
+
+
+def validate_user_correctable_generate_request(named_args, workflow_selection=None):
+    """Return guidance for requests the user can correct before queueing."""
+    outpaint_message = validate_outpaint_generate_request(named_args)
+    if outpaint_message:
+        return outpaint_message
+
+    selection = workflow_selection or capture_workflow_selection(named_args, queue_capture=True)
+    if (
+        selection.source_surface == 'inpaint'
+        and is_flux_fill_inpaint_route(selection.inpaint_route)
+        and selection.allow_inpaint_controlnet
+        and _has_controlnet_slot_input(named_args)
+    ):
+        return (
+            "Flux Fill does not support ControlNet guidance. Select SDXL in Inpaint, "
+            "or turn off 'Add ControlNet to Inpaint', then Generate again."
+        )
+
+    if (
+        selection.source_surface == 'color_enhanced_upscale'
+        and not _has_uploaded_value(named_args.get('upscale_gan_output_image'))
+    ):
+        return (
+            'The Color Enhancement target is not ready. If you just selected a large image, '
+            'wait until its upload and target preview finish, then Generate again.'
+        )
+
+    return ''
+
+
+def _invalid_task(validation_message):
+    task = worker.AsyncTask(args={})
+    task.is_valid = False
+    task.validation_message = validation_message
+    return task
+
+
 def get_task(*args):
     global ctrls_keys
     named_args = dict(zip(ctrls_keys, args))
     named_args.pop('_currentTask', None)
-    task = worker.AsyncTask(args=named_args)
-    validation_message = validate_outpaint_generate_request(named_args)
+    named_args['current_tab'] = normalize_current_tab(named_args.get('current_tab'))
+    workflow_selection = capture_workflow_selection(named_args, queue_capture=True)
+    validation_message = validate_user_correctable_generate_request(named_args, workflow_selection)
     if validation_message:
-        task.is_valid = False
-        task.validation_message = validation_message
-    return task
+        return _invalid_task(validation_message)
+    named_args['workflow_selection'] = workflow_selection
+    return worker.AsyncTask(args=named_args)
 
 def generate_clicked(task: worker.AsyncTask, disable_preview):
     import backend.resources as resources
@@ -1266,7 +1326,11 @@ def register_all_events(ctrls_dict, currentTask_component, ui_elements):
     ) \
         .then(fn=refresh_seed, inputs=[seed_random, image_seed], outputs=image_seed) \
         .then(fn=get_tasks, inputs=ctrls, outputs=current_tasks_state) \
-        .then(fn=enqueue_tasks, inputs=[current_tasks_state], outputs=[currentTask]) \
+        .then(
+            fn=enqueue_tasks_with_ui_feedback,
+            inputs=[current_tasks_state],
+            outputs=[currentTask, progress_html, preview_column, gallery_column],
+        ) \
         .then(fn=update_history_link, outputs=history_link)
 
     release_cn_cache_btn.click(
@@ -1308,13 +1372,6 @@ def get_tasks(*args):
     named_args = dict(zip(ctrls_keys, args))
     named_args.pop('_currentTask', None)
 
-    validation_message = validate_outpaint_generate_request(named_args)
-    if validation_message:
-        invalid_task = worker.AsyncTask(args={})
-        invalid_task.is_valid = False
-        invalid_task.validation_message = validation_message
-        return [invalid_task]
-
     # The queue is now the only repetition model: one Generate click creates
     # one image task, and the next image should be queued with the next click.
     task_args = dict(named_args)
@@ -1328,6 +1385,9 @@ def get_tasks(*args):
     workflow_selection = capture_workflow_selection(task_args, queue_capture=True)
     task_args['workflow_selection'] = workflow_selection
     task_args['requested_source_surface'] = workflow_selection.source_surface
+    validation_message = validate_user_correctable_generate_request(task_args, workflow_selection)
+    if validation_message:
+        return [_invalid_task(validation_message)]
 
     frozen_goals = []
     if workflow_selection.source_surface == 'removal':
@@ -1369,14 +1429,34 @@ def enqueue_tasks(tasks, *_legacy_route_inputs):
     first_task = tasks[0] if tasks else None
     if first_task and not first_task.is_valid:
         message = getattr(first_task, 'validation_message', 'The current request is not ready yet.')
-        runtime_surface_state.set_progress_state(visible=True, number=0, text=message)
+        runtime_surface_state.set_idle_notice(message)
         return first_task
 
+    runtime_surface_state.clear_idle_notice()
     for task in tasks:
         worker.async_tasks.append(task)
     if worker.get_active_task() is None:
         runtime_surface_state.set_progress_state(visible=True, number=1, text='Waiting for task to start ...')
     return first_task
+
+
+def enqueue_tasks_with_ui_feedback(tasks):
+    first_task = enqueue_tasks(tasks)
+    if first_task and not first_task.is_valid:
+        message = getattr(first_task, 'validation_message', 'The current request is not ready yet.')
+        return (
+            first_task,
+            gr.update(visible=True, value=modules.html.make_progress_html(0, message)),
+            gr.update(visible=True),
+            gr.update(visible=False),
+        )
+
+    return (
+        first_task,
+        gr.update(visible=False),
+        gr.skip(),
+        gr.skip(),
+    )
 
 
 def _append_new_gallery_items(task, gallery_items, product):

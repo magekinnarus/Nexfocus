@@ -45,7 +45,7 @@ def discard_inactive_controlnet_tasks(task_state):
         for cn_type in list(task_state.cn_tasks.keys()):
             task_state.cn_tasks[cn_type] = []
         task_state.ensure_cn_task_maps()
-        print(
+        logger.debug(
             f'[ControlNet] Ignoring {discarded} inactive hidden slot input(s) '
             f'for route {getattr(task_state, "requested_route_id", "") or "unknown"}.'
         )

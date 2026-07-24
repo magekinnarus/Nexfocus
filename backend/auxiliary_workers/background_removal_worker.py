@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import gc
 import logging
+import warnings
+from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
@@ -16,6 +18,23 @@ from modules import model_registry
 
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _background_removal_warning_scope():
+    """Hide known tracing noise normally while preserving it in debug mode."""
+    if logging.getLogger().isEnabledFor(logging.DEBUG):
+        yield
+        return
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"torch\.meshgrid: in an upcoming release, it will be required to pass the indexing argument.*",
+            category=UserWarning,
+        )
+        warnings.filterwarnings("ignore", category=torch.jit.TracerWarning)
+        yield
 
 
 def _as_uint8_image(image: np.ndarray) -> np.ndarray:
@@ -52,7 +71,8 @@ class BackgroundRemovalWorker:
         )
         checkpoint_path = model_registry.ensure_asset(self.asset_id, progress=True)
         try:
-            self.remover = Remover(jit=request_jit, ckpt=checkpoint_path)
+            with _background_removal_warning_scope():
+                self.remover = Remover(jit=request_jit, ckpt=checkpoint_path)
             self.jit = request_jit
             self.checkpoint_path = checkpoint_path
         except BaseException:
@@ -78,11 +98,12 @@ class BackgroundRemovalWorker:
 
         try:
             pil_image = Image.fromarray(image_np)
-            result = self.remover.process(
-                pil_image,
-                type="rgba",
-                threshold=float(threshold),
-            )
+            with _background_removal_warning_scope():
+                result = self.remover.process(
+                    pil_image,
+                    type="rgba",
+                    threshold=float(threshold),
+                )
             if isinstance(result, Image.Image):
                 rgba = np.asarray(result.convert("RGBA"))
             else:

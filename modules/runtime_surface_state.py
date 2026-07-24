@@ -38,6 +38,7 @@ completed_tasks_history: list[CompletedTaskRecord] = []
 _last_seen_active_task = None
 _last_active_task_id: str | None = None
 _last_progress_state = {"visible": False, "number": 0, "text": ""}
+_idle_notice_text = ""
 _last_preview_value = None
 _last_preview_revision = 0
 _last_preview_encoded_bytes: bytes | None = None
@@ -213,7 +214,7 @@ def _resolve_task_display_fields(state) -> dict:
 
 def reset_runtime_surface_state():
     global _last_seen_active_task, _last_active_task_id
-    global _last_preview_value, _last_preview_revision, _last_progress_state
+    global _last_preview_value, _last_preview_revision, _last_progress_state, _idle_notice_text
     global _last_preview_encoded_bytes, _last_preview_encoded_media_type, _last_preview_encoded_cache_key
     with _state_mutex:
         completed_tasks_history.clear()
@@ -225,6 +226,7 @@ def reset_runtime_surface_state():
         _last_preview_encoded_media_type = "image/png"
         _last_preview_encoded_cache_key = None
         _last_progress_state = {"visible": False, "number": 0, "text": ""}
+        _idle_notice_text = ""
 
 
 def set_progress_state(*, visible: bool, number: int = 0, text: str = ""):
@@ -232,6 +234,24 @@ def set_progress_state(*, visible: bool, number: int = 0, text: str = ""):
         _last_progress_state["visible"] = bool(visible)
         _last_progress_state["number"] = int(number or 0)
         _last_progress_state["text"] = str(text or "")
+
+
+def set_idle_notice(text: str):
+    global _idle_notice_text
+    with _state_mutex:
+        _idle_notice_text = str(text or "").strip()
+        if worker.get_active_task() is None and len(worker.async_tasks) == 0:
+            set_progress_state(
+                visible=bool(_idle_notice_text),
+                number=0,
+                text=_idle_notice_text,
+            )
+
+
+def clear_idle_notice():
+    global _idle_notice_text
+    with _state_mutex:
+        _idle_notice_text = ""
 
 
 def _set_preview_value(value):
@@ -453,7 +473,7 @@ def _drain_task_events(task):
 
 
 def drain_worker_state():
-    global _last_seen_active_task, _last_active_task_id
+    global _last_seen_active_task, _last_active_task_id, _idle_notice_text
     with _state_mutex:
         active_task = worker.get_active_task()
         active_task_id = getattr(active_task, "task_id", None)
@@ -470,9 +490,11 @@ def drain_worker_state():
             if previous_finished_images:
                 _set_preview_value(previous_finished_images[0])
 
-        if active_task is not None and _last_active_task_id != active_task_id:
-            set_progress_state(visible=True, number=1, text="Waiting for task to start ...")
-            _last_active_task_id = active_task_id
+        if active_task is not None:
+            _idle_notice_text = ""
+            if _last_active_task_id != active_task_id:
+                set_progress_state(visible=True, number=1, text="Waiting for task to start ...")
+                _last_active_task_id = active_task_id
 
         if active_task is not None:
             latest_preview_value, latest_progress_pct, latest_progress_msg, finished_images = _drain_task_events(active_task)
@@ -492,7 +514,7 @@ def drain_worker_state():
 
             _last_seen_active_task = active_task
         else:
-            if _last_active_task_id is not None:
+            if _last_active_task_id is not None and not _idle_notice_text:
                 set_progress_state(visible=False, number=0, text="")
             _last_active_task_id = None
             if previous_task is not None:

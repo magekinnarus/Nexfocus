@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import logging
 import torch
@@ -32,6 +33,15 @@ def _resolve_text_only_progress_update_interval(total_steps) -> int:
     except Exception:
         resolved_total_steps = 1
     return max(5, resolved_total_steps // 10 or 1)
+
+
+def _supports_inline_console_progress(stream=None) -> bool:
+    """Return whether carriage-return progress can be rendered immediately."""
+    target = sys.stdout if stream is None else stream
+    try:
+        return bool(target.isatty())
+    except (AttributeError, OSError):
+        return False
 
 
 def _resolve_completed_global_steps(current_task_id, completed_steps, total_steps, all_steps) -> int:
@@ -89,6 +99,7 @@ def get_sampling_callback(
     sampling_started_at = time.perf_counter()
     last_step_at = sampling_started_at
     debug_mode = _is_debug_console_logging_enabled()
+    inline_console_progress = _supports_inline_console_progress()
 
     def callback(step, x0, x, total_steps, y):
         nonlocal last_step_at
@@ -138,7 +149,10 @@ def get_sampling_callback(
             )
             print(
                 console_line,
-                end='\n' if debug_mode or is_final_step else '\r',
+                # Notebook/tunnel streams do not render carriage-return
+                # updates as they arrive. Emit newline-delimited steps there
+                # so Colab users can see live progress and per-step timing.
+                end='\r' if inline_console_progress and not debug_mode and not is_final_step else '\n',
                 flush=True,
             )
 
