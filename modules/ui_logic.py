@@ -163,37 +163,6 @@ def _get_progress_html_update(*, visible, number=0, text=''):
 
     return gr.update(visible=True, value=modules.html.make_progress_html(next_state[1], next_state[2]))
 
-def validate_outpaint_generate_request(named_args):
-    mixed_outpaint = (
-        named_args.get('current_tab') == 'ip'
-        and named_args.get('mixing_image_prompt_and_outpaint', False)
-        and named_args.get('outpaint_input_image') is not None
-        and (
-            named_args.get('outpaint_step2_checkbox', False)
-            or bool(named_args.get('outpaint_selections', []))
-            or named_args.get('outpaint_mask_image') is not None
-        )
-    )
-    if named_args.get('current_tab') != 'outpaint' and not mixed_outpaint:
-        return ''
-
-    if not named_args.get('outpaint_step2_checkbox', False):
-        return 'Prepare Outpaint first to load the expanded canvas and BB image.'
-
-    missing = []
-    if not named_args.get('outpaint_input_image'):
-        missing.append('Base Image')
-    if not named_args.get('outpaint_bb_image'):
-        missing.append('BB Image')
-    if not named_args.get('outpaint_mask_image'):
-        missing.append('BB Mask')
-
-    if missing:
-        return f"Outpaint is missing: {', '.join(missing)}."
-
-    return ''
-
-
 def _has_uploaded_value(value):
     if value is None:
         return False
@@ -202,6 +171,119 @@ def _has_uploaded_value(value):
     if isinstance(value, dict):
         return any(_has_uploaded_value(value.get(key)) for key in ('image', 'mask', 'background'))
     return True
+
+
+def _join_slot_labels(labels):
+    labels = tuple(labels)
+    if len(labels) < 2:
+        return ''.join(labels)
+    if len(labels) == 2:
+        return f'{labels[0]} and {labels[1]}'
+    return f"{', '.join(labels[:-1])}, and {labels[-1]}"
+
+
+def _prepared_image_guidance(workflow_name, missing):
+    missing_text = _join_slot_labels(missing)
+    return (
+        f'{workflow_name} is not ready. Missing: {missing_text}. '
+        f'Complete {workflow_name} preparation and wait for the prepared image slots '
+        'to finish loading, then Generate again.'
+    )
+
+
+def _uploaded_image_guidance(workflow_name, missing):
+    missing_text = _join_slot_labels(missing)
+    pronoun = 'it' if len(missing) == 1 else 'them'
+    return (
+        f'{workflow_name} is not ready. Upload {missing_text} and wait for {pronoun} '
+        'to finish loading, then Generate again.'
+    )
+
+
+def validate_inpaint_generate_request(named_args, workflow_selection):
+    if workflow_selection.source_surface != 'inpaint':
+        return ''
+
+    if not named_args.get('inpaint_step2_checkbox', False):
+        return (
+            'Prepare Inpaint first so the BB image and BB mask are ready, '
+            'then Generate again.'
+        )
+
+    missing = [
+        label
+        for key, label in (
+            ('inpaint_input_image', 'Base Image'),
+            ('inpaint_bbox', 'BB Selection'),
+            ('inpaint_bb_image', 'BB Image'),
+            ('inpaint_mask_image', 'BB Mask'),
+        )
+        if not _has_uploaded_value(named_args.get(key))
+    ]
+    if missing:
+        return _prepared_image_guidance('Inpaint', missing)
+    return ''
+
+
+def validate_outpaint_generate_request(named_args, workflow_selection=None):
+    selection = workflow_selection or capture_workflow_selection(named_args, queue_capture=True)
+    if selection.source_surface != 'outpaint':
+        return ''
+
+    if not named_args.get('outpaint_step2_checkbox', False):
+        return (
+            'Prepare Outpaint first so the expanded canvas, BB image, and BB mask are ready, '
+            'then Generate again.'
+        )
+
+    missing = [
+        label
+        for key, label in (
+            ('outpaint_input_image', 'Base Image'),
+            ('outpaint_bb_image', 'BB Image'),
+            ('outpaint_mask_image', 'BB Mask'),
+        )
+        if not _has_uploaded_value(named_args.get(key))
+    ]
+    if missing:
+        return _prepared_image_guidance('Outpaint', missing)
+    return ''
+
+
+def validate_required_image_slots(named_args, workflow_selection):
+    surface = workflow_selection.source_surface
+    if surface in {'upscale', 'super_upscale', 'color_enhanced_upscale'}:
+        workflow_name = {
+            'upscale': 'Upscale',
+            'super_upscale': 'Super-Upscale',
+            'color_enhanced_upscale': 'Color Enhancement',
+        }[surface]
+        missing = []
+        if not _has_uploaded_value(named_args.get('uov_input_image')):
+            missing.append('the source Image')
+        if (
+            surface in {'super_upscale', 'color_enhanced_upscale'}
+            and not _has_uploaded_value(named_args.get('upscale_gan_output_image'))
+        ):
+            missing.append('the Upscale Target')
+        if missing:
+            return _uploaded_image_guidance(workflow_name, missing)
+
+    if surface == 'removal':
+        missing = []
+        removal_requested = workflow_selection.remove_background or workflow_selection.remove_object
+        if removal_requested and not _has_uploaded_value(named_args.get('remove_base_image')):
+            missing.append('the Base Image')
+        if (
+            workflow_selection.remove_object
+            and not workflow_selection.remove_background
+            and not _has_uploaded_value(named_args.get('remove_mask_image'))
+        ):
+            missing.append('the Mask')
+        if missing:
+            return _uploaded_image_guidance('Removal', missing)
+
+    return ''
 
 
 def _has_controlnet_slot_input(named_args):
@@ -213,10 +295,6 @@ def _has_controlnet_slot_input(named_args):
 
 def validate_user_correctable_generate_request(named_args, workflow_selection=None):
     """Return guidance for requests the user can correct before queueing."""
-    outpaint_message = validate_outpaint_generate_request(named_args)
-    if outpaint_message:
-        return outpaint_message
-
     selection = workflow_selection or capture_workflow_selection(named_args, queue_capture=True)
     if (
         selection.source_surface == 'inpaint'
@@ -229,14 +307,14 @@ def validate_user_correctable_generate_request(named_args, workflow_selection=No
             "or turn off 'Add ControlNet to Inpaint', then Generate again."
         )
 
-    if (
-        selection.source_surface == 'color_enhanced_upscale'
-        and not _has_uploaded_value(named_args.get('upscale_gan_output_image'))
+    for validator in (
+        validate_inpaint_generate_request,
+        validate_outpaint_generate_request,
+        validate_required_image_slots,
     ):
-        return (
-            'The Color Enhancement target is not ready. If you just selected a large image, '
-            'wait until its upload and target preview finish, then Generate again.'
-        )
+        message = validator(named_args, selection)
+        if message:
+            return message
 
     return ''
 
@@ -1429,6 +1507,7 @@ def enqueue_tasks(tasks, *_legacy_route_inputs):
     first_task = tasks[0] if tasks else None
     if first_task and not first_task.is_valid:
         message = getattr(first_task, 'validation_message', 'The current request is not ready yet.')
+        print(f'[Nex] {message}')
         runtime_surface_state.set_idle_notice(message)
         return first_task
 
