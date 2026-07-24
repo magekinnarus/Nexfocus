@@ -1407,7 +1407,7 @@ def register_all_events(ctrls_dict, currentTask_component, ui_elements):
         .then(
             fn=enqueue_tasks_with_ui_feedback,
             inputs=[current_tasks_state],
-            outputs=[currentTask, progress_html, preview_column, gallery_column],
+            outputs=[currentTask, preview_column, gallery_column],
         ) \
         .then(fn=update_history_link, outputs=history_link)
 
@@ -1522,17 +1522,14 @@ def enqueue_tasks(tasks, *_legacy_route_inputs):
 def enqueue_tasks_with_ui_feedback(tasks):
     first_task = enqueue_tasks(tasks)
     if first_task and not first_task.is_valid:
-        message = getattr(first_task, 'validation_message', 'The current request is not ready yet.')
         return (
             first_task,
-            gr.update(visible=True, value=modules.html.make_progress_html(0, message)),
             gr.update(visible=True),
             gr.update(visible=False),
         )
 
     return (
         first_task,
-        gr.update(visible=False),
         gr.skip(),
         gr.skip(),
     )

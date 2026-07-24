@@ -10,7 +10,6 @@ import numpy as np
 import shared
 import modules.config
 import fooocus_version
-import modules.html
 import modules.async_worker as worker
 import modules.constants as constants
 import modules.flags as flags
@@ -89,8 +88,6 @@ with shared.gradio_root:
                     )
                     model_browser_apply_data = gr.Textbox(value='', visible=True, elem_id='model_browser_apply_data_bridge', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
             gr.HTML('<div id="nex-runtime-status-panel" class="nex-runtime-status-panel"></div>')
-            progress_html = gr.HTML(value=modules.html.make_progress_html(32, 'Progress 32%'), visible=False,
-                                    elem_id='progress-bar', elem_classes='progress-bar')
             with gr.Row():
                 with gr.Column(scale=17):
                     prompt = gr.Textbox(show_label=False, placeholder="Type prompt here or paste parameters.", elem_id='positive_prompt',
@@ -674,9 +671,8 @@ with shared.gradio_root:
             'style_selections_accordion': style_selections_accordion,
             'state_is_generating': state_is_generating,
             'stop_button': stop_button,
-            'skip_button': skip_button,
-            'progress_html': progress_html,
-            'preview_column': preview_column,
+           'skip_button': skip_button,
+           'preview_column': preview_column,
             'gallery_column': gallery_column,
             'inpaint_toggle_toolbar': inpaint_toggle_toolbar,
             'outpaint_mask_expansion_button': outpaint_mask_expansion_button,
