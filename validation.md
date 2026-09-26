@@ -634,8 +634,9 @@ The existing validation surface is intentionally split by repository policy:
 | W13d Legacy-Surface Quarantine Checks above | **local maintainer** | The `rg` command includes the ignored local `tests/` tree; the Git inventory subcommands remain useful public checks. |
 | Commands below | **fresh-clone/public** | Every repository path named by the command is tracked in the integrated candidate, or is an intentionally absent ignored path tested by Git metadata. |
 
-The `.agent/` tree contains local maintainer governance and is intentionally
-absent from a fresh clone. Its absence is expected and must not be repaired by
+Project-governance documents are held outside the product working tree, in a
+separate private document repository. A fresh clone therefore contains no
+`.agent/` tree, and its absence is expected: it must not be repaired by
 publishing project-governance documents.
 
 ### Fresh-clone/public W13e checks
