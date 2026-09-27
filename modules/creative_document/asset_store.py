@@ -128,9 +128,21 @@ class AssetStore:
         return True
 
     def read_bytes(self, asset: AssetRecord) -> bytes:
-        self.verify(asset)
         if asset.external_uri is not None and asset.external_status != "embedded":
-            return Path(asset.external_uri).read_bytes()
+            asset.validate()
+            path = Path(asset.external_uri)
+            try:
+                data = path.read_bytes()
+            except FileNotFoundError as exc:
+                raise MissingAsset(str(path)) from exc
+            except OSError as exc:
+                raise AssetStoreError(f"cannot read external asset {asset.asset_id}: {exc}") from exc
+            if sha256_bytes(data) != asset.expected_hash:
+                raise AssetHashMismatch(f"external asset {asset.asset_id} bytes do not match its expected identity")
+            if asset.byte_length is not None and len(data) != asset.byte_length:
+                raise AssetHashMismatch(f"external asset {asset.asset_id} byte length does not match its record")
+            return data
+        self.verify(asset)
         relative = PurePosixPath(asset.storage_uri.replace("\\", "/"))
         if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
             raise AssetStoreError(f"embedded asset URI is not project-relative: {asset.storage_uri}")

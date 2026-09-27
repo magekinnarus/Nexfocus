@@ -64,7 +64,7 @@ def _complete_fixture() -> Document:
     )
     candidate = CandidateRecord("candidate-1", "full_crop_contextual", "bb-op", 0, True, None, transform, asset_id="asset-bg")
     derivative = ExtractionDerivative("derivative-1", "candidate-1", "bb-op", "mask-matte", transform, 0, "asset-bg", {"edge": "feather"})
-    selection = SelectionRecord("selection-1", "layer-subject", 0, "0" * 64, 1, "current", "mask-context", derived_layer_ids=["layer-subject"])
+    selection = SelectionRecord("selection-1", "layer-subject", 0, "0" * 64, 1, "current", "mask-context")
     proxy = PrivateProxy("proxy-1", "asset-bg", "0" * 64, "slot-1", transform)
     guide = GuideRecord("guide-1", "Focal anchor", lifecycle=GuideLifecycle.PROPOSED.value)
     document = Document(
@@ -418,20 +418,22 @@ def test_selection_create_refine_and_duplicate_registration_use_cas() -> None:
 )
 def test_selection_invalidation_preserves_mask_and_records_every_staleness_reason(reason, expected_state, digest) -> None:
     document = _selection_document()
+    document.register_selection_derived_layer(
+        "selection", "derived", expected_document_revision=0, expected_selection_revision=1,
+    )
     selection = document.selections["selection"]
-    selection.derived_layer_ids = ["derived"]
     changed = document.invalidate_selections_for_source(
-        "source", expected_document_revision=0, reason=reason, source_revision=1, source_content_digest=digest,
+        "source", expected_document_revision=1, reason=reason, source_revision=2, source_content_digest=digest,
     )
     selection = document.selections["selection"]
     assert changed == ["selection"]
-    assert document.current_revision == 1
-    assert selection.selection_revision == 1
+    assert document.current_revision == 2
+    assert selection.selection_revision == 2
     assert selection.mask_id == "mask-old"
     assert selection.derived_layer_ids == ["derived"]
     assert selection.state == expected_state
     assert selection.invalidation_history[-1]["reason"] == reason
-    assert document.layers["source"].revision == 1
+    assert document.layers["source"].revision == 2
 
 
 @pytest.mark.parametrize("reason", ["SOURCE_CONTENT_CHANGED", "SOURCE_CLIP_CHANGED", "SOURCE_TRANSFORM_CHANGED"])
@@ -462,6 +464,61 @@ def test_removed_selection_source_refuses_rebase_without_partial_mutation() -> N
         document.rebase_selection("selection", 1, expected_document_revision=1,
                                   expected_selection_revision=1, new_mask_id="mask-new")
     assert document.to_dict() == before
+
+
+@pytest.mark.parametrize(
+    ("geometry_only", "new_mask_id"),
+    [(False, None), (True, "mask-new")],
+    ids=["non-geometry-transform-rebase", "new-mask-transform-rebase"],
+)
+def test_transform_staleness_only_allows_geometry_rebase_with_existing_mask(geometry_only, new_mask_id) -> None:
+    document = _selection_document()
+    document.invalidate_selections_for_source("source", expected_document_revision=0,
+                                              reason="SOURCE_TRANSFORM_CHANGED", source_revision=1)
+    before = document.to_dict()
+    with pytest.raises(SchemaValidationError, match="transform staleness requires geometry-only"):
+        document.rebase_selection(
+            "selection", 1, expected_document_revision=1, expected_selection_revision=1,
+            new_mask_id=new_mask_id, geometry_only=geometry_only,
+        )
+    assert document.to_dict() == before
+
+
+def test_persisted_transform_rebase_cannot_claim_a_new_mask() -> None:
+    document = _selection_document()
+    document.invalidate_selections_for_source("source", expected_document_revision=0,
+                                              reason="SOURCE_TRANSFORM_CHANGED", source_revision=1)
+    document.rebase_selection("selection", 1, expected_document_revision=1,
+                              expected_selection_revision=1, geometry_only=True)
+    raw = copy.deepcopy(document.to_dict())
+    selection = raw["selections"]["selection"]
+    selection["rebaseHistory"][0]["geometryOnly"] = False
+    selection["rebaseHistory"][0]["maskId"] = "mask-new"
+    selection["maskId"] = "mask-new"
+    raw.pop("revisionDigest", None)
+    raw["revisionDigest"] = content_digest(raw)
+    with pytest.raises(SchemaValidationError, match="transform rebase must be geometry-only"):
+        Document.from_dict(raw)
+
+
+def test_content_rebase_digest_is_bound_to_retained_transaction_snapshot() -> None:
+    document = _selection_document()
+    document.invalidate_selections_for_source("source", expected_document_revision=0,
+                                              reason="SOURCE_CONTENT_CHANGED", source_revision=1,
+                                              source_content_digest="b" * 64)
+    document.rebase_selection(
+        "selection", 1, expected_document_revision=1, expected_selection_revision=1,
+        new_mask_id="mask-new", source_content_digest="b" * 64,
+    )
+    restored = Document.from_dict(document.to_dict())
+    assert restored.selections["selection"].source_content_digest == "b" * 64
+
+    raw = copy.deepcopy(document.to_dict())
+    raw["selections"]["selection"]["sourceContentDigest"] = "c" * 64
+    raw.pop("revisionDigest", None)
+    raw["revisionDigest"] = content_digest(raw)
+    with pytest.raises(SchemaValidationError, match="final source content digest"):
+        Document.from_dict(raw)
 
 
 def test_guide_replacement_supersession_chain_is_revision_bound() -> None:
@@ -519,6 +576,18 @@ def test_guide_replacement_cycle_and_handoff_dangling_bindings_fail_closed() -> 
     with pytest.raises(SchemaValidationError, match="orphaned"):
         document.validate()
 
+    raw = Document("doc-dangling-note", 8, 8, root_layer_ids=["layer"],
+                    layers={"layer": LayerRecord("layer", "Layer", "raster")}).to_dict()
+    raw["layers"]["layer"]["collaboration"]["handoffNotes"] = [note.to_dict()]
+    raw.pop("revisionDigest", None)
+    raw["revisionDigest"] = content_digest(raw)
+    loaded = Document.from_dict(raw)
+    loaded_note = loaded.layers["layer"].collaboration.handoff_notes[0]
+    assert loaded_note.body == "Will not reattach"
+    assert loaded_note.state == "orphaned"
+    assert "missing-target no longer resolves" in loaded_note.orphan_reason
+    assert loaded.revision_digest == loaded.canonical_digest()
+
 
 def test_handoff_bindings_orphan_explicitly_and_safe_projection_hides_private_notes() -> None:
     tx1 = _transaction(1)
@@ -543,19 +612,60 @@ def test_handoff_bindings_orphan_explicitly_and_safe_projection_hides_private_no
     Document.from_dict(orphan_doc.to_dict())
 
 
-def test_handoff_reconciliation_records_orphan_reason_atomically() -> None:
+def test_handoff_reconciliation_preserves_proven_historical_target_revision() -> None:
     note = HandoffNote("note-1", "director", "director", "Review", 1, "txn-1", ["layer"], {"layer": 1})
     layer = LayerRecord("layer", "Layer", "raster", revision=2,
                         collaboration=CollaborationState(handoff_notes=[note]))
-    history = [_transaction(revision).to_dict() for revision in (1, 2)]
+    tx1 = TransactionRecord(
+        "txn-1", "group-1", "director", "director", ["cmd-1"], 0, 1,
+        affected_ids=["layer"], before={"layer": {"layerId": "layer", "revision": 0}},
+        after={"layer": {"layerId": "layer", "revision": 1}},
+    )
+    tx2 = TransactionRecord(
+        "txn-2", "group-2", "director", "director", ["cmd-2"], 1, 2,
+        affected_ids=["layer"], before={"layer": {"layerId": "layer", "revision": 1}},
+        after={"layer": {"layerId": "layer", "revision": 2}},
+    )
+    history = [tx1.to_dict(), tx2.to_dict()]
     document = Document("doc-orphaning", 16, 16, current_revision=2, root_layer_ids=["layer"],
                         layers={"layer": layer}, history=history)
     changed = document.reconcile_handoffs(expected_document_revision=2)
-    assert changed == ["note-1"]
-    assert document.layers["layer"].collaboration.handoff_notes[0].state == "orphaned"
-    assert "revision 1" in document.layers["layer"].collaboration.handoff_notes[0].orphan_reason
-    assert document.current_revision == 3
-    assert Document.from_dict(document.to_dict()).current_revision == 3
+    assert changed == []
+    assert document.layers["layer"].collaboration.handoff_notes[0].state == "open"
+    assert document.current_revision == 2
+    reloaded = Document.from_dict(document.to_dict())
+    assert reloaded.layers["layer"].collaboration.handoff_notes[0].target_revisions == {"layer": 1}
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_reason"),
+    [
+        ("missing-transaction", "transaction binding no longer resolves"),
+        ("missing-target", "target deleted-layer no longer resolves"),
+        ("unproven-revision", "cannot be proven from retained history"),
+    ],
+)
+def test_handoff_reconciliation_orphans_only_genuinely_lost_bindings(failure, expected_reason) -> None:
+    target_id = "deleted-layer" if failure == "missing-target" else "layer"
+    target_revision = 1
+    note_transaction = "txn-missing" if failure == "missing-transaction" else "txn-1"
+    note = HandoffNote("note-lost", "director", "director", "Keep unresolved", 1,
+                       note_transaction, [target_id], {target_id: target_revision})
+    current_target_revision = 2 if failure == "unproven-revision" else 1
+    layer = LayerRecord("layer", "Layer", "raster", revision=current_target_revision,
+                        collaboration=CollaborationState(handoff_notes=[note]))
+    current_revision = current_target_revision
+    history = [_transaction(revision).to_dict() for revision in range(1, current_revision + 1)]
+    document = Document("doc-lost-binding", 16, 16, current_revision=current_revision, root_layer_ids=["layer"],
+                        layers={"layer": layer}, history=history)
+
+    changed = document.reconcile_handoffs(expected_document_revision=current_revision)
+    assert changed == ["note-lost"]
+    orphaned = document.layers["layer"].collaboration.handoff_notes[0]
+    assert orphaned.state == "orphaned"
+    assert expected_reason in orphaned.orphan_reason
+    assert document.current_revision == current_revision + 1
+    assert Document.from_dict(document.to_dict()).layers["layer"].collaboration.handoff_notes[0].state == "orphaned"
 
 
 def test_operation_inputs_outputs_parent_child_and_exchange_patch_links_resolve() -> None:

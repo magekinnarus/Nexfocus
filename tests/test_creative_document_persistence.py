@@ -22,15 +22,19 @@ from modules.creative_document import (
     ExtractionDerivative,
     HandoffNote,
     InjectedInterruption,
+    InteractionGroup,
     LayerRecord,
     MaskRecord,
     MissingAsset,
     ProjectStore,
     ProjectStoreError,
     RevisionManager,
+    SchemaValidationError,
+    SelectionRecord,
     TransactionRecord,
 )
 from modules.creative_document.history import HistoryValidationError, validate_history
+from modules.creative_document.ids import content_digest
 
 
 def test_undo_and_redo_are_new_monotonic_revisions() -> None:
@@ -58,6 +62,27 @@ def _history_to(revision: int) -> list[dict]:
     ]
 
 
+def _selection_lineage_document() -> Document:
+    source = LayerRecord("source", "Source", "raster")
+    derived = LayerRecord("derived", "Derived", "raster")
+    masks = {
+        "mask-old": MaskRecord("mask-old", "editing-selection", "document", 0, editable_source={"path": []}),
+        "mask-new": MaskRecord("mask-new", "editing-selection", "document", 0, editable_source={"path": []}),
+    }
+    selection = SelectionRecord.create(
+        selection_id="selection", source_id="source", source_revision=0, source_content_digest="a" * 64,
+        mask_id="mask-old",
+    )
+    document = Document("doc-selection-persist", 16, 16, root_layer_ids=["source", "derived"],
+                        layers={"source": source, "derived": derived}, masks=masks,
+                        selections={"selection": selection})
+    document.refine_selection("selection", "mask-new", expected_document_revision=0,
+                               expected_selection_revision=1)
+    document.register_selection_derived_layer("selection", "derived", expected_document_revision=1,
+                                               expected_selection_revision=2)
+    return document
+
+
 def test_asset_store_deduplicates_and_rejects_mismatched_relink(tmp_path: Path) -> None:
     store = AssetStore(tmp_path / "scene.nexscene")
     first = store.put_bytes(b"same", extension="bin")
@@ -74,6 +99,142 @@ def test_asset_store_deduplicates_and_rejects_mismatched_relink(tmp_path: Path) 
         store.relink(record, changed)
     store.relink(record, external)
     assert record.external_status == "relinked"
+
+
+def test_external_asset_read_returns_only_exact_registered_bytes(tmp_path: Path) -> None:
+    external = tmp_path / "external-read.bin"
+    external.write_bytes(b"original")
+    store = AssetStore(tmp_path / "read.nexscene")
+    record = store.external_reference(external, asset_id="asset-read")
+
+    assert store.read_bytes(record) == b"original"
+
+    external.write_bytes(b"changed!")
+    with pytest.raises(AssetHashMismatch):
+        store.read_bytes(record)
+
+    external.write_bytes(b"original")
+    record.byte_length = len(b"original") - 1
+    with pytest.raises(AssetHashMismatch):
+        store.read_bytes(record)
+
+    external.unlink()
+    with pytest.raises(MissingAsset):
+        store.read_bytes(record)
+
+
+@pytest.mark.parametrize("overlap_notes", [None, "Resolve the overlap at the shoulder."])
+def test_nullable_interaction_group_round_trips_through_project_save_open(tmp_path: Path, overlap_notes: str | None) -> None:
+    registration = CoordinateTransform.from_forward(
+        "document", "preview", (32, 24), (32, 24), AffineTransform.identity()
+    )
+    group = InteractionGroup("interaction-main", ["layer-root"], registration,
+                             [{"above": "layer-root"}], overlap_notes=overlap_notes)
+    document = _document()
+    document.interaction_groups[group.group_id] = group
+    parsed = Document.from_dict(document.to_dict())
+    assert parsed.interaction_groups[group.group_id].overlap_notes == overlap_notes
+
+    store = ProjectStore(tmp_path / f"interaction-{overlap_notes is not None}.nexscene")
+    store.save(document)
+    reopened = store.open()
+    assert reopened.interaction_groups[group.group_id].overlap_notes == overlap_notes
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda selection: selection.update(selectionRevision=99),
+        lambda selection: selection.update(derivedLayerIds=[]),
+        lambda selection: selection.update(maskId="mask-old"),
+        lambda selection: selection.update(sourceRevision=1),
+        lambda selection: selection["duplicateHistory"][0].update(previousSelectionRevision=1,
+                                                                   selectionRevision=2),
+    ],
+    ids=["unproven-revision", "derived-link-mismatch", "final-mask-mismatch", "final-source-mismatch",
+         "conflicting-transition"],
+)
+def test_selection_lineage_tampering_fails_document_parse_and_project_open(tmp_path: Path, mutate) -> None:
+    document = _selection_lineage_document()
+    tampered = copy.deepcopy(document.to_dict())
+    mutate(tampered["selections"]["selection"])
+    tampered.pop("revisionDigest", None)
+    tampered["revisionDigest"] = content_digest(tampered)
+    with pytest.raises(SchemaValidationError):
+        Document.from_dict(tampered)
+
+    store = ProjectStore(tmp_path / "selection-tamper.nexscene")
+    store.save(document)
+    witness = store._witness_path(document.current_revision)
+    persisted = json.loads(witness.read_text(encoding="utf-8"))
+    mutate(persisted["selections"]["selection"])
+    persisted.pop("revisionDigest", None)
+    persisted["revisionDigest"] = content_digest(persisted)
+    witness.write_text(json.dumps(persisted), encoding="utf-8")
+    with pytest.raises(CorruptProject, match="no fully valid retained revision"):
+        store.open()
+
+
+def test_explicit_handoff_orphan_and_reason_survive_project_open(tmp_path: Path) -> None:
+    note = HandoffNote("note-orphan", "director", "director", "Keep unresolved", 0, "txn-missing",
+                       ["deleted-layer"], {"deleted-layer": 7}, state="orphaned",
+                       orphan_reason="retained target binding is unavailable")
+    document = _document()
+    document.layers["layer-root"].collaboration.handoff_notes = [note]
+    store = ProjectStore(tmp_path / "orphaned-handoff.nexscene")
+    store.save(document)
+
+    reopened = store.open()
+    restored = reopened.layers["layer-root"].collaboration.handoff_notes[0]
+    assert restored.state == "orphaned"
+    assert restored.orphan_reason == "retained target binding is unavailable"
+    assert restored.target_revisions == {"deleted-layer": 7}
+
+
+@pytest.mark.parametrize(
+    ("binding_loss", "expected_reason"),
+    [
+        ("missing-target", "target deleted-layer no longer resolves"),
+        ("missing-transaction", "transaction binding no longer resolves"),
+        ("unprovable-target-revision", "cannot be proven from retained history"),
+    ],
+)
+def test_project_open_reconciles_unresolved_handoffs_without_losing_body(
+    tmp_path: Path, binding_loss: str, expected_reason: str,
+) -> None:
+    revision = 2 if binding_loss == "unprovable-target-revision" else 1
+    target_id = "deleted-layer" if binding_loss == "missing-target" else "layer-root"
+    target_revision = 1
+    transaction_id = "txn-lost" if binding_loss == "missing-transaction" else "txn-1"
+    note = HandoffNote("note-load-orphan", "director", "director", "Preserve this review note", 1,
+                       transaction_id, [target_id], {target_id: target_revision})
+
+    store = ProjectStore(tmp_path / f"load-orphan-{binding_loss}.nexscene")
+    store.save(_document(revision, _history_to(revision)))
+    witness = store._witness_path(revision)
+    raw = json.loads(witness.read_text(encoding="utf-8"))
+    raw["layers"]["layer-root"]["collaboration"]["handoffNotes"] = [note.to_dict()]
+    raw.pop("revisionDigest", None)
+    raw["revisionDigest"] = content_digest(raw)
+    witness.write_text(json.dumps(raw), encoding="utf-8")
+
+    opened = store.open()
+    restored = opened.layers["layer-root"].collaboration.handoff_notes[0]
+    assert restored.body == "Preserve this review note"
+    assert restored.state == "orphaned"
+    assert expected_reason in restored.orphan_reason
+    assert opened.current_revision == revision
+    assert opened.revision_digest == opened.canonical_digest()
+
+    reopened = store.open()
+    reopened_note = reopened.layers["layer-root"].collaboration.handoff_notes[0]
+    assert reopened_note.state == "orphaned"
+    assert reopened_note.orphan_reason == restored.orphan_reason
+    assert reopened_note.body == restored.body
+    retained_bytes = witness.read_bytes()
+    save_result = store.save(reopened)
+    assert save_result.pointer_refreshed
+    assert witness.read_bytes() == retained_bytes
 
 
 def test_pending_candidate_is_not_recovered_but_committed_witness_is(tmp_path: Path) -> None:

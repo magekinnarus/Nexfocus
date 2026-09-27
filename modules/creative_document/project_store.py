@@ -243,6 +243,13 @@ class ProjectStore:
                 self._validate_witness(witness)
                 self._refresh_pointer(document, witness)
                 return SaveResult(document, document.current_revision, tx_id, witness, self.pointer_path, True)
+            try:
+                interpreted_existing = self._validate_witness(witness)
+            except (CorruptProject, ProjectStoreError, SchemaValidationError, MigrationError, ValueError, TypeError):
+                interpreted_existing = None
+            if interpreted_existing is not None and interpreted_existing.to_dict() == value:
+                self._refresh_pointer(document, witness)
+                return SaveResult(document, document.current_revision, tx_id, witness, self.pointer_path, True)
             raise ProjectStoreError(f"revision witness already exists with different content: {witness}")
 
         self._interrupt(interrupt, "before_assets")
@@ -336,7 +343,13 @@ class ProjectStore:
             if stored.to_dict() != transaction.to_dict():
                 raise CorruptProject(f"transaction record differs from manifest: {transaction.transaction_id}")
 
-    def _validate_checkpoint(self, path: Path, expected: Document | None = None) -> Document:
+    def _validate_checkpoint(
+        self,
+        path: Path,
+        expected: Document | None = None,
+        *,
+        reconcile_unresolved_handoffs: bool = False,
+    ) -> Document:
         checkpoint = _json_read(path)
         required = {"checkpointFormat", "checkpointVersion", "documentId", "revision", "documentDigest", "historyRefs", "document", "checkpointDigest"}
         if set(checkpoint) != required:
@@ -359,7 +372,9 @@ class ProjectStore:
         if path.resolve() != (self.path / Path(*expected_relative.parts)).resolve():
             raise CorruptProject(f"checkpoint path does not match its revision identity: {path}")
         try:
-            document = Document.from_dict(migrate_manifest(checkpoint["document"]))
+            document = Document.from_dict(
+                migrate_manifest(checkpoint["document"]), reconcile_unresolved_handoffs=False
+            )
         except (MigrationError, SchemaValidationError, TypeError, ValueError) as exc:
             raise CorruptProject(f"checkpoint document is invalid: {exc}") from exc
         if (document.document_id != checkpoint["documentId"] or document.current_revision != checkpoint["revision"]
@@ -371,6 +386,8 @@ class ProjectStore:
                 or document.history_refs != expected.history_refs):
             raise CorruptProject("referenced checkpoint does not match its retained witness")
         self._validate_manifest_records(document, validate_checkpoints=False)
+        if reconcile_unresolved_handoffs:
+            document.reconcile_handoffs_on_load()
         return document
 
     def _validate_manifest_records(self, document: Document, *, validate_checkpoints: bool = True) -> None:
@@ -382,18 +399,25 @@ class ProjectStore:
                 checkpoint_path = self.path / Path(*checkpoint_member.parts)
                 if not checkpoint_path.is_file():
                     raise CorruptProject(f"missing referenced checkpoint: {checkpoint_ref}")
-                self._validate_checkpoint(checkpoint_path, expected=document)
+                self._validate_checkpoint(checkpoint_path, expected=document,
+                                          reconcile_unresolved_handoffs=False)
 
     def _validate_witness(self, path: Path) -> Document:
         raw = _json_read(path)
         try:
             migrated = migrate_manifest(raw)
-            document = Document.from_dict(migrated)
+            document = Document.from_dict(migrated, reconcile_unresolved_handoffs=False)
         except (MigrationError, SchemaValidationError, ValueError, TypeError) as exc:
             raise CorruptProject(f"invalid retained witness {path}: {exc}") from exc
         if document.current_revision != int(path.parent.name):
             raise CorruptProject(f"witness revision mismatch: {path}")
-        self._validate_manifest_records(document)
+        try:
+            self._validate_manifest_records(document)
+            document.reconcile_handoffs_on_load()
+        except (ProjectStoreError, SchemaValidationError, ValueError, TypeError) as exc:
+            if isinstance(exc, CorruptProject):
+                raise
+            raise CorruptProject(f"invalid retained witness {path}: {exc}") from exc
         return document
 
     def _retained_revisions(self) -> list[int]:
@@ -451,7 +475,7 @@ class ProjectStore:
             if not path.exists():
                 continue
             try:
-                return self._validate_checkpoint(path)
+                return self._validate_checkpoint(path, reconcile_unresolved_handoffs=True)
             except (CorruptProject, ProjectStoreError, ValueError, TypeError, MigrationError, SchemaValidationError):
                 continue
         raise CorruptProject("no valid checkpoint")

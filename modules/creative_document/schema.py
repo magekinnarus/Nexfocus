@@ -83,7 +83,7 @@ _IDOCUMENT_TYPES: dict[str, dict[str, Any]] = {
     "variantSet": {"variantSetId": _S, "semanticRole": _S, "memberIds": _L, "activeMemberId": _NS,
                    "sharedAnchor": _D, "placementFrame": (_D, type(None)), "lineage": _D},
     "interactionGroup": {"groupId": _S, "memberLayerIds": _STRINGS, "registrationFrame": _D, "relationOrder": _OBJECTS,
-                         "parentCandidateId": _NS, "overlapNotes": _S},
+                         "parentCandidateId": _NS, "overlapNotes": _NS},
     "depthComposite": {"compositeId": _S, "sourceRevision": _I, "layerManifest": _OBJECTS,
                        "contentAssetId": _NS, "contentHash": _NS, "completePlateLayerId": _NS, "metadata": _D},
     "guide": {"guideId": _S, "name": _S, "lifecycle": _S, "createdRevision": _I, "stateRevision": _I,
@@ -309,6 +309,66 @@ class HandoffNote:
                    str(value["visibility"]), str(value["state"]), value["orphanReason"])
         note.validate()
         return note
+
+
+def _snapshot_proves_target_revision(value: Any, target_id: str, revision: int) -> bool:
+    """Return whether retained reversible material names this exact record version."""
+
+    if isinstance(value, Mapping):
+        identity_fields = ("layerId", "objectId", "recordId", "id")
+        if (any(value.get(field) == target_id for field in identity_fields)
+                and type(value.get("revision")) is int and value["revision"] == revision):
+            return True
+        for key, child in value.items():
+            if (key == target_id and isinstance(child, Mapping)
+                    and type(child.get("revision")) is int and child["revision"] == revision):
+                return True
+            if _snapshot_proves_target_revision(child, target_id, revision):
+                return True
+    elif isinstance(value, list):
+        return any(_snapshot_proves_target_revision(child, target_id, revision) for child in value)
+    return False
+
+
+def _handoff_binding_issues(
+    note: HandoffNote,
+    transactions: Sequence[TransactionRecord],
+    targets: Mapping[str, Any],
+    document_revision: int,
+) -> list[str]:
+    """Resolve a handoff against its creation transaction and retained target history."""
+
+    by_id = {record.transaction_id: record for record in transactions}
+    transaction = by_id.get(note.transaction_id)
+    issues: list[str] = []
+    if note.created_at_revision > document_revision:
+        issues.append("note revision exceeds the document revision")
+    if transaction is None or transaction.resulting_revision != note.created_at_revision:
+        issues.append("transaction binding no longer resolves")
+
+    for target_id, target_revision in sorted(note.target_revisions.items()):
+        target = targets.get(target_id)
+        if target is None:
+            issues.append(f"target {target_id} no longer resolves")
+            continue
+        if target_revision > note.created_at_revision or target_revision > target.revision:
+            issues.append(f"target {target_id} revision no longer resolves")
+            continue
+        if target_revision == target.revision:
+            continue
+
+        proven = any(
+            record.resulting_revision <= note.created_at_revision
+            and (
+                (record.resulting_revision == target_revision and target_id in record.affected_ids)
+                or _snapshot_proves_target_revision(record.before, target_id, target_revision)
+                or _snapshot_proves_target_revision(record.after, target_id, target_revision)
+            )
+            for record in transactions
+        )
+        if not proven:
+            issues.append(f"target {target_id} revision {target_revision} cannot be proven from retained history")
+    return issues
 
 
 @dataclass
@@ -654,12 +714,15 @@ class SelectionRecord:
         last_source_revision = (self.invalidation_history[0].get("previousSourceRevision")
                                 if self.invalidation_history and isinstance(self.invalidation_history[0], dict)
                                 else self.source_revision)
+        valid_invalidation_reasons = {
+            "SOURCE_CONTENT_CHANGED", "SOURCE_CLIP_CHANGED", "SOURCE_TRANSFORM_CHANGED", "SOURCE_REMOVED"
+        }
         for entry in self.invalidation_history:
             if (not isinstance(entry, dict) or set(entry) != {"previousSourceRevision", "resultingSourceRevision", "reason"}
                     or type(entry.get("previousSourceRevision")) is not int or type(entry.get("resultingSourceRevision")) is not int
                     or entry["previousSourceRevision"] != last_source_revision
                     or entry["resultingSourceRevision"] <= last_source_revision
-                    or entry["reason"] not in {"SOURCE_CONTENT_CHANGED", "SOURCE_CLIP_CHANGED", "SOURCE_TRANSFORM_CHANGED", "SOURCE_REMOVED"}):
+                    or not isinstance(entry.get("reason"), str) or entry["reason"] not in valid_invalidation_reasons):
                 raise SchemaValidationError("selection invalidation lineage is malformed or non-monotonic")
             last_source_revision = entry["resultingSourceRevision"]
         for entry in self.refinement_history:
@@ -676,7 +739,8 @@ class SelectionRecord:
             if (not isinstance(entry, dict) or set(entry) != fields
                     or any(type(entry.get(field)) is not int for field in ("previousSelectionRevision", "selectionRevision", "previousSourceRevision", "sourceRevision"))
                     or type(entry["geometryOnly"]) is not bool
-                    or entry["selectionRevision"] != entry["previousSelectionRevision"] + 1):
+                    or entry["selectionRevision"] != entry["previousSelectionRevision"] + 1
+                    or not isinstance(entry["reason"], str) or entry["reason"] not in valid_invalidation_reasons):
                 raise SchemaValidationError("selection rebase lineage is malformed")
             _id(entry["previousMaskId"], "previousMaskId")
             _id(entry["maskId"], "maskId")
@@ -686,11 +750,114 @@ class SelectionRecord:
                     or entry["selectionRevision"] != entry["previousSelectionRevision"] + 1):
                 raise SchemaValidationError("selection duplicate-link lineage is malformed")
             _id(entry["layerId"], "layerId")
-        if self.state == SelectionState.CURRENT and self.invalidation_history and last_source_revision != self.source_revision:
-            raise SchemaValidationError("current selection source revision does not match its invalidation lineage")
-        if self.state != SelectionState.CURRENT and self.invalidation_history:
-            if last_source_revision <= self.source_revision or self.invalidation_history[-1]["reason"] != self.stale_reason:
-                raise SchemaValidationError("stale selection state does not match its latest invalidation")
+
+        # Selection revisions are one shared sequence across all revision-
+        # advancing mutation kinds, not three independently plausible lists.
+        revision_events: list[tuple[int, str, dict[str, Any]]] = []
+        revision_events.extend((item["previousSelectionRevision"], "refine", item)
+                               for item in self.refinement_history)
+        revision_events.extend((item["previousSelectionRevision"], "rebase", item)
+                               for item in self.rebase_history)
+        revision_events.extend((item["previousSelectionRevision"], "duplicate", item)
+                               for item in self.duplicate_history)
+        if len(revision_events) != self.selection_revision - 1:
+            raise SchemaValidationError("selection revision is not proven by a complete mutation lineage")
+        events_by_previous: dict[int, tuple[str, dict[str, Any]]] = {}
+        for previous_revision, kind, entry in revision_events:
+            if previous_revision in events_by_previous:
+                raise SchemaValidationError("selection mutation history contains conflicting transitions")
+            events_by_previous[previous_revision] = (kind, entry)
+        if set(events_by_previous) != set(range(1, self.selection_revision)):
+            raise SchemaValidationError("selection mutation history has a gap or starts after revision one")
+
+        ordered_events = [events_by_previous[revision] for revision in range(1, self.selection_revision)]
+        mask_predecessors: list[tuple[int, str]] = []
+        for previous_revision, (kind, entry) in zip(range(1, self.selection_revision), ordered_events):
+            if kind == "refine":
+                mask_predecessors.append((previous_revision, entry["previousMaskId"]))
+            elif kind == "rebase":
+                mask_predecessors.append((previous_revision, entry["previousMaskId"]))
+        current_mask = min(mask_predecessors)[1] if mask_predecessors else self.mask_id
+
+        if self.invalidation_history:
+            initial_source_revision = self.invalidation_history[0]["previousSourceRevision"]
+        elif self.rebase_history:
+            first_rebase = min(self.rebase_history, key=lambda item: item["previousSelectionRevision"])
+            initial_source_revision = first_rebase["previousSourceRevision"]
+        elif self.refinement_history:
+            first_refinement = min(self.refinement_history, key=lambda item: item["previousSelectionRevision"])
+            initial_source_revision = first_refinement["sourceRevision"]
+        else:
+            initial_source_revision = self.source_revision
+        current_source_revision = initial_source_revision
+        invalidation_cursor = 0
+        duplicate_layer_ids: list[str] = []
+
+        for kind, entry in ordered_events:
+            if kind == "refine":
+                if entry["sourceRevision"] != current_source_revision:
+                    raise SchemaValidationError("selection refinement source revision does not match its lineage")
+                if entry["previousMaskId"] != current_mask:
+                    raise SchemaValidationError("selection refinement mask lineage is discontinuous")
+                current_mask = entry["newMaskId"]
+            elif kind == "duplicate":
+                duplicate_layer_ids.append(entry["layerId"])
+            else:
+                if entry["previousSourceRevision"] != current_source_revision:
+                    raise SchemaValidationError("selection rebase source revision is discontinuous")
+                if entry["previousMaskId"] != current_mask:
+                    raise SchemaValidationError("selection rebase mask lineage is discontinuous")
+                if entry["sourceRevision"] <= current_source_revision:
+                    raise SchemaValidationError("selection rebase source revision must advance")
+                matching_invalidation = next((index for index in range(invalidation_cursor, len(self.invalidation_history))
+                                               if self.invalidation_history[index]["resultingSourceRevision"] == entry["sourceRevision"]), None)
+                if matching_invalidation is None:
+                    raise SchemaValidationError("selection rebase is not backed by a source invalidation")
+                invalidation = self.invalidation_history[matching_invalidation]
+                if invalidation["reason"] != entry["reason"]:
+                    raise SchemaValidationError("selection rebase reason does not match its source invalidation")
+                if entry["reason"] == "SOURCE_REMOVED":
+                    raise SchemaValidationError("removed selection source cannot be rebased")
+                if entry["reason"] == "SOURCE_TRANSFORM_CHANGED":
+                    if not entry["geometryOnly"] or entry["maskId"] != current_mask:
+                        raise SchemaValidationError("transform rebase must be geometry-only and preserve its selection mask")
+                else:
+                    if entry["geometryOnly"]:
+                        raise SchemaValidationError("content/clip rebase cannot be geometry-only")
+                    if entry["reason"] in {"SOURCE_CONTENT_CHANGED", "SOURCE_CLIP_CHANGED"} and entry["maskId"] == current_mask:
+                        raise SchemaValidationError("content/clip rebase must bind a distinct derived mask")
+                current_mask = entry["maskId"]
+                current_source_revision = entry["sourceRevision"]
+                invalidation_cursor = matching_invalidation + 1
+
+        if len(set(duplicate_layer_ids)) != len(duplicate_layer_ids):
+            raise SchemaValidationError("selection duplicate history registers a layer more than once")
+        if self.derived_layer_ids != duplicate_layer_ids:
+            raise SchemaValidationError("derived layer links do not match duplicate mutation provenance")
+        if self.selection_revision < 1 or current_mask != self.mask_id:
+            raise SchemaValidationError("selection revision or mask does not match its final mutation transition")
+        if current_source_revision != self.source_revision:
+            raise SchemaValidationError("selection source revision does not match its final rebase transition")
+
+        invalidations_remain = invalidation_cursor < len(self.invalidation_history)
+        if invalidations_remain:
+            if (self.state not in {SelectionState.STALE_SOURCE.value, SelectionState.NEEDS_REBASE.value}
+                    or self.stale_reason != self.invalidation_history[-1]["reason"]
+                    or last_source_revision <= self.source_revision):
+                raise SchemaValidationError("stale selection state does not match its latest unrebased source change")
+            expected_state = (SelectionState.NEEDS_REBASE.value
+                              if self.stale_reason == "SOURCE_TRANSFORM_CHANGED" else SelectionState.STALE_SOURCE.value)
+            if self.state != expected_state:
+                raise SchemaValidationError("selection state does not match its final source invalidation")
+            if self.stale_reason == "SOURCE_CONTENT_CHANGED" and self.current_source_content_digest is None:
+                raise SchemaValidationError("content-stale selection must retain the observed current source digest")
+        else:
+            if self.state != SelectionState.CURRENT or self.stale_reason is not None:
+                raise SchemaValidationError("selection state is stale without an unrebased source invalidation")
+            if self.invalidation_history and last_source_revision != self.source_revision:
+                raise SchemaValidationError("current selection source revision does not match its invalidation lineage")
+            if self.current_source_content_digest is not None:
+                raise SchemaValidationError("current selection cannot retain a stale source digest")
 
     @classmethod
     def create(cls, *args: Any, **kwargs: Any) -> "SelectionRecord":
@@ -812,6 +979,8 @@ class SelectionRecord:
 
         self.validate()
         self._check_selection_revision(expected_selection_revision)
+        if type(geometry_only) is not bool:
+            raise SchemaValidationError("geometry_only must be a boolean")
         if type(target_source_revision) is not int or target_source_revision < 0:
             raise SchemaValidationError("target source revision must be a non-negative integer")
         if self.state == SelectionState.CURRENT.value:
@@ -819,14 +988,18 @@ class SelectionRecord:
         if self.invalidation_history and target_source_revision != self.invalidation_history[-1]["resultingSourceRevision"]:
             raise SchemaValidationError("rebase target must match the latest source invalidation")
         reason = self.stale_reason
-        if geometry_only:
-            if reason != "SOURCE_TRANSFORM_CHANGED" or new_mask_id is not None or source_content_digest is not None:
-                raise SchemaValidationError("geometry-only rebase is valid only for transform staleness and preserves its mask")
+        if reason == "SOURCE_TRANSFORM_CHANGED":
+            if not geometry_only or new_mask_id is not None or source_content_digest is not None:
+                raise SchemaValidationError("transform staleness requires geometry-only re-projection with the existing mask")
         else:
+            if geometry_only:
+                raise SchemaValidationError("geometry-only rebase is valid only for transform staleness")
             if reason == "SOURCE_REMOVED":
                 raise SchemaValidationError("a removed source cannot be silently rebased")
             if reason in {"SOURCE_CONTENT_CHANGED", "SOURCE_CLIP_CHANGED"} and new_mask_id is None:
                 raise SchemaValidationError("content/clip rebase requires a newly derived mask")
+            if reason != "SOURCE_CONTENT_CHANGED" and source_content_digest is not None:
+                raise SchemaValidationError("only a content rebase may update the source content digest")
         next_mask_id = self.mask_id if new_mask_id is None else _id(new_mask_id, "maskId")
         if not geometry_only and next_mask_id == self.mask_id and reason in {"SOURCE_CONTENT_CHANGED", "SOURCE_CLIP_CHANGED"}:
             raise SchemaValidationError("content/clip rebase must preserve the old mask and bind a distinct new mask")
@@ -938,6 +1111,8 @@ class InteractionGroup:
         _coordinate_transform(self.registration_frame)
         if self.parent_candidate_id is not None:
             _id(self.parent_candidate_id, "parentCandidateId")
+        if self.overlap_notes is not None and not isinstance(self.overlap_notes, str):
+            raise SchemaValidationError("interaction group overlap notes must be a string or null")
         if not self.relation_order:
             raise SchemaValidationError("interaction group needs explicit relation order")
 
@@ -1489,8 +1664,10 @@ class Document:
     metadata: dict[str, Any] = field(default_factory=dict)
     revision_digest: str | None = None
 
-    def validate(self) -> "Document":
+    def validate(self, *, allow_unresolved_handoff_bindings: bool = False) -> "Document":
         _id(self.document_id, "documentId")
+        if type(allow_unresolved_handoff_bindings) is not bool:
+            raise SchemaValidationError("allow_unresolved_handoff_bindings must be a boolean")
         if self.format_id != FORMAT_IDENTIFIER:
             raise SchemaValidationError("unknown document format")
         if type(self.schema_version) is not int or self.schema_version != SCHEMA_VERSION:
@@ -1775,6 +1952,31 @@ class Document:
         transaction_ids = [record.transaction_id for record in transactions]
         if self.history_refs and self.history_refs != transaction_ids:
             raise SchemaValidationError("historyRefs do not match retained history")
+        for selection in self.selections.values():
+            content_rebases = sorted(
+                (entry for entry in selection.rebase_history if entry["reason"] == "SOURCE_CONTENT_CHANGED"),
+                key=lambda entry: entry["selectionRevision"],
+            )
+            if not content_rebases:
+                continue
+            latest_rebase = content_rebases[-1]
+            snapshots = [record.after for record in transactions
+                         if record.kind == "selection-rebase"
+                         and selection.selection_id in record.affected_ids
+                         and isinstance(record.after, Mapping)
+                         and record.after.get("selectionId") == selection.selection_id
+                         and record.after.get("selectionRevision") == latest_rebase["selectionRevision"]]
+            if len(snapshots) != 1:
+                raise SchemaValidationError("content rebase lacks one retained selection transaction snapshot")
+            try:
+                rebased_snapshot = SelectionRecord.from_dict(snapshots[0])
+            except (SchemaValidationError, TypeError, ValueError) as exc:
+                raise SchemaValidationError(f"content rebase transaction snapshot is invalid: {exc}") from exc
+            if (latest_rebase not in rebased_snapshot.rebase_history
+                    or rebased_snapshot.source_revision != latest_rebase["sourceRevision"]
+                    or rebased_snapshot.mask_id != latest_rebase["maskId"]
+                    or rebased_snapshot.source_content_digest != selection.source_content_digest):
+                raise SchemaValidationError("final source content digest disagrees with its retained content-rebase snapshot")
         if len(set(self.checkpoint_refs)) != len(self.checkpoint_refs):
             raise SchemaValidationError("duplicate checkpoint reference")
         for reference in self.checkpoint_refs:
@@ -1791,23 +1993,11 @@ class Document:
             if layer.depth_element and layer.complete_plate_id in self.layers and self.layers[layer.complete_plate_id].depth_element:
                 raise SchemaValidationError("depth element cannot claim another depth element as its complete plate")
 
-        transaction_by_id = {record.transaction_id: record for record in transactions}
         target_records = {**self.layers, **self.objects}
         for layer in self.layers.values():
             for note in layer.collaboration.handoff_notes:
-                if note.created_at_revision > self.current_revision:
-                    raise SchemaValidationError("handoff note revision exceeds the document revision")
-                unresolved: list[str] = []
-                transaction = transaction_by_id.get(note.transaction_id)
-                if transaction is None or transaction.resulting_revision != note.created_at_revision:
-                    unresolved.append("transaction binding no longer resolves")
-                for target_id, revision in note.target_revisions.items():
-                    target = target_records.get(target_id)
-                    if target is None:
-                        unresolved.append(f"target {target_id} no longer resolves")
-                    elif revision > self.current_revision or revision != target.revision:
-                        unresolved.append(f"target {target_id} revision no longer resolves")
-                if unresolved and note.state != "orphaned":
+                unresolved = _handoff_binding_issues(note, transactions, target_records, self.current_revision)
+                if unresolved and note.state != "orphaned" and not allow_unresolved_handoff_bindings:
                     raise SchemaValidationError("unresolved handoff binding must be explicitly orphaned: " + "; ".join(unresolved))
                 if note.state == "orphaned" and not note.orphan_reason:
                     raise SchemaValidationError("orphaned handoff note requires an orphan reason")
@@ -1905,9 +2095,16 @@ class Document:
         return self.revision_digest
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "Document":
+    def from_dict(
+        cls,
+        value: Mapping[str, Any],
+        *,
+        reconcile_unresolved_handoffs: bool = True,
+    ) -> "Document":
         # Migration is intentionally opt-in at the project boundary; the
         # registry can turn a prior version into this exact shape before here.
+        if type(reconcile_unresolved_handoffs) is not bool:
+            raise SchemaValidationError("reconcile_unresolved_handoffs must be a boolean")
         allowed = {"formatId", "schemaVersion", "documentId", "width", "height", "colorSpaceIntent", "currentRevision", "rootLayerIds", "layers", "objects", "assets", "masks", "selections", "variants", "interactionGroups", "operations", "depthComposites", "bbOperations", "candidates", "extractions", "guides", "patches", "externalRoundTrips", "privateProxies", "visualProfile", "history", "historyRefs", "checkpointRefs", "metadata", "revisionDigest"}
         _strict(value, allowed, allowed - {"revisionDigest"}, "document")
         def parse_map(raw: Mapping[str, Any], parser: Any) -> dict[str, Any]:
@@ -1918,9 +2115,12 @@ class Document:
             _id(value["documentId"], "documentId"), int(value["width"]), int(value["height"]), str(value["colorSpaceIntent"]), int(value["currentRevision"]), int(value["schemaVersion"]), str(value["formatId"]), _ids(value["rootLayerIds"], "rootLayerIds"),
             parse_map(value["layers"], LayerRecord.from_dict), parse_map(value["objects"], ObjectRecord.from_dict), parse_map(value["assets"], AssetRecord.from_dict), parse_map(value["masks"], MaskRecord.from_dict), parse_map(value["selections"], SelectionRecord.from_dict), parse_map(value["variants"], VariantSet.from_dict), parse_map(value["interactionGroups"], InteractionGroup.from_dict), parse_map(value["operations"], OperationRecord.from_dict), parse_map(value["depthComposites"], DepthComposite.from_dict), parse_map(value["bbOperations"], BBOperation.from_dict), parse_map(value["candidates"], CandidateRecord.from_dict), parse_map(value["extractions"], ExtractionDerivative.from_dict), parse_map(value["guides"], GuideRecord.from_dict), parse_map(value["patches"], CorrectivePatch.from_dict), parse_map(value["externalRoundTrips"], ExternalRoundTrip.from_dict), parse_map(value["privateProxies"], PrivateProxy.from_dict), VisualProfile.from_dict(value["visualProfile"]), list(value["history"]), _ids(value["historyRefs"], "historyRefs"), list(value["checkpointRefs"]), _dict(value["metadata"]), value.get("revisionDigest"),
         )
-        result.validate()
-        if result.revision_digest is not None and result.revision_digest != result.canonical_digest():
+        result.validate(allow_unresolved_handoff_bindings=True)
+        raw_digest = content_digest({key: item for key, item in value.items() if key != "revisionDigest"})
+        if result.revision_digest is not None and result.revision_digest != raw_digest:
             raise SchemaValidationError("revision digest does not match canonical document")
+        if reconcile_unresolved_handoffs:
+            result.reconcile_handoffs_on_load()
         return result
 
     @classmethod
@@ -2140,13 +2340,35 @@ class Document:
         candidate.refresh_digest()
         self.__dict__.update(candidate.__dict__)
 
+    def reconcile_handoffs_on_load(self) -> list[str]:
+        """Preserve unresolved loaded notes as explicit, deterministic orphans."""
+
+        self.validate(allow_unresolved_handoff_bindings=True)
+        transactions = [TransactionRecord.from_dict(value) for value in self.history]
+        targets = {**self.layers, **self.objects}
+        changed: list[str] = []
+        for layer in self.layers.values():
+            for note in layer.collaboration.handoff_notes:
+                if note.state == "orphaned":
+                    continue
+                reasons = _handoff_binding_issues(note, transactions, targets, self.current_revision)
+                if reasons:
+                    note.state = "orphaned"
+                    note.orphan_reason = "load reconciliation: " + "; ".join(reasons)
+                    changed.append(note.note_id)
+        if changed:
+            self.revision_digest = None
+            self.refresh_digest()
+        else:
+            self.validate()
+        return changed
+
     def reconcile_handoffs(self, *, expected_document_revision: int) -> list[str]:
         """Explicitly orphan notes whose bound transaction/targets no longer resolve."""
 
         if type(expected_document_revision) is not int or expected_document_revision != self.current_revision:
             raise RevisionConflict(expected_document_revision, self.current_revision)
-        transactions = {record.transaction_id: record for record in
-                        (TransactionRecord.from_dict(value) for value in self.history)}
+        transactions = [TransactionRecord.from_dict(value) for value in self.history]
         targets = {**self.layers, **self.objects}
         candidate = deepcopy(self)
         changed: list[str] = []
@@ -2154,16 +2376,7 @@ class Document:
         after: dict[str, list[dict[str, Any]]] = {}
         for layer in candidate.layers.values():
             for note in layer.collaboration.handoff_notes:
-                transaction = transactions.get(note.transaction_id)
-                reasons: list[str] = []
-                if transaction is None or transaction.resulting_revision != note.created_at_revision:
-                    reasons.append("bound transaction is no longer retained")
-                for target_id, revision in note.target_revisions.items():
-                    target = targets.get(target_id)
-                    if target is None:
-                        reasons.append(f"target {target_id} no longer exists")
-                    elif target.revision != revision:
-                        reasons.append(f"target {target_id} no longer has revision {revision}")
+                reasons = _handoff_binding_issues(note, transactions, targets, candidate.current_revision)
                 if reasons and note.state != "orphaned":
                     before.setdefault(layer.layer_id, []).append(note.to_dict())
                     note.state = "orphaned"

@@ -106,13 +106,54 @@ def _v1_to_v2(source: dict[str, Any]) -> dict[str, Any]:
     for selection in selections.values():
         if not isinstance(selection, dict):
             raise MigrationError("schema v1 selection record must be an object")
+        if "duplicateHistory" not in selection:
+            selection["duplicateHistory"] = _derive_v1_duplicate_history(selection)
         selection.setdefault("invalidationHistory", [])
         selection.setdefault("rebaseHistory", [])
-        selection.setdefault("duplicateHistory", [])
     source.pop("revisionDigest", None)
     source["schemaVersion"] = 2
     source["revisionDigest"] = content_digest(source)
     return source
+
+
+def _derive_v1_duplicate_history(selection: dict[str, Any]) -> list[dict[str, Any]]:
+    """Reconstruct only duplicate transitions uniquely determined by v1 data."""
+
+    selection_revision = selection.get("selectionRevision")
+    derived_layer_ids = selection.get("derivedLayerIds", [])
+    if type(selection_revision) is not int or selection_revision < 1:
+        raise MigrationError("schema v1 selection revision is invalid")
+    if (not isinstance(derived_layer_ids, list)
+            or not all(isinstance(layer_id, str) for layer_id in derived_layer_ids)
+            or len(set(derived_layer_ids)) != len(derived_layer_ids)):
+        raise MigrationError("schema v1 derived layer links are malformed or duplicated")
+
+    occupied: set[int] = set()
+    for history_name in ("refinementHistory", "rebaseHistory"):
+        history = selection.get(history_name, [])
+        if not isinstance(history, list):
+            raise MigrationError(f"schema v1 {history_name} must be an array")
+        for entry in history:
+            if not isinstance(entry, dict):
+                raise MigrationError(f"schema v1 {history_name} contains a malformed transition")
+            previous = entry.get("previousSelectionRevision")
+            next_revision = entry.get("selectionRevision")
+            if (type(previous) is not int or type(next_revision) is not int
+                    or previous < 1 or next_revision != previous + 1
+                    or next_revision > selection_revision or previous in occupied):
+                raise MigrationError(f"schema v1 {history_name} does not identify an unambiguous revision transition")
+            occupied.add(previous)
+
+    transition_slots = list(range(1, selection_revision))
+    missing_slots = [revision for revision in transition_slots if revision not in occupied]
+    if len(missing_slots) != len(derived_layer_ids):
+        raise MigrationError(
+            "schema v1 selection history cannot unambiguously reconcile revision-advancing derived links"
+        )
+    return [
+        {"previousSelectionRevision": previous, "selectionRevision": previous + 1, "layerId": layer_id}
+        for previous, layer_id in zip(missing_slots, derived_layer_ids)
+    ]
 
 
 DEFAULT_MIGRATIONS = MigrationRegistry()
