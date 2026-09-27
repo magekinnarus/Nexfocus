@@ -12,6 +12,7 @@ from .history import (
     RevisionConflict,
     RevisionLedger,
     RevisionManager,
+    SelectionRevisionConflict,
     TransactionRecord,
     grouped_transaction,
 )
@@ -48,6 +49,7 @@ from .schema import (
     SchemaValidationError,
     Selection,
     SelectionRecord,
+    SCHEMA_VERSION,
     SelectionState,
     VariantSet,
     VisualProfile,
@@ -73,7 +75,7 @@ __all__ = [
     "grouped_transaction", "HandoffNote", "HistoryManager", "HistoryValidationError", "InjectedInterruption", "InteractionGroup", "Layer", "LayerRecord",
     "Mask", "MaskRecord", "MigrationError", "MigrationRegistry", "MissingAsset", "Object", "ObjectRecord", "OperationRecord", "PrivateProxy", "PrivateProxyRecord",
     "ProjectStore", "ProjectStoreError", "RevisionConflict", "RevisionLedger", "RevisionManager", "SaveResult", "SchemaValidationError", "Selection", "SelectionRecord",
-    "SelectionState", "sha256_bytes", "sha256_file", "Space", "TransactionRecord", "Transform", "TransformError", "TransformRecord", "TreeValidationError",
+    "SelectionRevisionConflict", "SelectionState", "SCHEMA_VERSION", "sha256_bytes", "sha256_file", "Space", "TransactionRecord", "Transform", "TransformError", "TransformRecord", "TreeValidationError",
     "UnsupportedSchemaVersion", "VariantSet", "VisualProfile", "canonical_json", "content_digest", "make_id", "map_pixel_center", "migrate_manifest", "new_id",
     "ordered_layer_ids", "pixel_center", "unmap_pixel_center", "validate_id", "validate_layer_tree", "validate_tree",
 ]

@@ -56,6 +56,9 @@ class AssetStore:
     ) -> AssetRecord:
         if not isinstance(data, bytes):
             raise TypeError("asset bytes must be bytes")
+        extension = extension.lstrip(".").lower() or "bin"
+        if not extension.isascii() or not extension.isalnum():
+            raise AssetStoreError("asset extension must be alphanumeric")
         digest = sha256_bytes(data)
         path = self._path(digest, extension)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -63,9 +66,20 @@ class AssetStore:
             if sha256_file(str(path)) != digest:
                 raise AssetHashMismatch(f"immutable asset path is corrupt: {path}")
         else:
-            temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-            temporary.write_bytes(data)
-            os.replace(temporary, path)
+            temporary = path.with_name(f".{path.name}.{os.getpid()}.{make_id('tmp')}.tmp")
+            with temporary.open("xb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                if sha256_file(str(path)) != digest:
+                    raise AssetHashMismatch(f"immutable asset raced with different bytes: {path}")
+            finally:
+                temporary.unlink(missing_ok=True)
+            if sha256_file(str(path)) != digest or path.stat().st_size != len(data):
+                raise AssetHashMismatch(f"published immutable asset failed verification: {path}")
         return AssetRecord(
             asset_id=asset_id or make_id("asset"),
             content_hash=digest,
@@ -90,11 +104,20 @@ class AssetStore:
             path = Path(asset.external_uri)
             if not path.exists():
                 return False
-            return sha256_file(str(path)) == asset.expected_hash
+            return (sha256_file(str(path)) == asset.expected_hash
+                    and (asset.byte_length is None or path.stat().st_size == asset.byte_length))
         relative = PurePosixPath(asset.storage_uri.replace("\\", "/"))
         if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
             raise AssetStoreError(f"embedded asset URI is not project-relative: {asset.storage_uri}")
+        expected = PurePosixPath(safe_relative_asset_path(asset.content_hash, asset.extension))
+        if relative != expected:
+            raise AssetStoreError(f"embedded asset URI is not canonical: {asset.storage_uri}")
         path = self.project_root / Path(*relative.parts)
+        root = self.project_root.resolve()
+        if os.path.commonpath([str(root), str(path.resolve())]) != str(root):
+            raise AssetStoreError(f"embedded asset resolves outside the project: {asset.storage_uri}")
+        if any(part.is_symlink() for part in [self.project_root / Path(*relative.parts[:index]) for index in range(1, len(relative.parts) + 1)]):
+            raise AssetStoreError(f"embedded asset path contains a link-like component: {asset.storage_uri}")
         if not path.exists():
             raise MissingAsset(asset.storage_uri)
         actual = sha256_file(str(path))
@@ -164,7 +187,10 @@ class AssetStore:
     ) -> AssetRecord:
         validate_sha256(expected_hash, field="expectedHash")
         path = Path(uri)
-        available = path.exists() and sha256_file(str(path)) == expected_hash
+        exists = path.exists()
+        if exists and sha256_file(str(path)) != expected_hash:
+            raise AssetHashMismatch(f"external bytes do not match expected identity for {uri}")
+        available = exists
         return AssetRecord(
             asset_id=asset_id or make_id("asset"),
             content_hash=expected_hash,

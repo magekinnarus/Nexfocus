@@ -65,7 +65,10 @@ class BBox:
     def from_dict(cls, value: Mapping[str, object]) -> "BBox":
         if set(value) != {"y1", "y2", "x1", "x2"}:
             raise TransformError("bbox must contain exactly y1, y2, x1, x2")
-        return cls(int(value["y1"]), int(value["y2"]), int(value["x1"]), int(value["x2"])).validate()
+        coordinates = (value["y1"], value["y2"], value["x1"], value["x2"])
+        if any(type(coordinate) is not int for coordinate in coordinates):
+            raise TransformError("bbox coordinates must be JSON integers")
+        return cls(*coordinates).validate()
 
 
 @dataclass(frozen=True)
@@ -156,6 +159,8 @@ class AffineTransform:
 
     @classmethod
     def from_dict(cls, value: Sequence[float]) -> "AffineTransform":
+        if not isinstance(value, (list, tuple)) or any(type(v) not in (int, float) for v in value):
+            raise TransformError("affine matrix must be an array of JSON numbers")
         return cls.from_values(value)
 
 
@@ -172,11 +177,14 @@ class CoordinateTransform:
     operation_revision: int | str | None = None
 
     def __post_init__(self) -> None:
-        if not self.from_space or not self.to_space:
-            raise TransformError("coordinate spaces are required")
+        allowed_spaces = {space.value for space in Space}
+        if self.from_space not in allowed_spaces or self.to_space not in allowed_spaces:
+            raise TransformError("coordinate spaces must use an accepted named space")
         for dimensions in (self.source_dimensions, self.target_dimensions):
-            if len(dimensions) != 2 or any(int(v) <= 0 for v in dimensions):
+            if len(dimensions) != 2 or any(type(v) is not int or v <= 0 for v in dimensions):
                 raise TransformError("transform dimensions must be positive width/height")
+        if self.operation_revision is not None and (type(self.operation_revision) is not int or self.operation_revision < 0):
+            raise TransformError("transform operation revision must be a non-negative integer")
         if self.forward.compose(self.inverse).matrix != AffineTransform.identity().matrix:
             # Floating-point transforms are allowed a small numerical error.
             for actual, expected in zip(self.forward.compose(self.inverse).matrix, AffineTransform.identity().matrix):
@@ -217,14 +225,24 @@ class CoordinateTransform:
         required = {"fromSpace", "toSpace", "sourceDimensions", "targetDimensions", "forward", "inverse", "operationRevision"}
         if set(value) != required:
             raise TransformError("coordinate transform has unknown or missing fields")
+        for field in ("fromSpace", "toSpace"):
+            if not isinstance(value[field], str):
+                raise TransformError("coordinate transform spaces must be strings")
+        for field in ("sourceDimensions", "targetDimensions"):
+            dimensions = value[field]
+            if not isinstance(dimensions, (list, tuple)) or any(type(v) is not int for v in dimensions):
+                raise TransformError("coordinate transform dimensions must be integer arrays")
+        operation_revision = value["operationRevision"]
+        if operation_revision is not None and type(operation_revision) is not int:
+            raise TransformError("coordinate transform operation revision must be an integer or null")
         return cls(
-            str(value["fromSpace"]),
-            str(value["toSpace"]),
-            tuple(int(v) for v in value["sourceDimensions"]),
-            tuple(int(v) for v in value["targetDimensions"]),
+            value["fromSpace"],
+            value["toSpace"],
+            tuple(value["sourceDimensions"]),
+            tuple(value["targetDimensions"]),
             AffineTransform.from_dict(value["forward"]),
             AffineTransform.from_dict(value["inverse"]),
-            value["operationRevision"],
+            operation_revision,
         )
 
 

@@ -6,6 +6,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
+from .ids import content_digest
 from .schema import FORMAT_IDENTIFIER, SCHEMA_VERSION
 
 
@@ -40,9 +41,13 @@ class MigrationRegistry:
         self._steps[from_version] = MigrationStep(from_version, to_version, migrate)
 
     def migrate(self, source: Mapping[str, Any], target_version: int | None = None) -> dict[str, Any]:
-        target = self.current_version if target_version is None else int(target_version)
+        if target_version is not None and type(target_version) is not int:
+            raise UnsupportedSchemaVersion("target schema version must be an integer")
+        target = self.current_version if target_version is None else target_version
         result = deepcopy(dict(source))
-        version = int(result.get("schemaVersion", 0))
+        version = result.get("schemaVersion", 0)
+        if type(version) is not int or version < 0:
+            raise UnsupportedSchemaVersion("source schema version must be a non-negative integer")
         if version > target:
             raise UnsupportedSchemaVersion(f"schema {version} is newer than supported {target}")
         while version < target:
@@ -92,8 +97,27 @@ def _v0_to_v1(source: dict[str, Any]) -> dict[str, Any]:
     return source
 
 
+def _v1_to_v2(source: dict[str, Any]) -> dict[str, Any]:
+    """Add explicit selection invalidation/rebase/duplicate provenance."""
+
+    selections = source.get("selections")
+    if not isinstance(selections, dict):
+        raise MigrationError("schema v1 selections must be an object")
+    for selection in selections.values():
+        if not isinstance(selection, dict):
+            raise MigrationError("schema v1 selection record must be an object")
+        selection.setdefault("invalidationHistory", [])
+        selection.setdefault("rebaseHistory", [])
+        selection.setdefault("duplicateHistory", [])
+    source.pop("revisionDigest", None)
+    source["schemaVersion"] = 2
+    source["revisionDigest"] = content_digest(source)
+    return source
+
+
 DEFAULT_MIGRATIONS = MigrationRegistry()
 DEFAULT_MIGRATIONS.register(0, 1, _v0_to_v1)
+DEFAULT_MIGRATIONS.register(1, 2, _v1_to_v2)
 
 
 def migrate_manifest(source: Mapping[str, Any], target_version: int = SCHEMA_VERSION) -> dict[str, Any]:
