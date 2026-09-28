@@ -1,5 +1,7 @@
 # based on https://github.com/AUTOMATIC1111/stable-diffusion-webui/blob/v1.6.0/modules/ui_gradio_extensions.py
 
+import base64
+import hashlib
 import os
 import gradio as gr
 
@@ -44,7 +46,7 @@ def get_module_assets(folder, extension):
 
 
 def javascript_html():
-    head = ''
+    head = creative_renderer_html()
     
     # Load all modules from javascript/modules/ in alphabetical order
     js_files = get_module_assets('javascript/modules', '.js')
@@ -55,6 +57,26 @@ def javascript_html():
             head += f'<script type="text/javascript">{content}</script>\n'
     head += '<style>footer { display: none !important; }</style>\n'
     return head
+
+
+def creative_renderer_html():
+    """Load the exact local Konva artifact before all editor modules."""
+
+    renderer_path = os.path.join(script_path, 'javascript', 'vendor', 'konva', '10.6.0', 'konva.min.js')
+    expected_hex = 'C03625663B3F4B79C64AECD5671F1A83A37AA2D1E276005B186E42E7D8DBA5A1'
+    expected = bytes.fromhex(expected_hex)
+    try:
+        with open(renderer_path, 'rb') as handle:
+            actual = handle.read()
+    except OSError:
+        actual = b''
+    if not actual or hashlib.sha256(actual).digest() != expected:
+        return '<script>window.__nexCreativeEditorRendererError = "Pinned Konva 10.6.0 asset is missing or failed its integrity check.";</script>\n'
+    integrity = base64.b64encode(expected).decode('ascii')
+    return (
+        '<script src="/creative_document_api/vendor/konva-10.6.0.js" '
+        f'integrity="sha256-{integrity}" crossorigin="anonymous"></script>\n'
+    )
 
 
 def css_html():

@@ -1,0 +1,21 @@
+{
+  "package": "konva",
+  "version": "10.6.0",
+  "license": "MIT",
+  "sourceUrl": "https://cdn.jsdelivr.net/npm/konva@10.6.0/",
+  "upstreamTag": "10.6.0",
+  "upstreamCommit": "5f2dcf7e4980a67404848315864e7231cdf1f986",
+  "registryIntegrity": "sha512-6dyI91lZTx2mDu9DRo5zrT2Pg+Q3TFeyLfGQSAPJMhfvKjelbjPnTJimYQISam/EW+g0+pjLk/yztJKpSuxFPQ==",
+  "accessDate": "2026-09-27",
+  "files": {
+    "konva.min.js": {
+      "bytes": 187271,
+      "sha256": "C03625663B3F4B79C64AECD5671F1A83A37AA2D1E276005B186E42E7D8DBA5A1"
+    },
+    "LICENSE": {
+      "bytes": 1172,
+      "sha256": "7190132C82DF30243DC2BA512C9509EA3B629329B4266E9F2C3B5DBD04029613"
+    }
+  },
+  "runtimeDependencies": []
+}

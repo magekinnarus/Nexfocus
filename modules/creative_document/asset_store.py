@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import os
 import re
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Iterator, Sequence
 
 from .ids import make_id, safe_relative_asset_path, sha256_bytes, sha256_file, validate_sha256
 from .schema import AssetRecord
@@ -32,9 +34,145 @@ class AssetStore:
     """
 
     def __init__(self, project_root: str | os.PathLike[str]) -> None:
-        self.project_root = Path(project_root)
+        self.project_root = Path(project_root).resolve()
         self.asset_root = self.project_root / "assets" / "sha256"
         self.asset_root.mkdir(parents=True, exist_ok=True)
+        self._publication_lock = threading.RLock()
+
+    @contextmanager
+    def _exclusive_publication(self) -> Iterator[None]:
+        """Serialize a batch across threads and processes sharing a project."""
+
+        lock_path = self.project_root / "assets" / ".publication.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._publication_lock, lock_path.open("a+b") as lock_file:
+            if lock_file.tell() == 0:
+                lock_file.write(b"0")
+                lock_file.flush()
+            lock_file.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+                try:
+                    yield
+                finally:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    def _assert_asset_path(self, path: Path) -> None:
+        root = self.project_root.resolve()
+        try:
+            relative = path.relative_to(root)
+        except ValueError as exc:
+            raise AssetStoreError("asset path escapes the project root") from exc
+        current = root
+        for component in relative.parts:
+            current = current / component
+            if current.is_symlink():
+                raise AssetStoreError("asset path contains a link-like component")
+        resolved = path.resolve()
+        if os.path.commonpath([str(root), str(resolved)]) != str(root):
+            raise AssetStoreError("asset path escapes the project root")
+
+    def put_batch(self, entries: Sequence[tuple[bytes, AssetRecord]]) -> list[AssetRecord]:
+        """Stage and verify a complete asset batch before publishing any blob.
+
+        If publication fails, remove only target links this call created and
+        only while their inode and content still match the staged file. Existing
+        content-addressed blobs are never removed.
+        """
+
+        if not entries:
+            return []
+        staged: dict[Path, Path | None] = {}
+        records: list[AssetRecord] = []
+        published: list[tuple[Path, Path, str, int, int, int]] = []
+        temporary_paths: list[Path] = []
+        try:
+            with self._exclusive_publication():
+                # Validate and stage every new byte sequence before publishing.
+                for data, record in entries:
+                    if not isinstance(data, bytes):
+                        raise AssetStoreError("asset bytes must be bytes")
+                    record.validate()
+                    if sha256_bytes(data) != record.content_hash:
+                        raise AssetHashMismatch("pending asset bytes do not match their declared identity")
+                    if record.byte_length is not None and len(data) != record.byte_length:
+                        raise AssetHashMismatch("pending asset byte length does not match its declared identity")
+                    target = self._path(record.content_hash, record.extension)
+                    self._assert_asset_path(target)
+                    canonical = target.relative_to(self.project_root).as_posix()
+                    if record.storage_uri.replace("\\", "/") != canonical:
+                        raise AssetStoreError("pending asset URI is not canonical")
+                    if target not in staged:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        self._assert_asset_path(target)
+                        if target.exists():
+                            if target.is_symlink() or sha256_file(str(target)) != record.content_hash:
+                                raise AssetHashMismatch("existing immutable asset is corrupt")
+                            staged[target] = None
+                        else:
+                            temporary = target.with_name(f".{target.name}.{os.getpid()}.{make_id('tmp')}.stage")
+                            temporary_paths.append(temporary)
+                            with temporary.open("xb") as handle:
+                                handle.write(data)
+                                handle.flush()
+                                os.fsync(handle.fileno())
+                            if sha256_file(str(temporary)) != record.content_hash or temporary.stat().st_size != len(data):
+                                raise AssetHashMismatch("staged immutable asset failed verification")
+                            staged[target] = temporary
+                    records.append(record)
+
+                for target, temporary in staged.items():
+                    if temporary is None:
+                        continue
+                    temporary_stat = temporary.stat()
+                    staged_identity = (sha256_file(str(temporary)), temporary_stat.st_size,
+                                       temporary_stat.st_dev, temporary_stat.st_ino)
+                    try:
+                        os.link(temporary, target)
+                    except FileExistsError:
+                        if target.is_symlink() or sha256_file(str(target)) != sha256_file(str(temporary)):
+                            raise AssetHashMismatch("immutable asset raced with different bytes")
+                    else:
+                        # Record rollback authority immediately after the
+                        # atomic link succeeds, before any verification can
+                        # raise and leave an untracked new target behind.
+                        published.append((target, temporary, *staged_identity))
+                    self._assert_asset_path(target)
+                    if not target.is_file() or sha256_file(str(target)) != target.name.split(".", 1)[0]:
+                        raise AssetHashMismatch("published immutable asset failed verification")
+                    matching = next(record for record in records if self._path(record.content_hash, record.extension) == target)
+                    if matching.byte_length is not None and target.stat().st_size != matching.byte_length:
+                        raise AssetHashMismatch("published immutable asset byte length changed")
+                return records
+        except Exception as exc:
+            for target, temporary, digest, size, device, inode in reversed(published):
+                try:
+                    target_stat = target.stat()
+                    if (not target.is_symlink() and target_stat.st_dev == device and target_stat.st_ino == inode
+                            and target_stat.st_size == size and sha256_file(str(target)) == digest):
+                        target.unlink()
+                except OSError:
+                    pass
+            if isinstance(exc, AssetStoreError):
+                raise
+            raise AssetStoreError("asset batch publication failed") from exc
+        finally:
+            for temporary in temporary_paths:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def _path(self, digest: str, extension: str = "bin") -> Path:
         validate_sha256(digest)
@@ -54,33 +192,12 @@ class AssetStore:
         color_space: str | None = None,
         provenance: dict[str, Any] | None = None,
     ) -> AssetRecord:
-        if not isinstance(data, bytes):
-            raise TypeError("asset bytes must be bytes")
         extension = extension.lstrip(".").lower() or "bin"
         if not extension.isascii() or not extension.isalnum():
             raise AssetStoreError("asset extension must be alphanumeric")
         digest = sha256_bytes(data)
         path = self._path(digest, extension)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists():
-            if sha256_file(str(path)) != digest:
-                raise AssetHashMismatch(f"immutable asset path is corrupt: {path}")
-        else:
-            temporary = path.with_name(f".{path.name}.{os.getpid()}.{make_id('tmp')}.tmp")
-            with temporary.open("xb") as handle:
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-            try:
-                os.link(temporary, path)
-            except FileExistsError:
-                if sha256_file(str(path)) != digest:
-                    raise AssetHashMismatch(f"immutable asset raced with different bytes: {path}")
-            finally:
-                temporary.unlink(missing_ok=True)
-            if sha256_file(str(path)) != digest or path.stat().st_size != len(data):
-                raise AssetHashMismatch(f"published immutable asset failed verification: {path}")
-        return AssetRecord(
+        record = AssetRecord(
             asset_id=asset_id or make_id("asset"),
             content_hash=digest,
             media_type=media_type,
@@ -93,6 +210,7 @@ class AssetStore:
             color_space=color_space,
             provenance=dict(provenance or {}),
         )
+        return self.put_batch([(data, record)])[0]
 
     def put_file(self, path: str | os.PathLike[str], **kwargs: Any) -> AssetRecord:
         source = Path(path)

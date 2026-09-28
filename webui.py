@@ -22,6 +22,7 @@ import modules.ui_components.control_panel as control_panel
 import modules.ui_components.inpaint_panel as inpaint_panel
 import modules.ui_components.outpaint_panel as outpaint_panel
 import modules.ui_components.staging_panel as staging_panel
+import modules.ui_components.creative_document_panel as creative_document_panel
 from modules.flux_fill_surface import (
     FLUX_FILL_BLEND_MORPHOLOGICAL,
     OBJR_ENGINE_DROPDOWN_CHOICES,
@@ -40,6 +41,7 @@ from modules.util import is_json
 import modules.ui_logic as ui_logic
 from modules.staging_api import staging_router
 from modules.runtime_surface_api import runtime_surface_router
+from modules.creative_document_editor_api import creative_document_router, creative_document_runtime
 
 
 
@@ -83,6 +85,7 @@ with shared.gradio_root:
                         """
                     )
                     model_browser_apply_data = gr.Textbox(value='', visible=True, elem_id='model_browser_apply_data_bridge', elem_classes=['inpaint-hidden-mask-field'], show_label=False, container=False)
+                creative_document_panel.create_creative_document_panel(shared.gradio_root)
             gr.HTML('<div id="nex-runtime-status-panel" class="nex-runtime-status-panel"></div>')
             with gr.Row():
                 with gr.Column(scale=17):
@@ -751,11 +754,13 @@ def patched_create_app(*args, **kwargs):
     from modules.monitor_api import monitor_router
     from modules.image_api import image_router
     from modules.model_api import model_router
+    from modules.creative_document_editor_api import creative_document_router
     app.include_router(staging_router)
     app.include_router(runtime_surface_router)
     app.include_router(monitor_router)
     app.include_router(image_router)
     app.include_router(model_router)
+    app.include_router(creative_document_router)
     return app
 
 gradio.routes.App.create_app = patched_create_app
@@ -772,5 +777,8 @@ shared.gradio_root.launch(
         os.path.abspath('css'),
         os.path.abspath('prompt_presets/samples')
     ],
-    blocked_paths=[constants.AUTH_FILENAME]
+    blocked_paths=[
+        constants.AUTH_FILENAME,
+        str(creative_document_runtime.projects_root()),
+    ]
 )
