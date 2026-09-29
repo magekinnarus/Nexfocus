@@ -755,12 +755,14 @@ def patched_create_app(*args, **kwargs):
     from modules.image_api import image_router
     from modules.model_api import model_router
     from modules.creative_document_editor_api import creative_document_router
+    from modules.creative_document_command_api import creative_document_command_router
     app.include_router(staging_router)
     app.include_router(runtime_surface_router)
     app.include_router(monitor_router)
     app.include_router(image_router)
     app.include_router(model_router)
     app.include_router(creative_document_router)
+    app.include_router(creative_document_command_router)
     return app
 
 gradio.routes.App.create_app = patched_create_app

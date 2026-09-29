@@ -20,7 +20,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from PIL import Image
 
 import modules.config
@@ -45,6 +45,15 @@ from modules.creative_document.editor_actions import (
 from modules.creative_document.editor_render import RenderError, render_document, render_document_png
 from modules.creative_document.editor_view import document_to_view
 from modules.creative_document.ids import sha256_bytes
+from modules.creative_document.command_service import (
+    ActorContext,
+    CommandServiceError,
+    MAX_ENVELOPE_BYTES,
+    command_service,
+    human_envelope_from_w03,
+    refusal_receipt,
+    strict_json_loads,
+)
 
 
 creative_document_router = APIRouter()
@@ -312,13 +321,14 @@ class CreativeDocumentRuntime:
                     self._view_cache.pop(key, None)
             return handle
 
-    def view(self, handle: ProjectHandle) -> dict[str, Any]:
+    def view(self, handle: ProjectHandle, *, cache: bool = True) -> dict[str, Any]:
         document = handle.document
         key = (document.document_id, document.current_revision)
-        with self._cache_lock:
-            view = self._view_cache.get(key)
-            if view is not None:
-                return dict(view)
+        if cache:
+            with self._cache_lock:
+                view = self._view_cache.get(key)
+                if view is not None:
+                    return dict(view)
         view = document_to_view(document)
         for asset in document.assets.values():
             if asset.external_uri is not None and asset.external_status != "embedded":
@@ -349,12 +359,13 @@ class CreativeDocumentRuntime:
         view["committedRevision"] = handle.committed_revision
         view["dirty"] = document.current_revision != handle.committed_revision
         view["recoveryNotice"] = handle.recovery_notice
-        with self._cache_lock:
-            self._view_cache[key] = view
-            # Keep only the latest eight immutable snapshots per document.
-            revisions = sorted(revision for doc_id, revision in self._view_cache if doc_id == document.document_id)
-            for revision in revisions[:-8]:
-                self._view_cache.pop((document.document_id, revision), None)
+        if cache:
+            with self._cache_lock:
+                self._view_cache[key] = view
+                # Keep only the latest eight immutable snapshots per document.
+                revisions = sorted(revision for doc_id, revision in self._view_cache if doc_id == document.document_id)
+                for revision in revisions[:-8]:
+                    self._view_cache.pop((document.document_id, revision), None)
         return dict(view)
 
     def asset_store(self, handle: ProjectHandle) -> AssetStore:
@@ -403,6 +414,63 @@ def _action_error(exc: EditorActionError) -> HTTPException:
     })
 
 
+def _human_actor(grant: SessionGrant, request: Request) -> ActorContext:
+    principal = _principal_id(grant, request.headers.get("x-editor-owner-key"))
+    return ActorContext("human", f"human-{principal[:24]}", frozenset({"inspect", "propose", "mutate"}))
+
+
+async def _bounded_human_json(request: Request) -> Any:
+    """Read a legacy human JSON body with the same raw byte cap as Agent JSON."""
+
+    length = request.headers.get("content-length")
+    if length is not None:
+        try:
+            content_length = int(length)
+        except ValueError as exc:
+            raise CommandServiceError("INVALID_CONTENT_LENGTH") from exc
+        if content_length < 0 or content_length > MAX_ENVELOPE_BYTES:
+            raise CommandServiceError("REQUEST_TOO_LARGE")
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_ENVELOPE_BYTES:
+            raise CommandServiceError("REQUEST_TOO_LARGE")
+        chunks.append(chunk)
+    return strict_json_loads(b"".join(chunks), max_bytes=MAX_ENVELOPE_BYTES)
+
+
+def _invalidate_document_views(document_id: str) -> None:
+    with creative_document_runtime._cache_lock:
+        for key in [key for key in creative_document_runtime._view_cache if key[0] == document_id]:
+            creative_document_runtime._view_cache.pop(key, None)
+
+
+def _human_refusal(value: dict[str, Any]) -> JSONResponse:
+    receipt = value
+    if not {"schemaVersion", "status", "commandId", "documentId", "actorKind", "actorId", "intent",
+            "previousRevision", "newRevision", "currentRevision", "observedRevision", "transactionId",
+            "targetIds", "affectedTargetIds", "createdIds", "invalidated", "conflicts", "writes",
+            "result", "error", "hint"}.issubset(receipt):
+        code = str(value.get("error", {}).get("code", value.get("code", "INVALID_ENVELOPE")))
+        receipt = refusal_receipt(code=code, actor_kind="human", actor_id=value.get("actorId"),
+                                  current_revision=value.get("currentRevision"),
+                                  document_id=value.get("documentId"))
+        if isinstance(value.get("commandId"), str):
+            receipt["commandId"] = value["commandId"]
+    error = receipt.get("error") if isinstance(receipt.get("error"), dict) else {}
+    code = error.get("code", "COMMAND_REFUSED")
+    message = error.get("message", "The command was refused.")
+    conflict = receipt.get("status") == "conflict"
+    body = dict(receipt)
+    # W03 browser compatibility aliases; the complete canonical receipt remains
+    # available at the top level and actor identity still comes from the session.
+    body.update({"code": code, "message": message,
+                 "refreshHint": "reload-document-view" if conflict else None})
+    return JSONResponse(body, status_code=409 if conflict else 422,
+                        headers={"Cache-Control": "no-store"})
+
+
 @creative_document_router.get("/creative_document_api/vendor/konva-10.6.0.js")
 async def get_pinned_konva(request: Request) -> Response:
     # The public vendor artifact contains no user/project data. Its route is
@@ -449,41 +517,49 @@ async def open_document(document_id: str, request: Request, payload: dict[str, A
 
 @creative_document_router.get("/creative_document_api/documents/{document_id}/view")
 async def get_document_view(document_id: str, request: Request) -> dict[str, Any]:
-    handle = _handle(document_id, request)
-    with handle.lock:
-        return creative_document_runtime.view(handle)
+    grant = _authorized(request)
+    handle = _handle(document_id, request, grant)
+    envelope = {
+        "schemaVersion": 1,
+        "commandId": make_id("cmd"),
+        "documentId": document_id,
+        "intent": "inspect",
+        "expectedRevision": None,
+        "commandType": "inspect_document",
+        "targetIds": [],
+        "coordinateSpace": "document",
+        "payload": {},
+        "transaction": None,
+    }
+    receipt = command_service.execute(handle, envelope, _human_actor(grant, request),
+                                      read_projector=lambda current: creative_document_runtime.view(current, cache=False))
+    if receipt.get("status") != "ok":
+        return _human_refusal(receipt)
+    # Keep the established W03 view fields at the top level while carrying the
+    # complete semantic receipt alongside them.
+    return {**receipt["result"]["view"], **receipt}
 
 
 @creative_document_router.post("/creative_document_api/documents/{document_id}/actions")
-async def apply_document_action(document_id: str, request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+async def apply_document_action(document_id: str, request: Request) -> dict[str, Any]:
     grant = _authorized(request)
     handle = _handle(document_id, request, grant)
-    with handle.lock:
-        payload = dict(payload)
-        payload.setdefault("documentId", document_id)
-        if payload.get("documentId") != document_id:
-            raise HTTPException(status_code=404, detail={"code": "UNKNOWN_DOCUMENT", "message": "Document does not exist."})
-        actor_id = actor_for_session(grant.username)
-        try:
-            if payload.get("actionType") == "undo":
-                prepared = prepare_undo_redo(handle.document, payload, actor_id=actor_id, redo=False)
-            elif payload.get("actionType") == "redo":
-                prepared = prepare_undo_redo(handle.document, payload, actor_id=actor_id, redo=True)
-            else:
-                prepared = prepare_action(handle.document, handle.store.assets, payload, actor_id=actor_id)
-            publish_pending_assets(handle.store.assets, prepared)
-        except EditorActionError as exc:
-            raise _action_error(exc) from exc
-        except (SchemaValidationError, HistoryValidationError, TypeError, ValueError) as exc:
-            raise HTTPException(status_code=422, detail={"status": "refused", "code": "VALIDATION_FAILED", "message": str(exc)}) from exc
-        handle.document = prepared.document
-        handle.recovery_notice = None
-        with creative_document_runtime._cache_lock:
-            creative_document_runtime._view_cache.pop((document_id, handle.document.current_revision), None)
-        receipt = dict(prepared.receipt)
-        receipt["dirty"] = handle.document.current_revision != handle.committed_revision
-        receipt["committedRevision"] = handle.committed_revision
-        return receipt
+    try:
+        payload = await _bounded_human_json(request)
+        envelope = human_envelope_from_w03(payload, document_id=document_id)
+    except CommandServiceError as exc:
+        actor = _human_actor(grant, request)
+        return _human_refusal(refusal_receipt(
+            code=exc.code, actor_kind=actor.actor_kind, actor_id=actor.actor_id,
+            current_revision=handle.document.current_revision, document_id=document_id,
+        ))
+    receipt = command_service.execute(handle, envelope, _human_actor(grant, request))
+    if receipt.get("status") not in {"committed"}:
+        return _human_refusal(receipt)
+    receipt["dirty"] = handle.document.current_revision != handle.committed_revision
+    receipt["committedRevision"] = handle.committed_revision
+    _invalidate_document_views(document_id)
+    return receipt
 
 
 @creative_document_router.post("/creative_document_api/documents/{document_id}/assets/import")
@@ -495,57 +571,98 @@ async def import_image(
     actor_kind: str = Form("director"),
     as_guide: bool = Form(False),
     semantic_role: str | None = Form(None),
+    command_id: str | None = Form(None),
+    transaction_id: str | None = Form(None),
+    group_id: str | None = Form(None),
 ) -> dict[str, Any]:
     grant = _authorized(request)
     handle = _handle(document_id, request, grant)
     raw = await file.read(100 * 1024 * 1024 + 1)
-    payload = {"documentId": document_id, "expectedRevision": expected_revision,
-               "actorKind": actor_kind, "actionType": "import_image",
-               "data": {"filename": file.filename or "import.png", "asGuide": as_guide,
-                        "semanticRole": semantic_role}}
-    with handle.lock:
-        try:
-            prepared = prepare_raster_import(handle.document, handle.store.assets, payload, raw,
-                                             actor_id=actor_for_session(grant.username), filename=file.filename or "import.png")
-            publish_pending_assets(handle.store.assets, prepared)
-        except EditorActionError as exc:
-            raise _action_error(exc) from exc
-        handle.document = prepared.document
-        handle.recovery_notice = None
-        receipt = dict(prepared.receipt)
-        receipt["dirty"] = handle.document.current_revision != handle.committed_revision
-        receipt["committedRevision"] = handle.committed_revision
-        return receipt
+    filename = Path(file.filename or "import.png").name[:120] or "import.png"
+    envelope = {
+        "schemaVersion": 1,
+        "commandId": command_id or make_id("cmd"),
+        "documentId": document_id,
+        "intent": "mutate",
+        "expectedRevision": expected_revision,
+        "commandType": "import_image",
+        "targetIds": [],
+        "coordinateSpace": "document",
+        "payload": {"data": {"filename": filename, "asGuide": as_guide,
+                              "semanticRole": semantic_role}},
+        "transaction": {"transactionId": transaction_id or make_id("txn"),
+                        "groupId": group_id or make_id("grp"), "phase": "commit"},
+    }
+    if len(raw) > 100 * 1024 * 1024:
+        actor = _human_actor(grant, request)
+        return _human_refusal(refusal_receipt(
+            code="REQUEST_TOO_LARGE", actor_kind=actor.actor_kind, actor_id=actor.actor_id,
+            current_revision=handle.document.current_revision, document_id=document_id,
+        ))
+    receipt = command_service.execute(handle, envelope, _human_actor(grant, request),
+                                      internal_import={"fileBytes": raw})
+    if receipt.get("status") != "committed":
+        return _human_refusal(receipt)
+    receipt["dirty"] = handle.document.current_revision != handle.committed_revision
+    receipt["committedRevision"] = handle.committed_revision
+    _invalidate_document_views(document_id)
+    return receipt
 
 
 @creative_document_router.post("/creative_document_api/documents/{document_id}/save")
-async def save_document(document_id: str, request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    handle = _handle(document_id, request)
+async def save_document(document_id: str, request: Request) -> dict[str, Any]:
+    grant = _authorized(request)
+    handle = _handle(document_id, request, grant)
+    actor = _human_actor(grant, request)
+    try:
+        payload = await _bounded_human_json(request)
+    except CommandServiceError as exc:
+        return _human_refusal(refusal_receipt(
+            code=exc.code, actor_kind=actor.actor_kind, actor_id=actor.actor_id,
+            current_revision=handle.document.current_revision, document_id=document_id,
+        ))
+    if not isinstance(payload, dict):
+        return _human_refusal(refusal_receipt(
+            code="INVALID_ENVELOPE", actor_kind=actor.actor_kind, actor_id=actor.actor_id,
+            current_revision=handle.document.current_revision, document_id=document_id,
+        ))
+    if set(payload) - {"expectedRevision", "commandId"}:
+        return _human_refusal(refusal_receipt(
+            code="UNKNOWN_FIELD", actor_kind=actor.actor_kind, actor_id=actor.actor_id,
+            current_revision=handle.document.current_revision, document_id=document_id,
+        ))
+    command_id = payload.get("commandId") or make_id("cmd")
+    if isinstance(command_id, str):
+        stable_suffix = hashlib.sha256(command_id.encode("utf-8")).hexdigest()
+        transaction_id = f"txn-{stable_suffix[:32]}"
+        group_id = f"grp-{stable_suffix[32:64]}"
+    else:
+        transaction_id, group_id = make_id("txn"), make_id("grp")
+    envelope = {
+        "schemaVersion": 1,
+        "commandId": command_id,
+        "documentId": document_id,
+        "intent": "mutate",
+        "expectedRevision": payload.get("expectedRevision"),
+        "commandType": "save_scene",
+        "targetIds": [],
+        "coordinateSpace": "document",
+        "payload": {},
+        "transaction": {"transactionId": transaction_id, "groupId": group_id, "phase": "commit"},
+    }
+    # Ownership metadata is an editor storage concern; document mutation and
+    # checkpointing still pass through the semantic service.
     with handle.lock:
-        expected = payload.get("expectedRevision")
-        if type(expected) is not int or expected != handle.document.current_revision:
-            raise HTTPException(status_code=409, detail={"status": "conflict", "code": "STALE_DOCUMENT_REVISION",
-                                                         "currentRevision": handle.document.current_revision,
-                                                         "refreshHint": "reload-document-view"})
         try:
             creative_document_runtime.persist_owner(handle)
-            if handle.document.current_revision != handle.committed_revision:
-                handle.store.save(handle.document, checkpoint=True)
-                handle.committed_revision = handle.document.current_revision
-            else:
-                handle.store.checkpoint(handle.document)
         except HTTPException:
             raise
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail={"status": "refused", "code": "SAVE_FAILED",
-                                                         "message": "The document could not be saved."}) from exc
-        handle.recovery_notice = "Explicit save checkpoint is available."
-        with creative_document_runtime._cache_lock:
-            creative_document_runtime._view_cache.pop((document_id, handle.document.current_revision), None)
-        return {"status": "saved", "documentId": document_id,
-                "revision": handle.document.current_revision,
-                "committedRevision": handle.committed_revision,
-                "dirty": False, "checkpoint": True, "code": None}
+        receipt = command_service.execute(handle, envelope, actor)
+    if receipt.get("status") != "saved":
+        return _human_refusal(receipt)
+    handle.recovery_notice = "Explicit save checkpoint is available."
+    _invalidate_document_views(document_id)
+    return receipt
 
 
 @creative_document_router.get("/creative_document_api/documents/{document_id}/assets/{asset_id}/content")

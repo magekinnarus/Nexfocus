@@ -144,6 +144,7 @@ def _transaction(
     history_kind: str = "edit",
     extra_metadata: Mapping[str, Any] | None = None,
     stamp_ids: list[str] | None = None,
+    command_id: str | None = None,
 ) -> tuple[Document, dict[str, Any]]:
     previous_revision = before.current_revision
     new_revision = previous_revision + 1
@@ -201,7 +202,7 @@ def _transaction(
         group_id=group_id,
         actor_id=actor_id,
         actor_kind=actor_kind,
-        command_ids=[make_id("cmd")],
+        command_ids=[command_id or make_id("cmd")],
         previous_revision=previous_revision,
         resulting_revision=new_revision,
         affected_ids=list(dict.fromkeys(affected_ids)),
@@ -1160,6 +1161,10 @@ def prepare_action(
     payload: Mapping[str, Any],
     *,
     actor_id: str,
+    actor_kind: str | None = None,
+    command_id: str | None = None,
+    transaction_id: str | None = None,
+    group_id: str | None = None,
 ) -> PreparedAction:
     """Validate and prepare an atomic revision; no files are written here."""
 
@@ -1173,15 +1178,17 @@ def prepare_action(
         raise EditorActionError("INVALID_REVISION", "expectedRevision must be an integer")
     if expected != document.current_revision:
         raise EditorActionError("STALE_DOCUMENT_REVISION", "document revision changed", current_revision=document.current_revision)
-    actor_kind = payload.get("actorKind", "director")
-    if actor_kind not in {"human", "director"}:
-        raise EditorActionError("INVALID_ACTOR_KIND", "human editor actions require actor kind human or director")
+    actor_kind = actor_kind or payload.get("actorKind", "director")
+    if actor_kind not in {"human", "director", "agent"}:
+        raise EditorActionError("INVALID_ACTOR_KIND", "editor actor kind is unsupported")
     try:
         actor_id = validate_id(actor_id, field="actorId")
+        if command_id is not None:
+            validate_id(command_id, field="commandId")
     except (TypeError, ValueError) as exc:
         raise EditorActionError("INVALID_ACTOR", "editor actor identity is invalid") from exc
-    transaction_id = payload.get("transactionId") or make_id("txn")
-    group_id = payload.get("groupId") or make_id("grp")
+    transaction_id = transaction_id or payload.get("transactionId") or make_id("txn")
+    group_id = group_id or payload.get("groupId") or make_id("grp")
     try:
         validate_id(transaction_id, field="transactionId")
         validate_id(group_id, field="groupId")
@@ -1235,6 +1242,7 @@ def prepare_action(
         history_kind=history_kind,
         extra_metadata={"batchActions": action_names} if action_type == "batch" else None,
         stamp_ids=_stamp_ids(action_items, affected),
+        command_id=command_id,
     )
     return PreparedAction(candidate, receipt, pending_assets)
 
@@ -1259,7 +1267,17 @@ def _stamp_ids(actions: list[Mapping[str, Any]], affected: list[str]) -> list[st
     return [identity for identity in identity_ids if identity not in non_stamped_sources]
 
 
-def prepare_undo_redo(document: Document, payload: Mapping[str, Any], *, actor_id: str, redo: bool = False) -> PreparedAction:
+def prepare_undo_redo(
+    document: Document,
+    payload: Mapping[str, Any],
+    *,
+    actor_id: str,
+    actor_kind: str | None = None,
+    command_id: str | None = None,
+    transaction_id: str | None = None,
+    group_id: str | None = None,
+    redo: bool = False,
+) -> PreparedAction:
     expected = payload.get("expectedRevision")
     if type(expected) is not int:
         raise EditorActionError("INVALID_REVISION", "expectedRevision must be an integer")
@@ -1293,8 +1311,8 @@ def prepare_undo_redo(document: Document, payload: Mapping[str, Any], *, actor_i
     candidate.metadata["editorUndoStack"] = undo_stack
     candidate.metadata["editorRedoStack"] = redo_stack
     action_type = "redo" if redo else "undo"
-    transaction_id = payload.get("transactionId") or make_id("txn")
-    group_id = payload.get("groupId") or make_id("grp")
+    transaction_id = transaction_id or payload.get("transactionId") or make_id("txn")
+    group_id = group_id or payload.get("groupId") or make_id("grp")
     previous_revision = document.current_revision
     candidate.current_revision = previous_revision
     candidate.revision_digest = None
@@ -1303,7 +1321,7 @@ def prepare_undo_redo(document: Document, payload: Mapping[str, Any], *, actor_i
         candidate,
         action_type=action_type,
         actor_id=actor_id,
-        actor_kind=payload.get("actorKind", "director"),
+        actor_kind=actor_kind or payload.get("actorKind", "director"),
         transaction_id=transaction_id,
         group_id=group_id,
         affected_ids=list(original.affected_ids),
@@ -1312,6 +1330,7 @@ def prepare_undo_redo(document: Document, payload: Mapping[str, Any], *, actor_i
         undoable=False,
         history_kind=action_type,
         extra_metadata={"replayOf": target_id, "undoSnapshot": previous_snapshot},
+        command_id=command_id,
     )
     return PreparedAction(candidate, receipt)
 
@@ -1323,6 +1342,8 @@ def prepare_raster_import(
     image_bytes_value: bytes,
     *,
     actor_id: str,
+    actor_kind: str | None = None,
+    command_id: str | None = None,
     filename: str,
 ) -> PreparedAction:
     body = dict(payload)
@@ -1331,7 +1352,8 @@ def prepare_raster_import(
     data["filename"] = filename
     body["data"] = data
     body["fileBytes"] = image_bytes_value
-    return prepare_action(document, asset_store, body, actor_id=actor_id)
+    return prepare_action(document, asset_store, body, actor_id=actor_id, actor_kind=actor_kind,
+                          command_id=command_id)
 
 
 def publish_pending_assets(asset_store: AssetStore, prepared: PreparedAction) -> None:

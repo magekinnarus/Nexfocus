@@ -161,6 +161,8 @@
       this._doc = null;
       this._capability = null;
       this._ownerKey = loadOrCreateOwnerKey();
+      this._agentGrantId = null;
+      this._agentGrantDocumentId = null;
       this._selectedLayerId = null;
       this._activeSelectionId = null;
       this._dirty = false;
@@ -246,6 +248,16 @@
           <button type="button" data-action="import">Import image</button>
           <input type="file" data-action="file-input" accept="image/png,image/jpeg,image/webp" hidden>
           <span class="ncd-small" data-role="document-id-label">No scene open</span>
+        </div>
+        <div class="ncd-toolbar ncd-driver-tools" aria-label="Local Agent driver">
+          <strong class="ncd-small">Local Agent driver</strong>
+          <label class="ncd-small"><input type="checkbox" data-agent-scope="inspect" checked> Inspect</label>
+          <label class="ncd-small"><input type="checkbox" data-agent-scope="propose"> Propose</label>
+          <label class="ncd-small"><input type="checkbox" data-agent-scope="mutate"> Mutate</label>
+          <button type="button" data-action="agent-enable">Enable &amp; download grant</button>
+          <button type="button" data-action="agent-status">Grant status</button>
+          <button type="button" data-action="agent-revoke">Revoke grant</button>
+          <span class="ncd-small" data-role="agent-driver-status">Disabled</span>
         </div>
         <div class="ncd-toolbar">
           <button type="button" data-tool="select" aria-pressed="true">Select</button>
@@ -527,6 +539,9 @@
       if (action === 'new') this._createDocument();
       else if (action === 'open') this._openDocument();
       else if (action === 'save') this._saveDocument();
+      else if (action === 'agent-enable') this._enableAgentDriver();
+      else if (action === 'agent-status') this._refreshAgentDriverStatus();
+      else if (action === 'agent-revoke') this._revokeAgentDriver();
       else if (action === 'preview') this._previewComposite();
       else if (action === 'export') this._exportComposite();
       else if (action === 'import') this.querySelector('[data-action="file-input"]').click();
@@ -1160,11 +1175,83 @@
       } catch (error) { this._showError(error); }
     }
 
-    async _saveDocument() {
+    async _enableAgentDriver() {
+      if (!this._doc) return;
+      const scopes = Array.from(this.querySelectorAll('[data-agent-scope]:checked'))
+        .map((input) => input.dataset.agentScope);
+      if (!scopes.length) return this._setAgentDriverStatus('Choose at least one scope.', true);
+      try {
+        const grant = await this._request(`${API}/documents/${encodeURIComponent(this._doc.documentId)}/agent-grants`, {
+          method: 'POST', body: { scopes, lifetimeSeconds: 3600 },
+        });
+        const capability = grant && grant.capability;
+        if (!capability || capability.schemaVersion !== 1 || capability.documentId !== this._doc.documentId
+            || typeof capability.token !== 'string' || typeof capability.baseUrl !== 'string') {
+          throw new Error('The local driver capability response is malformed.');
+        }
+        const contents = JSON.stringify(capability, null, 2);
+        const url = URL.createObjectURL(new Blob([contents], { type: 'application/json' }));
+        this._objectUrls.add(url);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `nexfocus-driver-${this._doc.documentId}.json`;
+        link.click();
+        this._agentGrantId = grant.grantId;
+        this._agentGrantDocumentId = this._doc.documentId;
+        this._setAgentDriverStatus(`Enabled for ${scopes.join(', ')}. Capability file downloaded.`);
+      } catch (error) {
+        this._setAgentDriverStatus(error.message || 'Could not enable the local driver.', true);
+      }
+    }
+
+    async _refreshAgentDriverStatus() {
       if (!this._doc) return;
       try {
+        const status = await this._request(`${API}/documents/${encodeURIComponent(this._doc.documentId)}/agent-grants/status`);
+        this._agentGrantId = status.grantId || null;
+        this._agentGrantDocumentId = this._doc.documentId;
+        const message = status.status === 'enabled'
+          ? `Enabled for ${(status.scopes || []).join(', ')} until ${new Date(status.expiresAt * 1000).toLocaleTimeString()}.`
+          : 'Disabled';
+        this._setAgentDriverStatus(message);
+      } catch (error) {
+        this._setAgentDriverStatus(error.message || 'Could not read driver status.', true);
+      }
+    }
+
+    async _revokeAgentDriver() {
+      if (!this._doc) return;
+      try {
+        if (this._agentGrantDocumentId !== this._doc.documentId || !this._agentGrantId) {
+          const status = await this._request(`${API}/documents/${encodeURIComponent(this._doc.documentId)}/agent-grants/status`);
+          this._agentGrantId = status.grantId || null;
+          this._agentGrantDocumentId = this._doc.documentId;
+        }
+        if (!this._agentGrantId) return this._setAgentDriverStatus('Disabled');
+        await this._request(`${API}/documents/${encodeURIComponent(this._doc.documentId)}/agent-grants/${encodeURIComponent(this._agentGrantId)}`, {
+          method: 'DELETE',
+        });
+        this._agentGrantId = null;
+        this._setAgentDriverStatus('Disabled; the capability has been revoked.');
+      } catch (error) {
+        this._setAgentDriverStatus(error.message || 'Could not revoke the local driver.', true);
+      }
+    }
+
+    _setAgentDriverStatus(message, isError = false) {
+      const target = this.querySelector('[data-role="agent-driver-status"]');
+      if (target) {
+        target.textContent = message;
+        target.classList.toggle('ncd-warning', !!isError);
+      }
+    }
+
+    async _saveDocument() {
+      if (!this._doc) return;
+      const commandId = `cmd-${crypto.randomUUID()}`;
+      try {
         const result = await this._request(`${API}/documents/${encodeURIComponent(this._doc.documentId)}/save`, {
-          method: 'POST', body: { expectedRevision: this._doc.revision },
+          method: 'POST', body: { expectedRevision: this._doc.revision, commandId },
         });
         this._dirty = false;
         this._doc.dirty = false;
@@ -1210,6 +1297,9 @@
       form.append('file', file, file.name);
       form.append('expected_revision', String(this._doc.revision));
       form.append('actor_kind', 'director');
+      form.append('command_id', `cmd-${crypto.randomUUID()}`);
+      form.append('transaction_id', `txn-${crypto.randomUUID()}`);
+      form.append('group_id', `grp-${crypto.randomUUID()}`);
       const asGuide = window.confirm('Import this image as a proposed semantic guide?');
       if (asGuide) {
         form.append('as_guide', 'true');
@@ -1233,6 +1323,7 @@
         documentId: this._doc.documentId,
         expectedRevision: this._doc.revision,
         actorKind: 'director',
+        commandId: `cmd-${crypto.randomUUID()}`,
         transactionId: `txn-${crypto.randomUUID()}`,
         groupId: `grp-${crypto.randomUUID()}`,
         actionType,

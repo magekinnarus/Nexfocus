@@ -128,6 +128,7 @@ class ProjectStore:
         self.pending_dir = self.path / "pending"
         self.history_dir = self.path / "history" / "transactions"
         self.checkpoints_dir = self.path / "checkpoints"
+        self.semantic_command_receipts_dir = self.path / "semantic-command-receipts"
         self.revisions_dir.mkdir(parents=True, exist_ok=True)
         self.pending_dir.mkdir(parents=True, exist_ok=True)
         self.history_dir.mkdir(parents=True, exist_ok=True)
@@ -197,6 +198,82 @@ class ProjectStore:
         if _json_read(path) != checkpoint_value:
             raise ProjectStoreError(f"checkpoint re-read mismatch: {path}")
         return path.relative_to(self.path).as_posix()
+
+    def save_fingerprint(self, document: Document) -> tuple[int, str]:
+        """Return the exact manifest digest a checkpoint save will publish."""
+
+        candidate = Document.from_dict(document.to_dict())
+        records = self._history_records(candidate)
+        candidate.history_refs = [record["transactionId"] for record in records]
+        candidate.checkpoint_refs = [f"checkpoints/{candidate.current_revision}/manifest.json"]
+        self._validate_assets(candidate, reconcile_missing=True)
+        candidate.validate()
+        candidate.refresh_digest()
+        return candidate.current_revision, candidate.revision_digest or ""
+
+    def checkpoint_matches(self, revision: int, revision_digest: str) -> bool:
+        """Verify that a retained checkpoint is the requested exact snapshot."""
+
+        path = self.checkpoints_dir / str(revision) / "manifest.json"
+        if not path.is_file():
+            return False
+        try:
+            document = self._validate_checkpoint(path)
+        except (CorruptProject, ProjectStoreError, SchemaValidationError, MigrationError, ValueError, TypeError):
+            return False
+        return document.current_revision == revision and document.revision_digest == revision_digest
+
+    def _semantic_save_paths(self, command_id: str) -> tuple[Path, Path]:
+        validate_id(command_id, field="commandId")
+        key = content_digest({"commandId": command_id})
+        root = self.semantic_command_receipts_dir / "save"
+        return root / f"{key}.pending.json", root / f"{key}.json"
+
+    def read_semantic_save_record(self, command_id: str) -> dict[str, Any] | None:
+        """Read an authoritative save idempotency witness, preferring completion."""
+
+        pending_path, complete_path = self._semantic_save_paths(command_id)
+        path = complete_path if complete_path.is_file() else pending_path
+        if not path.is_file():
+            return None
+        value = _json_read(path)
+        required = {
+            "recordVersion", "status", "commandId", "requestDigest", "documentId",
+            "actorKind", "actorId", "transactionId", "revision", "revisionDigest", "receipt",
+        }
+        if (set(value) != required or value["recordVersion"] != 1 or value["commandId"] != command_id
+                or value["status"] not in {"pending", "saved"}
+                or (value["status"] == "pending" and value["receipt"] is not None)
+                or (value["status"] == "saved" and not isinstance(value["receipt"], dict))
+                or type(value["revision"]) is not int or value["revision"] < 0
+                or any(not isinstance(value[field], str) for field in
+                       ("requestDigest", "documentId", "actorKind", "actorId", "transactionId", "revisionDigest"))):
+            raise CorruptProject("semantic save receipt record is malformed")
+        return value
+
+    def write_semantic_save_pending(self, record: Mapping[str, Any]) -> None:
+        value = dict(record)
+        if value.get("status") != "pending" or value.get("receipt") is not None:
+            raise ProjectStoreError("semantic save intent is malformed")
+        pending_path, _ = self._semantic_save_paths(value.get("commandId", ""))
+        _immutable_json_write(pending_path, value)
+
+    def write_semantic_save_receipt(self, record: Mapping[str, Any]) -> None:
+        value = dict(record)
+        if value.get("status") != "saved" or not isinstance(value.get("receipt"), dict):
+            raise ProjectStoreError("semantic save receipt is malformed")
+        _, complete_path = self._semantic_save_paths(value.get("commandId", ""))
+        _immutable_json_write(complete_path, value)
+
+    def remove_semantic_save_pending(self, command_id: str, request_digest: str) -> None:
+        """Remove a failed save intent when no exact checkpoint was published."""
+
+        pending_path, _ = self._semantic_save_paths(command_id)
+        if not pending_path.is_file():
+            return
+        record = _json_read(pending_path)
+        if record.get("commandId") == command_id and record.get("requestDigest") == request_digest:
+            pending_path.unlink(missing_ok=True)
 
     def save(
         self,
