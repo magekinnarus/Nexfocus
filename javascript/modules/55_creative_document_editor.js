@@ -446,7 +446,10 @@
           button.disabled = !enabled || documentUnavailable || (blockedForFidelity && !keepsVisibilityAvailable) || this._actionInFlight;
         }
       }
-      for (const input of this.querySelectorAll('input,select')) input.disabled = !enabled || !this._doc || this._actionInFlight || blockedForFidelity;
+      for (const input of this.querySelectorAll('input,select')) {
+        const opensDocument = input.dataset.action === 'document-id';
+        input.disabled = !enabled || this._actionInFlight || (!opensDocument && (!this._doc || blockedForFidelity));
+      }
       const fileInput = this.querySelector('[data-action="file-input"]');
       if (fileInput) fileInput.disabled = !enabled || this._actionInFlight || blockedForFidelity;
     }

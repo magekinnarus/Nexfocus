@@ -1011,6 +1011,8 @@ def _apply_action(
             return scope
         edit_scope = set().union(*(layer_scope(identity) for identity in edit_target_ids)) if edit_target_ids else set()
         for identity in references:
+            if identity not in document.layers and identity not in document.objects:
+                raise EditorActionError("INVALID_CONTEXT_REFERENCES", "context reference does not exist")
             layer = document.layers.get(identity)
             obj = document.objects.get(identity)
             reference_scope = layer_scope(identity)

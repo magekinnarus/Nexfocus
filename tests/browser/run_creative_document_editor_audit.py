@@ -321,6 +321,18 @@ def main() -> int:
             "editorElement": bool(cdp.evaluate("!!document.querySelector('creative-document-editor')")),
             "konvaVersion": cdp.evaluate("window.Konva && window.Konva.version"),
         })
+        open_controls = cdp.evaluate("""(()=>{
+          const e=document.querySelector('creative-document-editor');
+          const documentId=e.querySelector('[data-action=document-id]');
+          const open=e.querySelector('[data-action=open]');
+          const documentControl=e.querySelector('[data-action=color]');
+          return {documentOpen:!!e._doc,documentIdDisabled:documentId?.disabled,
+            openDisabled:open?.disabled,documentControlDisabled:documentControl?.disabled};
+        })()""")
+        check(receipt, "document_id_open_control_available_without_open_scene",
+              open_controls["documentOpen"] is False and open_controls["documentIdDisabled"] is False and
+              open_controls["openDisabled"] is False and open_controls["documentControlDisabled"] is True,
+              open_controls)
 
         setup = cdp.evaluate("""(async()=>{
           const e=document.querySelector('creative-document-editor');
@@ -975,6 +987,27 @@ def main() -> int:
         reconnect = cdp.evaluate("(()=>{const e=document.querySelector('creative-document-editor'); return {documentId:e._doc.documentId,revision:e._doc.revision,ownerKeyLength:e._ownerKey.length,konva:window.Konva.version};})()")
         check(receipt, "editor_remount_preserves_scene_and_owner_key", reconnect["documentId"] == created_document_id and
               reconnect["ownerKeyLength"] >= 32 and reconnect["konva"] == "10.6.0", reconnect)
+
+        # Delete is an explicit soft-delete: the row remains as recoverable history and Undo restores it.
+        delete_probe = cdp.evaluate("""(()=>{const e=document.querySelector('creative-document-editor');
+          window.__deleteProbeLayerIds=e._doc.layers.map(layer=>layer.id); window.confirm=()=>true;
+          const startRevision=e._doc.revision; e.querySelector('[data-action=add-vector]').click();
+          return {startRevision};})()""")
+        wait_js(cdp, f"(()=>{{const e=document.querySelector('creative-document-editor'); return !e._actionInFlight && e._doc.revision==={delete_probe['startRevision'] + 1};}})()", timeout=30)
+        delete_probe_id = cdp.evaluate("(()=>{const e=document.querySelector('creative-document-editor'); return e._doc.layers.find(layer=>!window.__deleteProbeLayerIds.includes(layer.id)).id;})()")
+        cdp.evaluate(f"""(()=>{{const e=document.querySelector('creative-document-editor');
+          const row=e.querySelector(`[data-layer-id="{delete_probe_id}"]`); if(!row) throw new Error('delete probe layer row is missing');
+          row.click(); e.querySelector('[data-action=delete-layer]').click();}})()""")
+        wait_js(cdp, f"(()=>{{const e=document.querySelector('creative-document-editor'),layer=e._doc.layers.find(item=>item.id==={json.dumps(delete_probe_id)}); return !e._actionInFlight && e._doc.revision==={delete_probe['startRevision'] + 2} && layer?.deleted;}})()", timeout=30)
+        deleted_layer = cdp.evaluate(f"""(()=>{{const e=document.querySelector('creative-document-editor'),layer=e._doc.layers.find(item=>item.id==={json.dumps(delete_probe_id)}),row=e.querySelector(`[data-layer-id="{delete_probe_id}"]`); return {{revision:e._doc.revision,selectedLayerId:e._selectedLayerId,deleted:layer.deleted,visible:layer.visible,locked:layer.locked,rowText:row?.innerText||''}};}})()""")
+        cdp.evaluate("document.querySelector('creative-document-editor').querySelector('[data-action=undo]').click()")
+        wait_js(cdp, f"(()=>{{const e=document.querySelector('creative-document-editor'),layer=e._doc.layers.find(item=>item.id==={json.dumps(delete_probe_id)}); return !e._actionInFlight && e._doc.revision==={delete_probe['startRevision'] + 3} && layer && !layer.deleted;}})()", timeout=30)
+        restored_layer = cdp.evaluate(f"""(()=>{{const e=document.querySelector('creative-document-editor'),layer=e._doc.layers.find(item=>item.id==={json.dumps(delete_probe_id)}); return {{revision:e._doc.revision,deleted:layer.deleted,visible:layer.visible,locked:layer.locked}};}})()""")
+        check(receipt, "delete_layer_control_soft_deletes_selected_layer_and_undo_restores",
+              deleted_layer["selectedLayerId"] == delete_probe_id and deleted_layer["deleted"] is True and
+              deleted_layer["visible"] is False and deleted_layer["locked"] is True and "deleted" in deleted_layer["rowText"] and
+              restored_layer["deleted"] is False and restored_layer["visible"] is True and restored_layer["locked"] is False,
+              {"layerId": delete_probe_id, "deleted": deleted_layer, "restored": restored_layer})
 
         # Final corruption probe forces the browser loader down its missing-asset path.
         asset_record = json.loads(manifest.read_text(encoding="utf-8"))["assets"]
